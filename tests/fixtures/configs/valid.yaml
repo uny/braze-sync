@@ -1,0 +1,15 @@
+version: 1
+
+environments:
+  dev:
+    api_url: https://rest.fra-02.braze.eu
+    api_key_env: BRAZE_DEV_API_KEY
+  prod:
+    api_url: https://rest.fra-02.braze.eu
+    api_key_env: BRAZE_PROD_API_KEY
+
+resources:
+  catalogs:
+    path: catalogs/
+  content_blocks:
+    path: content_blocks/

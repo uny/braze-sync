@@ -1,0 +1,11 @@
+name: cardiology
+description: "Cardiology catalog"
+fields:
+  - name: condition_id
+    type: string
+  - name: condition_name
+    type: string
+  - name: display_order
+    type: number
+  - name: is_active
+    type: boolean
