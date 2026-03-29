@@ -97,7 +97,7 @@ export class ContentBlockProvider implements Provider<ContentBlockDefinition, Re
 	}
 
 	async apply(
-		client: BrazeClient,
+		_client: BrazeClient,
 		diffs: DiffResult[],
 		options: ApplyOptions,
 	): Promise<ApplyResult[]> {
@@ -105,7 +105,6 @@ export class ContentBlockProvider implements Provider<ContentBlockDefinition, Re
 
 		for (const diff of diffs) {
 			if (diff.operation === "remove") {
-				// Content blocks cannot be deleted via API
 				results.push({
 					resourceType: this.resourceType,
 					resourceName: diff.resourceName,
@@ -114,16 +113,22 @@ export class ContentBlockProvider implements Provider<ContentBlockDefinition, Re
 					message:
 						"Content block exists in Braze but not in local files. Manual deletion required (no API support).",
 				});
-				continue;
-			}
-
-			if (!options.confirm) {
+			} else if (!options.confirm) {
 				results.push({
 					resourceType: this.resourceType,
 					resourceName: diff.resourceName,
 					operation: diff.operation,
 					success: true,
 					message: `Would ${diff.operation === "add" ? "create" : "update"} content block (dry-run)`,
+				});
+			} else {
+				// Confirmed add/change requires local definitions and remote IDs — use applyWithLocal()
+				results.push({
+					resourceType: this.resourceType,
+					resourceName: diff.resourceName,
+					operation: diff.operation,
+					success: false,
+					message: "Use applyWithLocal() for confirmed operations",
 				});
 			}
 		}
@@ -275,6 +280,10 @@ export class ContentBlockProvider implements Provider<ContentBlockDefinition, Re
 
 			if (!block.name) {
 				errors.push({ file, message: "Content block must have a name" });
+			}
+
+			if (!block.content || block.content.trim() === "") {
+				errors.push({ file, message: "Content block must have content" });
 			}
 
 			if (names.has(block.name)) {

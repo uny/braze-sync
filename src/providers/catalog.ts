@@ -42,7 +42,9 @@ export class CatalogProvider implements Provider<CatalogDefinition, RemoteCatalo
 			name: c.name,
 			description: c.description,
 			// Filter out the auto-created 'id' field
-			fields: c.fields.filter((f) => f.name !== "id").map((f) => ({ name: f.name, type: f.type })),
+			fields: (c.fields ?? [])
+				.filter((f) => f.name !== "id")
+				.map((f) => ({ name: f.name, type: f.type })),
 		}));
 	}
 
@@ -176,6 +178,8 @@ export class CatalogProvider implements Provider<CatalogDefinition, RemoteCatalo
 						const fieldName = detail.field.replace("fields.", "").replace(".type", "");
 						try {
 							await client.deleteCatalogField(diff.resourceName, fieldName);
+							// Braze field ops are async (202). Wait briefly for deletion to propagate.
+							await new Promise((resolve) => setTimeout(resolve, 2000));
 							await client.createCatalogFields(diff.resourceName, {
 								fields: [{ name: fieldName, type: detail.localValue as "string" }],
 							});
@@ -237,6 +241,10 @@ export class CatalogProvider implements Provider<CatalogDefinition, RemoteCatalo
 
 			if (!catalog.name) {
 				errors.push({ file, message: "Catalog must have a 'name' field" });
+			}
+
+			if (catalog.description == null || catalog.description === "") {
+				errors.push({ file, message: "Catalog must have a 'description' field" });
 			}
 
 			if (names.has(catalog.name)) {

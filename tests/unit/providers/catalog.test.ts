@@ -1,7 +1,11 @@
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import type { BrazeClient } from "../../../src/core/braze-client.js";
 import { CatalogProvider } from "../../../src/providers/catalog.js";
 import type { CatalogDefinition } from "../../../src/types/resource.js";
+
+// Stub client — apply tests only exercise dry-run paths that don't call the API
+const stubClient = {} as BrazeClient;
 
 const fixturesDir = join(import.meta.dirname, "../../fixtures/catalogs");
 
@@ -82,6 +86,91 @@ describe("CatalogProvider", () => {
 		});
 	});
 
+	describe("apply", () => {
+		const dryRunOptions = { confirm: false, allowDestructive: false };
+
+		it("produces dry-run results for add operations", async () => {
+			const diffs = provider.diff(
+				[
+					{
+						name: "new_catalog",
+						description: "New",
+						fields: [{ name: "f1", type: "string" }],
+					},
+				],
+				[],
+			);
+			const results = await provider.apply(stubClient, diffs, dryRunOptions);
+			expect(results).toHaveLength(1);
+			expect(results[0].message).toContain("dry-run");
+		});
+
+		it("warns about remove operations (no API support)", async () => {
+			const diffs = provider.diff(
+				[],
+				[{ name: "old_catalog", description: "Old", fields: [{ name: "f1", type: "string" }] }],
+			);
+			const results = await provider.apply(stubClient, diffs, dryRunOptions);
+			expect(results).toHaveLength(1);
+			expect(results[0].success).toBe(false);
+			expect(results[0].message).toContain("Manual deletion");
+		});
+
+		it("blocks destructive field removal without --allow-destructive", async () => {
+			const diffs = provider.diff(
+				[{ name: "cat", description: "D", fields: [{ name: "f1", type: "string" }] }],
+				[
+					{
+						name: "cat",
+						description: "D",
+						fields: [
+							{ name: "f1", type: "string" },
+							{ name: "f2", type: "number" },
+						],
+					},
+				],
+			);
+			const results = await provider.apply(stubClient, diffs, {
+				confirm: true,
+				allowDestructive: false,
+			});
+			expect(results.some((r) => r.message.includes("--allow-destructive"))).toBe(true);
+		});
+
+		it("shows dry-run for field additions", async () => {
+			const diffs = provider.diff(
+				[
+					{
+						name: "cat",
+						description: "D",
+						fields: [
+							{ name: "f1", type: "string" },
+							{ name: "f2", type: "number" },
+						],
+					},
+				],
+				[{ name: "cat", description: "D", fields: [{ name: "f1", type: "string" }] }],
+			);
+			const results = await provider.apply(stubClient, diffs, dryRunOptions);
+			expect(results).toHaveLength(1);
+			expect(results[0].message).toContain("dry-run");
+		});
+	});
+
+	describe("applyWithLocal", () => {
+		const dryRunOptions = { confirm: false, allowDestructive: false };
+
+		it("produces dry-run results for add operations", async () => {
+			const local = [
+				{ name: "new_cat", description: "New", fields: [{ name: "f1", type: "string" as const }] },
+			];
+			const diffs = provider.diff(local, []);
+			const results = await provider.applyWithLocal(stubClient, diffs, dryRunOptions, local);
+			expect(results).toHaveLength(1);
+			expect(results[0].message).toContain("dry-run");
+		});
+	});
+
 	describe("validate", () => {
 		it("passes valid catalog", () => {
 			const errors = provider.validate([
@@ -131,6 +220,17 @@ describe("CatalogProvider", () => {
 				},
 			]);
 			expect(errors.some((e) => e.message.includes("Duplicate"))).toBe(true);
+		});
+
+		it("rejects missing description", () => {
+			const errors = provider.validate([
+				{
+					name: "test",
+					description: "",
+					fields: [{ name: "f1", type: "string" }],
+				},
+			]);
+			expect(errors.some((e) => e.message.includes("description"))).toBe(true);
 		});
 
 		it("rejects duplicate field names", () => {

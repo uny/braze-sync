@@ -84,7 +84,15 @@ export class BrazeClient {
 			throw new BrazeApiError(response.status, text, `${method} ${path}`);
 		}
 
-		return JSON.parse(text) as T;
+		try {
+			return JSON.parse(text) as T;
+		} catch {
+			throw new BrazeApiError(
+				response.status,
+				`Invalid JSON response: ${text.slice(0, 200)}`,
+				`${method} ${path}`,
+			);
+		}
 	}
 
 	// Catalogs

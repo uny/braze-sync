@@ -1,7 +1,10 @@
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import type { BrazeClient } from "../../../src/core/braze-client.js";
 import { ContentBlockProvider } from "../../../src/providers/content-block.js";
 import type { ContentBlockDefinition } from "../../../src/types/resource.js";
+
+const stubClient = {} as BrazeClient;
 
 const fixturesDir = join(import.meta.dirname, "../../fixtures/content_blocks");
 
@@ -75,10 +78,116 @@ describe("ContentBlockProvider", () => {
 		});
 	});
 
+	describe("apply", () => {
+		const dryRunOptions = { confirm: false, allowDestructive: false };
+
+		it("produces dry-run results for add operations", async () => {
+			const diffs = provider.diff([{ name: "new_block", content: "<div/>" }], []);
+			const results = await provider.apply(stubClient, diffs, dryRunOptions);
+			expect(results).toHaveLength(1);
+			expect(results[0].operation).toBe("add");
+			expect(results[0].message).toContain("dry-run");
+		});
+
+		it("produces dry-run results for change operations", async () => {
+			const local = [{ name: "block", content: "new" }];
+			const remote = [
+				{
+					name: "block",
+					content_block_id: "cb-1",
+					content: "old",
+					description: "",
+					state: "active" as const,
+					tags: [],
+				},
+			];
+			const diffs = provider.diff(local, remote);
+			const results = await provider.apply(stubClient, diffs, dryRunOptions);
+			expect(results).toHaveLength(1);
+			expect(results[0].message).toContain("dry-run");
+		});
+
+		it("warns about remove operations (no API support)", async () => {
+			const diffs = provider.diff(
+				[],
+				[
+					{
+						name: "old_block",
+						content_block_id: "cb-1",
+						content: "old",
+						description: "",
+						state: "active" as const,
+						tags: [],
+					},
+				],
+			);
+			const results = await provider.apply(stubClient, diffs, dryRunOptions);
+			expect(results).toHaveLength(1);
+			expect(results[0].success).toBe(false);
+			expect(results[0].message).toContain("Manual deletion");
+		});
+
+		it("returns error for confirmed operations without local context", async () => {
+			const diffs = provider.diff([{ name: "block", content: "new" }], []);
+			const results = await provider.apply(stubClient, diffs, {
+				confirm: true,
+				allowDestructive: false,
+			});
+			expect(results).toHaveLength(1);
+			expect(results[0].success).toBe(false);
+			expect(results[0].message).toContain("applyWithLocal");
+		});
+	});
+
+	describe("applyWithLocal", () => {
+		const dryRunOptions = { confirm: false, allowDestructive: false };
+
+		it("produces dry-run results", async () => {
+			const local = [{ name: "block", content: "new" }];
+			const remote: Parameters<typeof provider.applyWithLocal>[4] = [];
+			const diffs = provider.diff(local, remote);
+			const results = await provider.applyWithLocal(
+				stubClient,
+				diffs,
+				dryRunOptions,
+				local,
+				remote,
+			);
+			expect(results).toHaveLength(1);
+			expect(results[0].message).toContain("dry-run");
+		});
+
+		it("returns error when local definition not found", async () => {
+			const diffs = [
+				{
+					resourceType: "content_block",
+					resourceName: "missing",
+					operation: "add" as const,
+					details: [],
+				},
+			];
+			const results = await provider.applyWithLocal(
+				stubClient,
+				diffs,
+				{ confirm: true, allowDestructive: false },
+				[],
+				[],
+			);
+			expect(results).toHaveLength(1);
+			expect(results[0].success).toBe(false);
+			expect(results[0].message).toContain("Local definition not found");
+		});
+	});
+
 	describe("validate", () => {
 		it("passes valid content block", () => {
 			const errors = provider.validate([{ name: "test", content: "<div></div>" }]);
 			expect(errors).toHaveLength(0);
+		});
+
+		it("rejects empty content", () => {
+			const errors = provider.validate([{ name: "test", content: "" }]);
+			expect(errors.some((e) => e.message.includes("must have content"))).toBe(true);
 		});
 
 		it("rejects duplicate names", () => {
