@@ -82,8 +82,9 @@ describe("ContentBlockProvider", () => {
     const dryRunOptions = { confirm: false, allowDestructive: false };
 
     it("produces dry-run results for add operations", async () => {
-      const diffs = provider.diff([{ name: "new_block", content: "<div/>" }], []);
-      const results = await provider.apply(stubClient, diffs, dryRunOptions);
+      const local = [{ name: "new_block", content: "<div/>" }];
+      const diffs = provider.diff(local, []);
+      const results = await provider.apply(stubClient, diffs, dryRunOptions, local, []);
       expect(results).toHaveLength(1);
       expect(results[0].operation).toBe("add");
       expect(results[0].message).toContain("dry-run");
@@ -102,58 +103,30 @@ describe("ContentBlockProvider", () => {
         },
       ];
       const diffs = provider.diff(local, remote);
-      const results = await provider.apply(stubClient, diffs, dryRunOptions);
+      const results = await provider.apply(stubClient, diffs, dryRunOptions, local, remote);
       expect(results).toHaveLength(1);
       expect(results[0].message).toContain("dry-run");
     });
 
     it("warns about remove operations (no API support)", async () => {
-      const diffs = provider.diff(
-        [],
-        [
-          {
-            name: "old_block",
-            content_block_id: "cb-1",
-            content: "old",
-            description: "",
-            state: "active" as const,
-            tags: [],
-          },
-        ],
-      );
-      const results = await provider.apply(stubClient, diffs, dryRunOptions);
+      const remote = [
+        {
+          name: "old_block",
+          content_block_id: "cb-1",
+          content: "old",
+          description: "",
+          state: "active" as const,
+          tags: [],
+        },
+      ];
+      const diffs = provider.diff([], remote);
+      const results = await provider.apply(stubClient, diffs, dryRunOptions, [], remote);
       expect(results).toHaveLength(1);
       expect(results[0].success).toBe(false);
       expect(results[0].message).toContain("Manual deletion");
     });
 
-    it("throws for confirmed operations without local context", async () => {
-      const diffs = provider.diff([{ name: "block", content: "new" }], []);
-      await expect(
-        provider.apply(stubClient, diffs, { confirm: true, allowDestructive: false }),
-      ).rejects.toThrow("applyWithLocal");
-    });
-  });
-
-  describe("applyWithLocal", () => {
-    const dryRunOptions = { confirm: false, allowDestructive: false };
-
-    it("produces dry-run results", async () => {
-      const local = [{ name: "block", content: "new" }];
-      const remote: Parameters<typeof provider.applyWithLocal>[4] = [];
-      const diffs = provider.diff(local, remote);
-      const results = await provider.applyWithLocal(
-        stubClient,
-        diffs,
-        dryRunOptions,
-        local,
-        remote,
-      );
-      expect(results).toHaveLength(1);
-      expect(results[0].message).toContain("dry-run");
-    });
-
-    it("returns error when local definition not found", async () => {
+    it("returns error when local definition not found for confirmed add", async () => {
       const diffs = [
         {
           resourceType: "content_block",
@@ -162,7 +135,7 @@ describe("ContentBlockProvider", () => {
           details: [],
         },
       ];
-      const results = await provider.applyWithLocal(
+      const results = await provider.apply(
         stubClient,
         diffs,
         { confirm: true, allowDestructive: false },
@@ -172,6 +145,15 @@ describe("ContentBlockProvider", () => {
       expect(results).toHaveLength(1);
       expect(results[0].success).toBe(false);
       expect(results[0].message).toContain("Local definition not found");
+    });
+
+    it("produces dry-run results via unified apply", async () => {
+      const local = [{ name: "block", content: "new" }];
+      const remote: Parameters<typeof provider.apply>[4] = [];
+      const diffs = provider.diff(local, remote);
+      const results = await provider.apply(stubClient, diffs, dryRunOptions, local, remote);
+      expect(results).toHaveLength(1);
+      expect(results[0].message).toContain("dry-run");
     });
   });
 

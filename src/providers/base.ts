@@ -11,7 +11,13 @@ export interface Provider<TLocal, TRemote> {
 
   diff(local: TLocal[], remote: TRemote[]): DiffResult[];
 
-  apply(client: BrazeClient, diffs: DiffResult[], options: ApplyOptions): Promise<ApplyResult[]>;
+  apply(
+    client: BrazeClient,
+    diffs: DiffResult[],
+    options: ApplyOptions,
+    localDefs: TLocal[],
+    remoteItems: TRemote[],
+  ): Promise<ApplyResult[]>;
 
   serialize(remote: TRemote): LocalFileOutput;
 

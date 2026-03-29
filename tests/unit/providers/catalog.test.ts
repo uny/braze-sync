@@ -90,82 +90,70 @@ describe("CatalogProvider", () => {
     const dryRunOptions = { confirm: false, allowDestructive: false };
 
     it("produces dry-run results for add operations", async () => {
-      const diffs = provider.diff(
-        [
-          {
-            name: "new_catalog",
-            description: "New",
-            fields: [{ name: "f1", type: "string" }],
-          },
-        ],
-        [],
-      );
-      const results = await provider.apply(stubClient, diffs, dryRunOptions);
+      const local = [
+        {
+          name: "new_catalog",
+          description: "New",
+          fields: [{ name: "f1", type: "string" }],
+        },
+      ];
+      const diffs = provider.diff(local, []);
+      const results = await provider.apply(stubClient, diffs, dryRunOptions, local, []);
       expect(results).toHaveLength(1);
       expect(results[0].message).toContain("dry-run");
     });
 
     it("warns about remove operations (no API support)", async () => {
-      const diffs = provider.diff(
-        [],
-        [{ name: "old_catalog", description: "Old", fields: [{ name: "f1", type: "string" }] }],
-      );
-      const results = await provider.apply(stubClient, diffs, dryRunOptions);
+      const remote = [
+        { name: "old_catalog", description: "Old", fields: [{ name: "f1", type: "string" }] },
+      ];
+      const diffs = provider.diff([], remote);
+      const results = await provider.apply(stubClient, diffs, dryRunOptions, [], remote);
       expect(results).toHaveLength(1);
       expect(results[0].success).toBe(false);
       expect(results[0].message).toContain("Manual deletion");
     });
 
     it("blocks destructive field removal without --allow-destructive", async () => {
-      const diffs = provider.diff(
-        [{ name: "cat", description: "D", fields: [{ name: "f1", type: "string" }] }],
-        [
-          {
-            name: "cat",
-            description: "D",
-            fields: [
-              { name: "f1", type: "string" },
-              { name: "f2", type: "number" },
-            ],
-          },
-        ],
+      const local = [{ name: "cat", description: "D", fields: [{ name: "f1", type: "string" }] }];
+      const remote = [
+        {
+          name: "cat",
+          description: "D",
+          fields: [
+            { name: "f1", type: "string" },
+            { name: "f2", type: "number" },
+          ],
+        },
+      ];
+      const diffs = provider.diff(local, remote);
+      const results = await provider.apply(
+        stubClient,
+        diffs,
+        {
+          confirm: true,
+          allowDestructive: false,
+        },
+        local,
+        remote,
       );
-      const results = await provider.apply(stubClient, diffs, {
-        confirm: true,
-        allowDestructive: false,
-      });
       expect(results.some((r) => r.message.includes("--allow-destructive"))).toBe(true);
     });
 
     it("shows dry-run for field additions", async () => {
-      const diffs = provider.diff(
-        [
-          {
-            name: "cat",
-            description: "D",
-            fields: [
-              { name: "f1", type: "string" },
-              { name: "f2", type: "number" },
-            ],
-          },
-        ],
-        [{ name: "cat", description: "D", fields: [{ name: "f1", type: "string" }] }],
-      );
-      const results = await provider.apply(stubClient, diffs, dryRunOptions);
-      expect(results).toHaveLength(1);
-      expect(results[0].message).toContain("dry-run");
-    });
-  });
-
-  describe("applyWithLocal", () => {
-    const dryRunOptions = { confirm: false, allowDestructive: false };
-
-    it("produces dry-run results for add operations", async () => {
       const local = [
-        { name: "new_cat", description: "New", fields: [{ name: "f1", type: "string" as const }] },
+        {
+          name: "cat",
+          description: "D",
+          fields: [
+            { name: "f1", type: "string" },
+            { name: "f2", type: "number" },
+          ],
+        },
       ];
-      const diffs = provider.diff(local, []);
-      const results = await provider.applyWithLocal(stubClient, diffs, dryRunOptions, local);
+      const remote = [{ name: "cat", description: "D", fields: [{ name: "f1", type: "string" }] }];
+      const diffs = provider.diff(local, remote);
+      const results = await provider.apply(stubClient, diffs, dryRunOptions, local, remote);
       expect(results).toHaveLength(1);
       expect(results[0].message).toContain("dry-run");
     });

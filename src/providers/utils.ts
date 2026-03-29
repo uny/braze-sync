@@ -49,7 +49,11 @@ export function parseFrontmatter(raw: string): {
     return { frontmatter: {}, body: raw };
   }
 
-  const frontmatter = parse(match[1]) as Record<string, unknown>;
+  const parsed = parse(match[1]);
+  const frontmatter =
+    parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
   const body = match[2];
 
   return { frontmatter, body };

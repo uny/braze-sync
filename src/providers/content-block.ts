@@ -61,21 +61,32 @@ export class ContentBlockProvider implements Provider<ContentBlockDefinition, Re
 
       // Fetch full info in batches with concurrency control
       const items = listResponse.content_blocks;
+      const errors: string[] = [];
       for (let i = 0; i < items.length; i += concurrency) {
         const batch = items.slice(i, i + concurrency);
-        const infos = await Promise.all(
+        const results = await Promise.allSettled(
           batch.map((item) => client.getContentBlockInfo(item.content_block_id)),
         );
-        for (const info of infos) {
-          blocks.push({
-            name: info.name,
-            content_block_id: info.content_block_id,
-            content: info.content,
-            description: info.description,
-            state: info.state,
-            tags: info.tags,
-          });
+        for (const result of results) {
+          if (result.status === "fulfilled") {
+            const info = result.value;
+            blocks.push({
+              name: info.name,
+              content_block_id: info.content_block_id,
+              content: info.content,
+              description: info.description,
+              state: info.state,
+              tags: info.tags,
+            });
+          } else {
+            errors.push(
+              result.reason instanceof Error ? result.reason.message : String(result.reason),
+            );
+          }
         }
+      }
+      if (errors.length > 0) {
+        console.error(`[content-block] Failed to fetch ${errors.length} block(s): ${errors[0]}`);
       }
 
       if (listResponse.content_blocks.length < limit) {
@@ -109,50 +120,14 @@ export class ContentBlockProvider implements Provider<ContentBlockDefinition, Re
   }
 
   async apply(
-    _client: BrazeClient,
-    diffs: DiffResult[],
-    options: ApplyOptions,
-  ): Promise<ApplyResult[]> {
-    const results: ApplyResult[] = [];
-
-    for (const diff of diffs) {
-      if (diff.operation === "remove") {
-        results.push({
-          resourceType: this.resourceType,
-          resourceName: diff.resourceName,
-          operation: "remove",
-          success: false,
-          message:
-            "Content block exists in Braze but not in local files. Manual deletion required (no API support).",
-        });
-      } else if (!options.confirm) {
-        results.push({
-          resourceType: this.resourceType,
-          resourceName: diff.resourceName,
-          operation: diff.operation,
-          success: true,
-          message: `Would ${diff.operation === "add" ? "create" : "update"} content block (dry-run)`,
-        });
-      } else {
-        // Confirmed add/change requires local definitions and remote IDs
-        throw new Error(
-          `ContentBlockProvider.apply() cannot perform confirmed ${diff.operation} operations. Use applyWithLocal() which accepts the required local definitions and remote state.`,
-        );
-      }
-    }
-
-    return results;
-  }
-
-  async applyWithLocal(
     client: BrazeClient,
     diffs: DiffResult[],
     options: ApplyOptions,
     localDefs: ContentBlockDefinition[],
-    remoteBlocks: RemoteContentBlock[],
+    remoteItems: RemoteContentBlock[],
   ): Promise<ApplyResult[]> {
     const localMap = new Map(localDefs.map((d) => [d.name, d]));
-    const remoteMap = new Map(remoteBlocks.map((b) => [b.name, b]));
+    const remoteMap = new Map(remoteItems.map((b) => [b.name, b]));
     const results: ApplyResult[] = [];
 
     for (const diff of diffs) {

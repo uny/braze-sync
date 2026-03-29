@@ -103,19 +103,64 @@ export class CatalogProvider implements Provider<CatalogDefinition, RemoteCatalo
     client: BrazeClient,
     diffs: DiffResult[],
     options: ApplyOptions,
+    localDefs: CatalogDefinition[],
+    _remoteItems: RemoteCatalog[],
   ): Promise<ApplyResult[]> {
+    const localMap = new Map(localDefs.map((d) => [d.name, d]));
     const results: ApplyResult[] = [];
 
     for (const diff of diffs) {
       if (diff.operation === "add") {
-        // "add" requires full local definition — use applyWithLocal() instead
-        results.push({
-          resourceType: this.resourceType,
-          resourceName: diff.resourceName,
-          operation: "add",
-          success: true,
-          message: "Would create catalog (dry-run)",
-        });
+        const localDef = localMap.get(diff.resourceName);
+        if (!options.confirm) {
+          results.push({
+            resourceType: this.resourceType,
+            resourceName: diff.resourceName,
+            operation: "add",
+            success: true,
+            message: "Would create catalog (dry-run)",
+          });
+          continue;
+        }
+        if (!localDef) {
+          results.push({
+            resourceType: this.resourceType,
+            resourceName: diff.resourceName,
+            operation: "add",
+            success: false,
+            message: "Local definition not found",
+          });
+          continue;
+        }
+        try {
+          await client.createCatalog({
+            catalogs: [
+              {
+                name: localDef.name,
+                description: localDef.description,
+                fields: localDef.fields.map((f) => ({
+                  name: f.name,
+                  type: f.type,
+                })),
+              },
+            ],
+          });
+          results.push({
+            resourceType: this.resourceType,
+            resourceName: diff.resourceName,
+            operation: "add",
+            success: true,
+            message: "Created catalog",
+          });
+        } catch (e) {
+          results.push({
+            resourceType: this.resourceType,
+            resourceName: diff.resourceName,
+            operation: "add",
+            success: false,
+            message: e instanceof Error ? e.message : String(e),
+          });
+        }
       } else if (diff.operation === "change") {
         for (const detail of diff.details) {
           if (detail.field === "description") {
@@ -326,76 +371,5 @@ export class CatalogProvider implements Provider<CatalogDefinition, RemoteCatalo
     }
 
     return errors;
-  }
-
-  async applyWithLocal(
-    client: BrazeClient,
-    diffs: DiffResult[],
-    options: ApplyOptions,
-    localDefs: CatalogDefinition[],
-  ): Promise<ApplyResult[]> {
-    const localMap = new Map(localDefs.map((d) => [d.name, d]));
-    const results: ApplyResult[] = [];
-
-    for (const diff of diffs) {
-      if (diff.operation === "add") {
-        const localDef = localMap.get(diff.resourceName);
-        if (!options.confirm) {
-          results.push({
-            resourceType: this.resourceType,
-            resourceName: diff.resourceName,
-            operation: "add",
-            success: true,
-            message: "Would create catalog (dry-run)",
-          });
-          continue;
-        }
-        if (!localDef) {
-          results.push({
-            resourceType: this.resourceType,
-            resourceName: diff.resourceName,
-            operation: "add",
-            success: false,
-            message: "Local definition not found",
-          });
-          continue;
-        }
-        try {
-          await client.createCatalog({
-            catalogs: [
-              {
-                name: localDef.name,
-                description: localDef.description,
-                fields: localDef.fields.map((f) => ({
-                  name: f.name,
-                  type: f.type,
-                })),
-              },
-            ],
-          });
-          results.push({
-            resourceType: this.resourceType,
-            resourceName: diff.resourceName,
-            operation: "add",
-            success: true,
-            message: "Created catalog",
-          });
-        } catch (e) {
-          results.push({
-            resourceType: this.resourceType,
-            resourceName: diff.resourceName,
-            operation: "add",
-            success: false,
-            message: e instanceof Error ? e.message : String(e),
-          });
-        }
-      } else {
-        // Delegate change/remove to regular apply
-        const subResults = await this.apply(client, [diff], options);
-        results.push(...subResults);
-      }
-    }
-
-    return results;
   }
 }

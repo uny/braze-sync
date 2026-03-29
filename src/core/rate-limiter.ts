@@ -26,9 +26,17 @@ export class RateLimiter {
       return;
     }
 
-    const waitMs = Math.ceil((1 - this.tokens) / this.refillRate);
+    let waitMs = Math.ceil((1 - this.tokens) / this.refillRate);
     await sleep(waitMs);
     this.refill();
+
+    // setTimeout precision may cause tokens to still be < 1; wait a bit more if needed
+    while (this.tokens < 1) {
+      waitMs = Math.ceil((1 - this.tokens) / this.refillRate);
+      await sleep(Math.max(waitMs, 1));
+      this.refill();
+    }
+
     this.tokens -= 1;
   }
 

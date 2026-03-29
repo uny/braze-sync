@@ -41,7 +41,7 @@ export function registerApplyCommand(program: Command): void {
             allDiffs.push(...diffs);
 
             if (diffs.length > 0) {
-              const results = await provider.applyWithLocal(client, diffs, applyOptions, local);
+              const results = await provider.apply(client, diffs, applyOptions, local, remote);
               allResults.push(...results);
             }
           }
@@ -56,13 +56,7 @@ export function registerApplyCommand(program: Command): void {
             allDiffs.push(...diffs);
 
             if (diffs.length > 0) {
-              const results = await provider.applyWithLocal(
-                client,
-                diffs,
-                applyOptions,
-                local,
-                remote,
-              );
+              const results = await provider.apply(client, diffs, applyOptions, local, remote);
               allResults.push(...results);
             }
           }
