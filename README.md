@@ -38,10 +38,8 @@ environments:
     api_key_env: BRAZE_PROD_API_KEY
 
 resources:
-  catalogs:
-    path: catalogs/
-  content_blocks:
-    path: content_blocks/
+  catalogs: catalogs/
+  content_blocks: content_blocks/
 ```
 
 2. Set your API key as an environment variable:
@@ -126,7 +124,6 @@ Metadata is embedded as YAML frontmatter between `---` delimiters.
 -c, --config <path>   Path to config file (default: braze-sync.config.yaml)
 -e, --env <name>      Target environment name
     --verbose          Show debug output
-    --format <type>    Output format: table (default) | json
 ```
 
 ### `braze-sync export`

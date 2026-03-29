@@ -31,9 +31,13 @@ export class ContentBlockProvider implements Provider<ContentBlockDefinition, Re
       results.push({
         name,
         content: body,
-        description: (frontmatter.description as string) ?? undefined,
-        state: (frontmatter.state as "active" | "draft") ?? undefined,
-        tags: (frontmatter.tags as string[]) ?? undefined,
+        description:
+          typeof frontmatter.description === "string" ? frontmatter.description : undefined,
+        state:
+          frontmatter.state === "active" || frontmatter.state === "draft"
+            ? frontmatter.state
+            : undefined,
+        tags: Array.isArray(frontmatter.tags) ? (frontmatter.tags as string[]) : undefined,
       });
     }
 
