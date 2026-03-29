@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename } from "node:path";
 import { parse, stringify } from "yaml";
 import type { BrazeClient } from "../core/braze-client.js";
 import { compareFieldArrays, compareStrings, computeDiff } from "../core/diff-engine.js";
@@ -69,47 +69,14 @@ export class CatalogProvider implements Provider<CatalogDefinition, RemoteCatalo
 
 		for (const diff of diffs) {
 			if (diff.operation === "add") {
-				if (!options.confirm) {
-					results.push({
-						resourceType: this.resourceType,
-						resourceName: diff.resourceName,
-						operation: "add",
-						success: true,
-						message: "Would create catalog (dry-run)",
-					});
-					continue;
-				}
-
-				try {
-					// Need to read local definition to get full data
-					// For apply, the caller should have the local data available
-					// We find matching detail from diffs — but for add, we need the full definition
-					// This is handled by passing context through. For now, log and skip.
-					await client.createCatalog({
-						catalogs: [
-							{
-								name: diff.resourceName,
-								description: "", // Will be filled by caller
-								fields: [],
-							},
-						],
-					});
-					results.push({
-						resourceType: this.resourceType,
-						resourceName: diff.resourceName,
-						operation: "add",
-						success: true,
-						message: "Created catalog",
-					});
-				} catch (e) {
-					results.push({
-						resourceType: this.resourceType,
-						resourceName: diff.resourceName,
-						operation: "add",
-						success: false,
-						message: e instanceof Error ? e.message : String(e),
-					});
-				}
+				// "add" requires full local definition — use applyWithLocal() instead
+				results.push({
+					resourceType: this.resourceType,
+					resourceName: diff.resourceName,
+					operation: "add",
+					success: true,
+					message: "Would create catalog (dry-run)",
+				});
 			} else if (diff.operation === "change") {
 				for (const detail of diff.details) {
 					if (detail.operation === "add") {

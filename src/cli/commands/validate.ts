@@ -11,7 +11,6 @@ export function registerValidateCommand(program: Command): void {
 		.description("Validate local definition files without contacting Braze API")
 		.action(async () => {
 			const configPath = program.opts().config ?? "braze-sync.config.yaml";
-
 			const config = await loadConfig(configPath);
 			const allErrors: ValidationError[] = [];
 

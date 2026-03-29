@@ -1,10 +1,9 @@
 import type { Command } from "commander";
-import { BrazeClient } from "../../core/braze-client.js";
-import { loadConfig, resolveApiKey } from "../../core/config.js";
 import { formatApplyResults, formatDiffTable } from "../../formatters/table.js";
 import { CatalogProvider } from "../../providers/catalog.js";
 import { ContentBlockProvider } from "../../providers/content-block.js";
 import type { ApplyResult, DiffResult } from "../../types/diff.js";
+import { getResourceTypes, resolveContext } from "../context.js";
 
 export function registerApplyCommand(program: Command): void {
 	program
@@ -15,18 +14,7 @@ export function registerApplyCommand(program: Command): void {
 		.option("--confirm", "Actually apply changes (without this, only shows plan)")
 		.option("--allow-destructive", "Allow destructive operations")
 		.action(async (opts) => {
-			const configPath = program.opts().config ?? "braze-sync.config.yaml";
-			const verbose = program.opts().verbose ?? false;
-
-			const config = await loadConfig(configPath);
-			const env = config.environments[opts.env];
-			if (!env) {
-				console.error(`Error: Environment '${opts.env}' not found in config`);
-				process.exit(1);
-			}
-
-			const apiKey = resolveApiKey(env.api_key_env);
-			const client = new BrazeClient({ apiUrl: env.api_url, apiKey, verbose });
+			const { config, client } = await resolveContext(program, opts.env);
 
 			const applyOptions = {
 				confirm: opts.confirm ?? false,
@@ -39,11 +27,7 @@ export function registerApplyCommand(program: Command): void {
 
 			const allDiffs: DiffResult[] = [];
 			const allResults: ApplyResult[] = [];
-			const resourceTypes = opts.resource
-				? [opts.resource]
-				: Object.keys(config.resources).filter(
-						(k) => config.resources[k as keyof typeof config.resources],
-					);
+			const resourceTypes = getResourceTypes(config, opts.resource);
 
 			for (const resourceType of resourceTypes) {
 				if (resourceType === "catalogs" && config.resources.catalogs) {

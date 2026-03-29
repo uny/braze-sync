@@ -1,12 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
-import { parse } from "yaml";
 import type { BrazeClient } from "../core/braze-client.js";
 import { compareStringArrays, compareStrings, computeDiff } from "../core/diff-engine.js";
 import type { ApplyOptions, ApplyResult, DiffResult, ValidationError } from "../types/diff.js";
 import type { ContentBlockDefinition, LocalFileOutput } from "../types/resource.js";
 import type { Provider } from "./base.js";
-import { globFiles } from "./utils.js";
+import { globFiles, parseFrontmatter } from "./utils.js";
 
 interface RemoteContentBlock {
 	name: string;
@@ -15,21 +14,6 @@ interface RemoteContentBlock {
 	description: string;
 	state: "active" | "draft";
 	tags: string[];
-}
-
-function parseFrontmatter(raw: string): {
-	frontmatter: Record<string, unknown>;
-	body: string;
-} {
-	const match = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-	if (!match) {
-		return { frontmatter: {}, body: raw };
-	}
-
-	const frontmatter = parse(match[1]) as Record<string, unknown>;
-	const body = match[2];
-
-	return { frontmatter, body };
 }
 
 export class ContentBlockProvider implements Provider<ContentBlockDefinition, RemoteContentBlock> {

@@ -1,5 +1,6 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { parse } from "yaml";
 
 export async function globYaml(dirPath: string): Promise<string[]> {
 	try {
@@ -29,16 +30,15 @@ export async function globFiles(dirPath: string, extension: string): Promise<str
  * Parse frontmatter from a file content.
  * Returns the frontmatter as a parsed object and the remaining body content.
  */
-export function parseFrontmatter(content: string): {
+export function parseFrontmatter(raw: string): {
 	frontmatter: Record<string, unknown>;
 	body: string;
 } {
-	const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+	const match = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
 	if (!match) {
-		return { frontmatter: {}, body: content };
+		return { frontmatter: {}, body: raw };
 	}
 
-	const { parse } = require("yaml") as typeof import("yaml");
 	const frontmatter = parse(match[1]) as Record<string, unknown>;
 	const body = match[2];
 

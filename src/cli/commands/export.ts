@@ -1,10 +1,9 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { Command } from "commander";
-import { BrazeClient } from "../../core/braze-client.js";
-import { loadConfig, resolveApiKey } from "../../core/config.js";
 import { CatalogProvider } from "../../providers/catalog.js";
 import { ContentBlockProvider } from "../../providers/content-block.js";
+import { getResourceTypes, resolveContext } from "../context.js";
 
 export function registerExportCommand(program: Command): void {
 	program
@@ -14,24 +13,8 @@ export function registerExportCommand(program: Command): void {
 		.option("--resource <type>", "Filter by resource type")
 		.option("--name <name>", "Filter by resource name (requires --resource)")
 		.action(async (opts) => {
-			const configPath = program.opts().config ?? "braze-sync.config.yaml";
-			const verbose = program.opts().verbose ?? false;
-
-			const config = await loadConfig(configPath);
-			const env = config.environments[opts.env];
-			if (!env) {
-				console.error(`Error: Environment '${opts.env}' not found in config`);
-				process.exit(1);
-			}
-
-			const apiKey = resolveApiKey(env.api_key_env);
-			const client = new BrazeClient({ apiUrl: env.api_url, apiKey, verbose });
-
-			const resourceTypes = opts.resource
-				? [opts.resource]
-				: Object.keys(config.resources).filter(
-						(k) => config.resources[k as keyof typeof config.resources],
-					);
+			const { config, client } = await resolveContext(program, opts.env);
+			const resourceTypes = getResourceTypes(config, opts.resource);
 
 			for (const resourceType of resourceTypes) {
 				console.log(`Exporting ${resourceType}...`);
