@@ -28,6 +28,7 @@ export interface BrazeClientOptions {
 }
 
 export class BrazeClient {
+  private static readonly MAX_RETRIES = 5;
   private readonly apiUrl: string;
   private readonly apiKey: string;
   private readonly verbose: boolean;
@@ -50,6 +51,7 @@ export class BrazeClient {
     path: string,
     body?: unknown,
     useCatalogLimiter = false,
+    retryCount = 0,
   ): Promise<T> {
     if (useCatalogLimiter) {
       await this.catalogLimiter.acquire();
@@ -71,11 +73,18 @@ export class BrazeClient {
 
     // Handle rate limiting with retry
     if (response.status === 429) {
+      if (retryCount >= BrazeClient.MAX_RETRIES) {
+        const text = await response.text();
+        throw new BrazeApiError(429, text, `${method} ${path} (max retries exceeded)`);
+      }
       const retryAfter = response.headers.get("Retry-After");
-      const waitMs = retryAfter ? Number.parseInt(retryAfter, 10) * 1000 : 60_000;
-      this.log(`Rate limited. Retrying after ${waitMs}ms`);
+      const parsed = retryAfter ? Number.parseInt(retryAfter, 10) : Number.NaN;
+      const waitMs = Number.isNaN(parsed) ? 60_000 : parsed * 1000;
+      this.log(
+        `Rate limited. Retrying after ${waitMs}ms (attempt ${retryCount + 1}/${BrazeClient.MAX_RETRIES})`,
+      );
       await new Promise((resolve) => setTimeout(resolve, waitMs));
-      return this.request<T>(method, path, body, useCatalogLimiter);
+      return this.request<T>(method, path, body, useCatalogLimiter, retryCount + 1);
     }
 
     const text = await response.text();

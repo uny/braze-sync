@@ -10,6 +10,8 @@ describe("loadConfig", () => {
     expect(config.version).toBe(1);
     expect(config.environments.dev.api_url).toBe("https://rest.fra-02.braze.eu");
     expect(config.environments.dev.api_key_env).toBe("BRAZE_DEV_API_KEY");
+    expect(config.resources.catalogs).toBe("catalogs/");
+    expect(config.resources.content_blocks).toBe("content_blocks/");
   });
 
   it("throws on missing file", async () => {
@@ -83,5 +85,29 @@ describe("validateConfig", () => {
       },
     });
     expect(config.version).toBe(1);
+  });
+
+  it("rejects non-string resource path", () => {
+    expect(() =>
+      validateConfig({
+        version: 1,
+        environments: {
+          dev: { api_url: "https://example.com", api_key_env: "KEY" },
+        },
+        resources: { catalogs: { path: "catalogs/" } },
+      }),
+    ).toThrow("must be a path string");
+  });
+
+  it("rejects unknown resource type", () => {
+    expect(() =>
+      validateConfig({
+        version: 1,
+        environments: {
+          dev: { api_url: "https://example.com", api_key_env: "KEY" },
+        },
+        resources: { unknown_type: "path/" },
+      }),
+    ).toThrow("Unknown resource type");
   });
 });

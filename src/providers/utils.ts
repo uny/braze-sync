@@ -34,7 +34,7 @@ export function parseFrontmatter(raw: string): {
   frontmatter: Record<string, unknown>;
   body: string;
 } {
-  const match = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!match) {
     return { frontmatter: {}, body: raw };
   }

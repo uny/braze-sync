@@ -62,6 +62,22 @@ export function validateConfig(data: unknown): Config {
     throw new ConfigError("Config must have a 'resources' section");
   }
 
+  const validResourceKeys = new Set([
+    "catalogs",
+    "content_blocks",
+    "custom_attributes",
+    "email_templates",
+  ]);
+  const resources = obj.resources as Record<string, unknown>;
+  for (const [key, value] of Object.entries(resources)) {
+    if (!validResourceKeys.has(key)) {
+      throw new ConfigError(`Unknown resource type '${key}'`);
+    }
+    if (value !== undefined && value !== null && typeof value !== "string") {
+      throw new ConfigError(`Resource '${key}' must be a path string, got ${typeof value}`);
+    }
+  }
+
   return obj as unknown as Config;
 }
 

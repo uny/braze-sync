@@ -9,7 +9,5 @@ environments:
     api_key_env: BRAZE_PROD_API_KEY
 
 resources:
-  catalogs:
-    path: catalogs/
-  content_blocks:
-    path: content_blocks/
+  catalogs: catalogs/
+  content_blocks: content_blocks/
