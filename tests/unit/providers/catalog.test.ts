@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { BrazeClient } from "../../../src/core/braze-client.js";
 import { CatalogProvider } from "../../../src/providers/catalog.js";
 import type { CatalogDefinition } from "../../../src/types/resource.js";
@@ -20,9 +20,12 @@ describe("CatalogProvider", () => {
       expect(catalogs[0].fields).toHaveLength(4);
     });
 
-    it("returns empty array for missing directory", async () => {
+    it("returns empty array and warns for missing directory", async () => {
+      const spy = vi.spyOn(console, "error").mockImplementation(() => {});
       const catalogs = await provider.readLocal("/nonexistent");
       expect(catalogs).toHaveLength(0);
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining("Resource directory not found"));
+      spy.mockRestore();
     });
   });
 

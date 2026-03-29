@@ -1,5 +1,5 @@
 import { readdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { parse } from "yaml";
 
 export async function globYaml(dirPath: string): Promise<string[]> {
@@ -11,6 +11,7 @@ export async function globYaml(dirPath: string): Promise<string[]> {
       .sort();
   } catch (e) {
     if (isNodeError(e) && e.code === "ENOENT") {
+      console.error(`Warning: Resource directory not found: ${dirPath}`);
       return [];
     }
     throw e;
@@ -26,6 +27,7 @@ export async function globFiles(dirPath: string, extension: string): Promise<str
       .sort();
   } catch (e) {
     if (isNodeError(e) && e.code === "ENOENT") {
+      console.error(`Warning: Resource directory not found: ${dirPath}`);
       return [];
     }
     throw e;
@@ -43,7 +45,8 @@ function isNodeError(e: unknown): e is NodeJS.ErrnoException {
 export function safePath(basePath: string, relativePath: string): string {
   const resolved = resolve(basePath, relativePath);
   const resolvedBase = resolve(basePath);
-  if (!resolved.startsWith(`${resolvedBase}/`) && resolved !== resolvedBase) {
+  const rel = relative(resolvedBase, resolved);
+  if (rel.startsWith("..") || isAbsolute(rel)) {
     throw new Error(`Path traversal detected: '${relativePath}' escapes base directory`);
   }
   return resolved;

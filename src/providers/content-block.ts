@@ -69,7 +69,8 @@ export class ContentBlockProvider implements Provider<ContentBlockDefinition, Re
         const results = await Promise.allSettled(
           batch.map((item) => client.getContentBlockInfo(item.content_block_id)),
         );
-        for (const result of results) {
+        for (let j = 0; j < results.length; j++) {
+          const result = results[j];
           if (result.status === "fulfilled") {
             const info = result.value;
             blocks.push({
@@ -81,9 +82,10 @@ export class ContentBlockProvider implements Provider<ContentBlockDefinition, Re
               tags: info.tags,
             });
           } else {
-            errors.push(
-              result.reason instanceof Error ? result.reason.message : String(result.reason),
-            );
+            const blockName = batch[j].name;
+            const reason =
+              result.reason instanceof Error ? result.reason.message : String(result.reason);
+            errors.push(`${blockName}: ${reason}`);
           }
         }
       }

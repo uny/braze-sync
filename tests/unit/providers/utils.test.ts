@@ -75,4 +75,9 @@ describe("safePath", () => {
     const result = safePath(base, `${base}/nested/file.yaml`);
     expect(result).toBe(resolve(base, "nested/file.yaml"));
   });
+
+  it("throws on path with base as prefix but different directory", () => {
+    // /tmp/test-base-evil should not be allowed even though it starts with /tmp/test-base
+    expect(() => safePath(base, "../test-base-evil/file.yaml")).toThrow("Path traversal detected");
+  });
 });

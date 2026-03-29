@@ -58,7 +58,7 @@ export class BrazeClient {
     }
 
     const url = `${this.apiUrl}${path}`;
-    this.log(`${method} ${url}`);
+    this.log(`${method} ${path}`);
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.apiKey}`,

@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { BrazeClient } from "../../../src/core/braze-client.js";
 import { ContentBlockProvider } from "../../../src/providers/content-block.js";
 import type { ContentBlockDefinition } from "../../../src/types/resource.js";
@@ -22,9 +22,12 @@ describe("ContentBlockProvider", () => {
       expect(blocks[0].content).toContain("bonus-dialog");
     });
 
-    it("returns empty array for missing directory", async () => {
+    it("returns empty array and warns for missing directory", async () => {
+      const spy = vi.spyOn(console, "error").mockImplementation(() => {});
       const blocks = await provider.readLocal("/nonexistent");
       expect(blocks).toHaveLength(0);
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining("Resource directory not found"));
+      spy.mockRestore();
     });
 
     it("filters out non-string tags from frontmatter", async () => {
