@@ -83,7 +83,11 @@ export function validateConfig(data: unknown): Config {
     }
   }
 
-  return obj as unknown as Config;
+  return {
+    version: obj.version as number,
+    environments: obj.environments as Config["environments"],
+    resources: obj.resources as Config["resources"],
+  };
 }
 
 export function resolveApiKey(envVarName: string): string {

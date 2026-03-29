@@ -1,18 +1,10 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import type { Command } from "commander";
 import { CatalogProvider } from "../../providers/catalog.js";
 import { ContentBlockProvider } from "../../providers/content-block.js";
+import { safePath } from "../../providers/utils.js";
 import { getResourceTypes, handleErrors, resolveContext } from "../context.js";
-
-function safePath(basePath: string, relativePath: string): string {
-  const resolved = resolve(basePath, relativePath);
-  const resolvedBase = resolve(basePath);
-  if (!resolved.startsWith(`${resolvedBase}/`) && resolved !== resolvedBase) {
-    throw new Error(`Path traversal detected: '${relativePath}' escapes base directory`);
-  }
-  return resolved;
-}
 
 export function registerExportCommand(program: Command): void {
   program

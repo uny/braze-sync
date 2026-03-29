@@ -86,7 +86,7 @@ export class ContentBlockProvider implements Provider<ContentBlockDefinition, Re
         }
       }
       if (errors.length > 0) {
-        console.error(`[content-block] Failed to fetch ${errors.length} block(s): ${errors[0]}`);
+        throw new Error(`Failed to fetch ${errors.length} content block(s): ${errors.join("; ")}`);
       }
 
       if (listResponse.content_blocks.length < limit) {

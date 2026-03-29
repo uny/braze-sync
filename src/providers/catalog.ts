@@ -62,7 +62,12 @@ export class CatalogProvider implements Provider<CatalogDefinition, RemoteCatalo
 
     for (const file of files) {
       const raw = await readFile(file, "utf-8");
-      const data = parse(raw) as CatalogDefinition;
+      let data: CatalogDefinition;
+      try {
+        data = parse(raw) as CatalogDefinition;
+      } catch (e) {
+        throw new Error(`Invalid YAML in ${file}: ${e instanceof Error ? e.message : String(e)}`);
+      }
       // Use filename as name if not specified
       if (!data.name) {
         data.name = basename(file).replace(/\.ya?ml$/, "");

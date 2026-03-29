@@ -1,5 +1,5 @@
 import { readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { parse } from "yaml";
 
 export async function globYaml(dirPath: string): Promise<string[]> {
@@ -34,6 +34,19 @@ export async function globFiles(dirPath: string, extension: string): Promise<str
 
 function isNodeError(e: unknown): e is NodeJS.ErrnoException {
   return e instanceof Error && "code" in e;
+}
+
+/**
+ * Resolve a relative path within a base directory, preventing path traversal.
+ * Throws if the resolved path escapes the base directory.
+ */
+export function safePath(basePath: string, relativePath: string): string {
+  const resolved = resolve(basePath, relativePath);
+  const resolvedBase = resolve(basePath);
+  if (!resolved.startsWith(`${resolvedBase}/`) && resolved !== resolvedBase) {
+    throw new Error(`Path traversal detected: '${relativePath}' escapes base directory`);
+  }
+  return resolved;
 }
 
 /**

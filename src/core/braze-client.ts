@@ -65,11 +65,20 @@ export class BrazeClient {
       "Content-Type": "application/json",
     };
 
-    const response = await fetch(url, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+    } catch (e) {
+      throw new BrazeApiError(
+        0,
+        `Network error: ${e instanceof Error ? e.message : String(e)}`,
+        `${method} ${path}`,
+      );
+    }
 
     // Handle rate limiting with retry
     if (response.status === 429) {
