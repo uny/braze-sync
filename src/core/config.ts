@@ -53,6 +53,11 @@ export function validateConfig(data: unknown): Config {
     if (typeof e.api_url !== "string" || !e.api_url) {
       throw new ConfigError(`Environment '${name}' must have a valid 'api_url'`);
     }
+    if (!e.api_url.startsWith("https://")) {
+      throw new ConfigError(
+        `Environment '${name}' api_url must start with https:// (got '${e.api_url}')`,
+      );
+    }
     if (typeof e.api_key_env !== "string" || !e.api_key_env) {
       throw new ConfigError(`Environment '${name}' must have a valid 'api_key_env'`);
     }

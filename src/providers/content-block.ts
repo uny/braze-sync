@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
+import { stringify } from "yaml";
 import type { BrazeClient } from "../core/braze-client.js";
 import { compareStringArrays, compareStrings, computeDiff } from "../core/diff-engine.js";
 import type { ApplyOptions, ApplyResult, DiffResult, ValidationError } from "../types/diff.js";
@@ -133,14 +134,10 @@ export class ContentBlockProvider implements Provider<ContentBlockDefinition, Re
           message: `Would ${diff.operation === "add" ? "create" : "update"} content block (dry-run)`,
         });
       } else {
-        // Confirmed add/change requires local definitions and remote IDs — use applyWithLocal()
-        results.push({
-          resourceType: this.resourceType,
-          resourceName: diff.resourceName,
-          operation: diff.operation,
-          success: false,
-          message: "Use applyWithLocal() for confirmed operations",
-        });
+        // Confirmed add/change requires local definitions and remote IDs
+        throw new Error(
+          `ContentBlockProvider.apply() cannot perform confirmed ${diff.operation} operations. Use applyWithLocal() which accepts the required local definitions and remote state.`,
+        );
       }
     }
 
@@ -253,25 +250,21 @@ export class ContentBlockProvider implements Provider<ContentBlockDefinition, Re
   }
 
   serialize(remote: RemoteContentBlock): LocalFileOutput {
-    const frontmatterParts: string[] = [];
+    const meta: Record<string, unknown> = {};
     if (remote.description) {
-      frontmatterParts.push(`description: ${JSON.stringify(remote.description)}`);
+      meta.description = remote.description;
     }
     if (remote.state) {
-      frontmatterParts.push(`state: ${remote.state}`);
+      meta.state = remote.state;
     }
     if (remote.tags && remote.tags.length > 0) {
-      frontmatterParts.push(
-        `tags:\n${remote.tags
-          .sort()
-          .map((t) => `  - ${t}`)
-          .join("\n")}`,
-      );
+      meta.tags = [...remote.tags].sort();
     }
 
     let content = "";
-    if (frontmatterParts.length > 0) {
-      content = `---\n${frontmatterParts.join("\n")}\n---\n${remote.content}`;
+    if (Object.keys(meta).length > 0) {
+      const yaml = stringify(meta, { sortMapEntries: true }).trimEnd();
+      content = `---\n${yaml}\n---\n${remote.content}`;
     } else {
       content = remote.content;
     }

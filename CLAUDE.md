@@ -32,7 +32,7 @@ Git (YAML/Liquid)  <-->  braze-sync CLI  <-->  Braze REST API
 
 ## Tech Stack
 
-TypeScript (ESM, strict), Node.js >= 20, Commander.js, `yaml` package, Vitest, tsup, Biome, pnpm
+TypeScript (ESM, strict), Node.js >= 22, Commander.js, `yaml` package, Vitest, tsup, Biome, pnpm
 
 ## Key Design Decisions
 

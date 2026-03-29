@@ -9,8 +9,11 @@ export async function globYaml(dirPath: string): Promise<string[]> {
       .filter((e) => e.isFile() && (e.name.endsWith(".yaml") || e.name.endsWith(".yml")))
       .map((e) => join(dirPath, e.name))
       .sort();
-  } catch {
-    return [];
+  } catch (e) {
+    if (isNodeError(e) && e.code === "ENOENT") {
+      return [];
+    }
+    throw e;
   }
 }
 
@@ -21,9 +24,16 @@ export async function globFiles(dirPath: string, extension: string): Promise<str
       .filter((e) => e.isFile() && e.name.endsWith(extension))
       .map((e) => join(dirPath, e.name))
       .sort();
-  } catch {
-    return [];
+  } catch (e) {
+    if (isNodeError(e) && e.code === "ENOENT") {
+      return [];
+    }
+    throw e;
   }
+}
+
+function isNodeError(e: unknown): e is NodeJS.ErrnoException {
+  return e instanceof Error && "code" in e;
 }
 
 /**

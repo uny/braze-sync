@@ -1,9 +1,18 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Command } from "commander";
 import { CatalogProvider } from "../../providers/catalog.js";
 import { ContentBlockProvider } from "../../providers/content-block.js";
 import { getResourceTypes, handleErrors, resolveContext } from "../context.js";
+
+function safePath(basePath: string, relativePath: string): string {
+  const resolved = resolve(basePath, relativePath);
+  const resolvedBase = resolve(basePath);
+  if (!resolved.startsWith(`${resolvedBase}/`) && resolved !== resolvedBase) {
+    throw new Error(`Path traversal detected: '${relativePath}' escapes base directory`);
+  }
+  return resolved;
+}
 
 export function registerExportCommand(program: Command): void {
   program
@@ -30,7 +39,7 @@ export function registerExportCommand(program: Command): void {
 
             for (const item of filtered) {
               const output = provider.serialize(item);
-              const filePath = join(basePath, output.path);
+              const filePath = safePath(basePath, output.path);
               await writeFile(filePath, output.content, "utf-8");
               console.log(`  Wrote ${filePath}`);
             }
@@ -46,7 +55,7 @@ export function registerExportCommand(program: Command): void {
 
             for (const item of filtered) {
               const output = provider.serialize(item);
-              const filePath = join(basePath, output.path);
+              const filePath = safePath(basePath, output.path);
               await writeFile(filePath, output.content, "utf-8");
               console.log(`  Wrote ${filePath}`);
             }

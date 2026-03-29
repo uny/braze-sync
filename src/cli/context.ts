@@ -26,9 +26,26 @@ export async function resolveContext(program: Command, envName: string): Promise
   return { config, env, client, verbose };
 }
 
+const RESOURCE_TYPE_ALIASES: Record<string, keyof ResourcePaths> = {
+  catalogs: "catalogs",
+  catalog: "catalogs",
+  content_blocks: "content_blocks",
+  content_block: "content_blocks",
+  custom_attributes: "custom_attributes",
+  custom_attribute: "custom_attributes",
+  email_templates: "email_templates",
+  email_template: "email_templates",
+};
+
 export function getResourceTypes(config: Config, resourceOption?: string): string[] {
   if (resourceOption) {
-    return [resourceOption];
+    const normalized = RESOURCE_TYPE_ALIASES[resourceOption];
+    if (!normalized) {
+      throw new ConfigError(
+        `Unknown resource type '${resourceOption}'. Valid types: ${[...new Set(Object.values(RESOURCE_TYPE_ALIASES))].join(", ")}`,
+      );
+    }
+    return [normalized];
   }
   return Object.keys(config.resources).filter((k) => config.resources[k as keyof ResourcePaths]);
 }

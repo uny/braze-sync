@@ -79,7 +79,7 @@ export class BrazeClient {
       }
       const retryAfter = response.headers.get("Retry-After");
       const parsed = retryAfter ? Number.parseInt(retryAfter, 10) : Number.NaN;
-      const waitMs = Number.isNaN(parsed) ? 60_000 : parsed * 1000;
+      const waitMs = Number.isNaN(parsed) ? 60_000 : Math.max(parsed * 1000, 1_000);
       this.log(
         `Rate limited. Retrying after ${waitMs}ms (attempt ${retryCount + 1}/${BrazeClient.MAX_RETRIES})`,
       );

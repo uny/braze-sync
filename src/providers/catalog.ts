@@ -17,6 +17,23 @@ interface RemoteCatalog {
 
 const VALID_FIELD_TYPES = new Set(["string", "number", "boolean", "time"]);
 
+async function retryWithBackoff(
+  fn: () => Promise<void>,
+  maxAttempts = 5,
+  initialDelayMs = 2_000,
+): Promise<void> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const delayMs = initialDelayMs * 2 ** attempt;
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    try {
+      await fn();
+      return;
+    } catch (e) {
+      if (attempt === maxAttempts - 1) throw e;
+    }
+  }
+}
+
 const FIELDS_PREFIX = "fields.";
 const TYPE_SUFFIX = ".type";
 
@@ -101,6 +118,17 @@ export class CatalogProvider implements Provider<CatalogDefinition, RemoteCatalo
         });
       } else if (diff.operation === "change") {
         for (const detail of diff.details) {
+          if (detail.field === "description") {
+            results.push({
+              resourceType: this.resourceType,
+              resourceName: diff.resourceName,
+              operation: "change",
+              success: false,
+              message:
+                "Catalog description differs but cannot be updated via API. Manual update required in Braze dashboard.",
+            });
+            continue;
+          }
           if (detail.operation === "add") {
             if (!options.confirm) {
               results.push({
@@ -198,10 +226,13 @@ export class CatalogProvider implements Provider<CatalogDefinition, RemoteCatalo
             const fieldName = extractFieldName(detail.field);
             try {
               await client.deleteCatalogField(diff.resourceName, fieldName);
-              // Braze field ops are async (202). Wait briefly for deletion to propagate.
-              await new Promise((resolve) => setTimeout(resolve, 2000));
-              await client.createCatalogFields(diff.resourceName, {
-                fields: [{ name: fieldName, type: detail.localValue as BrazeCatalogField["type"] }],
+              // Braze field ops are async (202). Retry recreate with exponential backoff.
+              await retryWithBackoff(async () => {
+                await client.createCatalogFields(diff.resourceName, {
+                  fields: [
+                    { name: fieldName, type: detail.localValue as BrazeCatalogField["type"] },
+                  ],
+                });
               });
               results.push({
                 resourceType: this.resourceType,

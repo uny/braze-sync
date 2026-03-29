@@ -4,11 +4,11 @@
   "description": "GitOps CLI for Braze — export, diff, and apply catalog schemas, content blocks, and custom attributes from Git",
   "type": "module",
   "bin": {
-    "braze-sync": "./dist/cli/index.js"
+    "braze-sync": "./dist/index.js"
   },
   "files": ["dist"],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "build": "tsup",

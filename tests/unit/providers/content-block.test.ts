@@ -127,15 +127,11 @@ describe("ContentBlockProvider", () => {
       expect(results[0].message).toContain("Manual deletion");
     });
 
-    it("returns error for confirmed operations without local context", async () => {
+    it("throws for confirmed operations without local context", async () => {
       const diffs = provider.diff([{ name: "block", content: "new" }], []);
-      const results = await provider.apply(stubClient, diffs, {
-        confirm: true,
-        allowDestructive: false,
-      });
-      expect(results).toHaveLength(1);
-      expect(results[0].success).toBe(false);
-      expect(results[0].message).toContain("applyWithLocal");
+      await expect(
+        provider.apply(stubClient, diffs, { confirm: true, allowDestructive: false }),
+      ).rejects.toThrow("applyWithLocal");
     });
   });
 
