@@ -3,6 +3,7 @@ import { basename } from "node:path";
 import { parse, stringify } from "yaml";
 import type { BrazeClient } from "../core/braze-client.js";
 import { compareFieldArrays, compareStrings, computeDiff } from "../core/diff-engine.js";
+import type { BrazeCatalogField } from "../types/braze-api.js";
 import type { ApplyOptions, ApplyResult, DiffResult, ValidationError } from "../types/diff.js";
 import type { CatalogDefinition, LocalFileOutput } from "../types/resource.js";
 import type { Provider } from "./base.js";
@@ -114,7 +115,7 @@ export class CatalogProvider implements Provider<CatalogDefinition, RemoteCatalo
             const fieldName = extractFieldName(detail.field);
             try {
               await client.createCatalogFields(diff.resourceName, {
-                fields: [{ name: fieldName, type: detail.localValue as "string" }],
+                fields: [{ name: fieldName, type: detail.localValue as BrazeCatalogField["type"] }],
               });
               results.push({
                 resourceType: this.resourceType,
@@ -200,7 +201,7 @@ export class CatalogProvider implements Provider<CatalogDefinition, RemoteCatalo
               // Braze field ops are async (202). Wait briefly for deletion to propagate.
               await new Promise((resolve) => setTimeout(resolve, 2000));
               await client.createCatalogFields(diff.resourceName, {
-                fields: [{ name: fieldName, type: detail.localValue as "string" }],
+                fields: [{ name: fieldName, type: detail.localValue as BrazeCatalogField["type"] }],
               });
               results.push({
                 resourceType: this.resourceType,

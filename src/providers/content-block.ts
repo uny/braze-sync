@@ -48,6 +48,7 @@ export class ContentBlockProvider implements Provider<ContentBlockDefinition, Re
     const blocks: RemoteContentBlock[] = [];
     let offset = 0;
     const limit = 1000;
+    const concurrency = 5;
 
     // Paginate through all content blocks
     let hasMore = true;
@@ -57,17 +58,23 @@ export class ContentBlockProvider implements Provider<ContentBlockDefinition, Re
         break;
       }
 
-      // Fetch full info for each block
-      for (const item of listResponse.content_blocks) {
-        const info = await client.getContentBlockInfo(item.content_block_id);
-        blocks.push({
-          name: info.name,
-          content_block_id: info.content_block_id,
-          content: info.content,
-          description: info.description,
-          state: info.state,
-          tags: info.tags,
-        });
+      // Fetch full info in batches with concurrency control
+      const items = listResponse.content_blocks;
+      for (let i = 0; i < items.length; i += concurrency) {
+        const batch = items.slice(i, i + concurrency);
+        const infos = await Promise.all(
+          batch.map((item) => client.getContentBlockInfo(item.content_block_id)),
+        );
+        for (const info of infos) {
+          blocks.push({
+            name: info.name,
+            content_block_id: info.content_block_id,
+            content: info.content,
+            description: info.description,
+            state: info.state,
+            tags: info.tags,
+          });
+        }
       }
 
       if (listResponse.content_blocks.length < limit) {
