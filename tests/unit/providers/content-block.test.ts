@@ -26,6 +26,17 @@ describe("ContentBlockProvider", () => {
       const blocks = await provider.readLocal("/nonexistent");
       expect(blocks).toHaveLength(0);
     });
+
+    it("filters out non-string tags from frontmatter", async () => {
+      const invalidTagsDir = join(
+        import.meta.dirname,
+        "../../fixtures/content_blocks_invalid_tags",
+      );
+      const blocks = await provider.readLocal(invalidTagsDir);
+      expect(blocks).toHaveLength(1);
+      // Only the string tag should remain; numeric and boolean are filtered
+      expect(blocks[0].tags).toEqual(["valid_tag"]);
+    });
   });
 
   describe("diff", () => {
@@ -181,6 +192,13 @@ describe("ContentBlockProvider", () => {
         { name: "test", content: "a", state: "invalid" as "active" },
       ]);
       expect(errors.some((e) => e.message.includes("Invalid state"))).toBe(true);
+    });
+
+    it("rejects non-string tags", () => {
+      const errors = provider.validate([
+        { name: "test", content: "a", tags: [123 as unknown as string] },
+      ]);
+      expect(errors.some((e) => e.message.includes("Tags must be strings"))).toBe(true);
     });
   });
 

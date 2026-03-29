@@ -38,7 +38,9 @@ export class ContentBlockProvider implements Provider<ContentBlockDefinition, Re
           frontmatter.state === "active" || frontmatter.state === "draft"
             ? frontmatter.state
             : undefined,
-        tags: Array.isArray(frontmatter.tags) ? (frontmatter.tags as string[]) : undefined,
+        tags: Array.isArray(frontmatter.tags)
+          ? frontmatter.tags.filter((t): t is string => typeof t === "string")
+          : undefined,
       });
     }
 
@@ -275,6 +277,17 @@ export class ContentBlockProvider implements Provider<ContentBlockDefinition, Re
           file,
           message: `Invalid state '${block.state}'. Must be 'active' or 'draft'`,
         });
+      }
+
+      if (block.tags) {
+        for (const tag of block.tags) {
+          if (typeof tag !== "string") {
+            errors.push({
+              file,
+              message: `Invalid tag value: ${JSON.stringify(tag)}. Tags must be strings`,
+            });
+          }
+        }
       }
     }
 

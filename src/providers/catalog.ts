@@ -297,7 +297,7 @@ export class CatalogProvider implements Provider<CatalogDefinition, RemoteCatalo
                 resourceName: diff.resourceName,
                 operation: "change",
                 success: false,
-                message: e instanceof Error ? e.message : String(e),
+                message: `Failed to recreate field ${fieldName} after deletion. The field may have been deleted but not recreated — verify in Braze dashboard. ${e instanceof Error ? e.message : String(e)}`,
               });
             }
           }
