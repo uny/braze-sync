@@ -6,54 +6,54 @@ import { ContentBlockProvider } from "../../providers/content-block.js";
 import { getResourceTypes, handleErrors, resolveContext } from "../context.js";
 
 export function registerExportCommand(program: Command): void {
-	program
-		.command("export")
-		.description("Export current Braze state to local files")
-		.requiredOption("--env <name>", "Target environment name")
-		.option("--resource <type>", "Filter by resource type")
-		.option("--name <name>", "Filter by resource name (requires --resource)")
-		.action(
-			handleErrors(async (opts) => {
-				const { config, client } = await resolveContext(program, opts.env);
-				const resourceTypes = getResourceTypes(config, opts.resource);
+  program
+    .command("export")
+    .description("Export current Braze state to local files")
+    .requiredOption("--env <name>", "Target environment name")
+    .option("--resource <type>", "Filter by resource type")
+    .option("--name <name>", "Filter by resource name (requires --resource)")
+    .action(
+      handleErrors(async (opts) => {
+        const { config, client } = await resolveContext(program, opts.env);
+        const resourceTypes = getResourceTypes(config, opts.resource);
 
-				for (const resourceType of resourceTypes) {
-					console.log(`Exporting ${resourceType}...`);
+        for (const resourceType of resourceTypes) {
+          console.log(`Exporting ${resourceType}...`);
 
-					if (resourceType === "catalogs" && config.resources.catalogs) {
-						const provider = new CatalogProvider();
-						const remote = await provider.fetchRemote(client);
-						const filtered = opts.name ? remote.filter((r) => r.name === opts.name) : remote;
+          if (resourceType === "catalogs" && config.resources.catalogs) {
+            const provider = new CatalogProvider();
+            const remote = await provider.fetchRemote(client);
+            const filtered = opts.name ? remote.filter((r) => r.name === opts.name) : remote;
 
-						const basePath = config.resources.catalogs;
-						await mkdir(basePath, { recursive: true });
+            const basePath = config.resources.catalogs;
+            await mkdir(basePath, { recursive: true });
 
-						for (const item of filtered) {
-							const output = provider.serialize(item);
-							const filePath = join(basePath, output.path);
-							await writeFile(filePath, output.content, "utf-8");
-							console.log(`  Wrote ${filePath}`);
-						}
-					}
+            for (const item of filtered) {
+              const output = provider.serialize(item);
+              const filePath = join(basePath, output.path);
+              await writeFile(filePath, output.content, "utf-8");
+              console.log(`  Wrote ${filePath}`);
+            }
+          }
 
-					if (resourceType === "content_blocks" && config.resources.content_blocks) {
-						const provider = new ContentBlockProvider();
-						const remote = await provider.fetchRemote(client);
-						const filtered = opts.name ? remote.filter((r) => r.name === opts.name) : remote;
+          if (resourceType === "content_blocks" && config.resources.content_blocks) {
+            const provider = new ContentBlockProvider();
+            const remote = await provider.fetchRemote(client);
+            const filtered = opts.name ? remote.filter((r) => r.name === opts.name) : remote;
 
-						const basePath = config.resources.content_blocks;
-						await mkdir(basePath, { recursive: true });
+            const basePath = config.resources.content_blocks;
+            await mkdir(basePath, { recursive: true });
 
-						for (const item of filtered) {
-							const output = provider.serialize(item);
-							const filePath = join(basePath, output.path);
-							await writeFile(filePath, output.content, "utf-8");
-							console.log(`  Wrote ${filePath}`);
-						}
-					}
-				}
+            for (const item of filtered) {
+              const output = provider.serialize(item);
+              const filePath = join(basePath, output.path);
+              await writeFile(filePath, output.content, "utf-8");
+              console.log(`  Wrote ${filePath}`);
+            }
+          }
+        }
 
-				console.log("Export complete.");
-			}),
-		);
+        console.log("Export complete.");
+      }),
+    );
 }

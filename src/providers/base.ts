@@ -3,17 +3,17 @@ import type { ApplyOptions, ApplyResult, DiffResult, ValidationError } from "../
 import type { LocalFileOutput } from "../types/resource.js";
 
 export interface Provider<TLocal, TRemote> {
-	readonly resourceType: string;
+  readonly resourceType: string;
 
-	readLocal(basePath: string): Promise<TLocal[]>;
+  readLocal(basePath: string): Promise<TLocal[]>;
 
-	fetchRemote(client: BrazeClient): Promise<TRemote[]>;
+  fetchRemote(client: BrazeClient): Promise<TRemote[]>;
 
-	diff(local: TLocal[], remote: TRemote[]): DiffResult[];
+  diff(local: TLocal[], remote: TRemote[]): DiffResult[];
 
-	apply(client: BrazeClient, diffs: DiffResult[], options: ApplyOptions): Promise<ApplyResult[]>;
+  apply(client: BrazeClient, diffs: DiffResult[], options: ApplyOptions): Promise<ApplyResult[]>;
 
-	serialize(remote: TRemote): LocalFileOutput;
+  serialize(remote: TRemote): LocalFileOutput;
 
-	validate(local: TLocal[]): ValidationError[];
+  validate(local: TLocal[]): ValidationError[];
 }
