@@ -1,6 +1,10 @@
 //! braze-sync: GitOps CLI for managing Braze configuration as code.
 //!
-//! This crate is the library backing the `braze-sync` binary. The public
-//! surface is intentionally minimal during Phase A and will be filled in
-//! incrementally as each resource type is implemented end-to-end (see
-//! `docs/local/IMPLEMENTATION.md` §13).
+//! See `docs/local/IMPLEMENTATION.md` for the full design contract. The
+//! public surface fills in incrementally over Phase A → Phase B per §13.
+
+pub mod diff;
+pub mod error;
+pub mod resource;
+
+pub use error::{Error, Result};
