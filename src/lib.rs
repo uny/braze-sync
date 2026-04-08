@@ -6,6 +6,7 @@
 pub mod config;
 pub mod diff;
 pub mod error;
+pub mod fs;
 pub mod resource;
 
 pub use error::{Error, Result};
