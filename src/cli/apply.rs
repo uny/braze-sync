@@ -35,7 +35,7 @@ use crate::diff::catalog::CatalogSchemaDiff;
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::error::Error;
 use crate::format::OutputFormat;
-use crate::resource::{CatalogFieldType, ResourceKind};
+use crate::resource::ResourceKind;
 use anyhow::{anyhow, Context as _};
 use clap::Args;
 use std::path::Path;
@@ -198,8 +198,8 @@ fn check_for_unsupported_ops(summary: &DiffSummary) -> anyhow::Result<()> {
                          in the Braze dashboard and re-run `braze-sync apply`",
                         to.name,
                         d.name,
-                        type_str(from.field_type),
-                        type_str(to.field_type),
+                        from.field_type.as_str(),
+                        to.field_type.as_str(),
                     ));
                 }
             }
@@ -219,7 +219,7 @@ async fn apply_catalog_schema(
                 tracing::info!(
                     catalog = %d.name,
                     field = %f.name,
-                    field_type = type_str(f.field_type),
+                    field_type = f.field_type.as_str(),
                     "adding catalog field"
                 );
                 client.add_catalog_field(&d.name, f).await?;
@@ -246,18 +246,4 @@ async fn apply_catalog_schema(
         }
     }
     Ok(count)
-}
-
-fn type_str(t: CatalogFieldType) -> &'static str {
-    // Duplicates the helper in format/table.rs and format/json.rs.
-    // Refactoring to a `CatalogFieldType::as_str()` method is queued
-    // for the Architecture Review Gate after Phase A.
-    match t {
-        CatalogFieldType::String => "string",
-        CatalogFieldType::Number => "number",
-        CatalogFieldType::Boolean => "boolean",
-        CatalogFieldType::Time => "time",
-        CatalogFieldType::Object => "object",
-        CatalogFieldType::Array => "array",
-    }
 }

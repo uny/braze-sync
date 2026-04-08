@@ -9,7 +9,7 @@ use crate::diff::content_block::ContentBlockDiff;
 use crate::diff::custom_attribute::{CustomAttributeDiff, CustomAttributeOp};
 use crate::diff::email_template::EmailTemplateDiff;
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
-use crate::resource::{CatalogField, CatalogFieldType, ResourceKind};
+use crate::resource::{CatalogField, ResourceKind};
 
 pub fn render(summary: &DiffSummary) -> String {
     let mut out = String::new();
@@ -74,19 +74,8 @@ fn kind_label(kind: ResourceKind) -> &'static str {
     }
 }
 
-fn type_str(t: CatalogFieldType) -> &'static str {
-    match t {
-        CatalogFieldType::String => "string",
-        CatalogFieldType::Number => "number",
-        CatalogFieldType::Boolean => "boolean",
-        CatalogFieldType::Time => "time",
-        CatalogFieldType::Object => "object",
-        CatalogFieldType::Array => "array",
-    }
-}
-
 fn fmt_field(f: &CatalogField) -> String {
-    format!("{} ({})", f.name, type_str(f.field_type))
+    format!("{} ({})", f.name, f.field_type.as_str())
 }
 
 fn render_catalog_schema(out: &mut String, d: &CatalogSchemaDiff) {
@@ -102,8 +91,8 @@ fn render_catalog_schema(out: &mut String, d: &CatalogSchemaDiff) {
             DiffOp::Modified { from, to } => out.push_str(&format!(
                 "   ~ field: {} ({} → {})\n",
                 to.name,
-                type_str(from.field_type),
-                type_str(to.field_type),
+                from.field_type.as_str(),
+                to.field_type.as_str(),
             )),
             DiffOp::Unchanged => {}
         }

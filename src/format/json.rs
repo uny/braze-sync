@@ -16,7 +16,7 @@ use crate::diff::content_block::{ContentBlockDiff, TextDiffSummary};
 use crate::diff::custom_attribute::{CustomAttributeDiff, CustomAttributeOp};
 use crate::diff::email_template::EmailTemplateDiff;
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
-use crate::resource::{CatalogField, CatalogFieldType};
+use crate::resource::CatalogField;
 use serde::Serialize;
 
 pub fn render(summary: &DiffSummary) -> String {
@@ -220,18 +220,7 @@ fn top_op<T>(op: &DiffOp<T>) -> JsonOp {
 fn json_field(f: &CatalogField) -> JsonField {
     JsonField {
         name: f.name.clone(),
-        field_type: type_str(f.field_type),
-    }
-}
-
-fn type_str(t: CatalogFieldType) -> &'static str {
-    match t {
-        CatalogFieldType::String => "string",
-        CatalogFieldType::Number => "number",
-        CatalogFieldType::Boolean => "boolean",
-        CatalogFieldType::Time => "time",
-        CatalogFieldType::Object => "object",
-        CatalogFieldType::Array => "array",
+        field_type: f.field_type.as_str(),
     }
 }
 

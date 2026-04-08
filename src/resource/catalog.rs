@@ -29,6 +29,24 @@ pub enum CatalogFieldType {
     Array,
 }
 
+impl CatalogFieldType {
+    /// The lowercase wire string for this field type ("string", "number",
+    /// ...). Single source of truth used by `format::table`,
+    /// `format::json`, `cli::apply`, and `braze::catalog`. Matches the
+    /// snake_case `Serialize` representation derived above so the wire
+    /// string and the explicit method can never drift.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::String => "string",
+            Self::Number => "number",
+            Self::Boolean => "boolean",
+            Self::Time => "time",
+            Self::Object => "object",
+            Self::Array => "array",
+        }
+    }
+}
+
 impl Catalog {
     /// Return a copy with `fields` sorted by name. Used to keep on-disk
     /// output and diff input deterministic regardless of API ordering.

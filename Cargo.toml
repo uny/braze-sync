@@ -48,13 +48,10 @@ governor = "0.7"
 # Diff
 similar = { version = "2", features = ["text", "inline"] }
 
-# Output formatting
-comfy-table = "7"
-owo-colors = "4"
+# Output formatting (progress bar for Phase B catalog items batched apply)
 indicatif = "0.17"
 
 # File system
-walkdir = "2"
 dotenvy = "0.15"
 
 # CSV / streaming for catalog items
