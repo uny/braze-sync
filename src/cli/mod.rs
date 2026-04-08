@@ -22,6 +22,7 @@
 pub mod apply;
 pub mod diff;
 pub mod export;
+pub mod validate;
 
 use crate::braze::error::BrazeApiError;
 use crate::config::{ConfigFile, ResolvedConfig};
@@ -71,6 +72,8 @@ pub enum Command {
     Diff(diff::DiffArgs),
     /// Apply local intent to Braze (dry-run by default)
     Apply(apply::ApplyArgs),
+    /// Validate local files (no Braze API access required)
+    Validate(validate::ValidateArgs),
 }
 
 /// Top-level CLI entry point. Returns the process exit code per
@@ -97,9 +100,13 @@ pub async fn run() -> i32 {
         tracing::warn!("dotenv: {e}");
     }
 
-    // Stage 1: config (any error → exit 3).
-    let resolved = match load_and_resolve_config(&cli) {
-        Ok(r) => r,
+    // Stage 1: parse + structurally validate the config file. No env
+    // access yet, so a missing BRAZE_*_API_KEY does NOT fail here.
+    // Failure → exit 3 (config / argument error per §7.1).
+    let cfg = match ConfigFile::load(&cli.config)
+        .with_context(|| format!("failed to load config from {}", cli.config.display()))
+    {
+        Ok(c) => c,
         Err(e) => {
             eprintln!("error: {e:#}");
             return 3;
@@ -111,23 +118,44 @@ pub async fn run() -> i32 {
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
 
-    // Stage 2: dispatch (errors → exit_code_for chain walk).
-    match dispatch(&cli, resolved, &config_dir).await {
+    // Validate is the only command that does NOT need an api key — its
+    // entire job is local file checking. Dispatch it directly from the
+    // parsed ConfigFile so a CI on a fork PR (no secrets) can still run
+    // it as a pre-merge check. All other commands fall through to the
+    // env-resolution stage below.
+    if let Command::Validate(args) = &cli.command {
+        return finish(validate::run(args, &cfg, &config_dir).await);
+    }
+
+    // Stage 2: resolve the environment (api_key from env var, etc.).
+    // Failure here is also exit 3 — typically a missing
+    // BRAZE_*_API_KEY env var.
+    let resolved = match cfg
+        .resolve(cli.env.as_deref())
+        .context("failed to resolve environment from config")
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            return 3;
+        }
+    };
+
+    // Stage 3: dispatch the env-resolved command.
+    finish(dispatch(&cli, resolved, &config_dir).await)
+}
+
+/// Map a command result to an exit code, printing the error chain on
+/// failure. Used by both the validate (no-resolve) and dispatch
+/// (env-resolved) branches of `run`.
+fn finish(result: anyhow::Result<()>) -> i32 {
+    match result {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("error: {e:#}");
             exit_code_for(&e)
         }
     }
-}
-
-fn load_and_resolve_config(cli: &Cli) -> anyhow::Result<ResolvedConfig> {
-    let cfg = ConfigFile::load(&cli.config)
-        .with_context(|| format!("failed to load config from {}", cli.config.display()))?;
-    let resolved = cfg
-        .resolve(cli.env.as_deref())
-        .context("failed to resolve environment from config")?;
-    Ok(resolved)
 }
 
 async fn dispatch(cli: &Cli, resolved: ResolvedConfig, config_dir: &Path) -> anyhow::Result<()> {
@@ -140,6 +168,9 @@ async fn dispatch(cli: &Cli, resolved: ResolvedConfig, config_dir: &Path) -> any
         Command::Apply(args) => {
             let format = cli.format.unwrap_or_default();
             apply::run(args, resolved, config_dir, format).await
+        }
+        Command::Validate(_) => {
+            unreachable!("validate is dispatched in cli::run before env resolution")
         }
     }
 }
@@ -222,6 +253,25 @@ mod tests {
         };
         assert!(args.fail_on_drift);
         assert_eq!(args.resource, None);
+    }
+
+    #[test]
+    fn parses_validate_subcommand() {
+        let cli = Cli::try_parse_from(["braze-sync", "validate"]).unwrap();
+        let Command::Validate(args) = cli.command else {
+            panic!("expected Validate subcommand");
+        };
+        assert_eq!(args.resource, None);
+    }
+
+    #[test]
+    fn parses_validate_with_resource_filter() {
+        let cli = Cli::try_parse_from(["braze-sync", "validate", "--resource", "catalog_schema"])
+            .unwrap();
+        let Command::Validate(args) = cli.command else {
+            panic!("expected Validate subcommand");
+        };
+        assert_eq!(args.resource, Some(ResourceKind::CatalogSchema));
     }
 
     #[test]

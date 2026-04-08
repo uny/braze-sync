@@ -66,6 +66,12 @@ blake3 = "1"
 
 # Misc
 url = { version = "2", features = ["serde"] }
+
+# Naming pattern validation (validate command). regex-lite is the
+# lightweight cousin of `regex`: smaller binary, fewer deps, no Unicode
+# tables. Sufficient for catalog/content-block/custom-attribute name
+# patterns from IMPLEMENTATION.md §10.
+regex-lite = "0.1"
 secrecy = "0.10"
 
 [dev-dependencies]
