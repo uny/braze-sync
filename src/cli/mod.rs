@@ -19,6 +19,7 @@
 //! matters because `?` from braze API methods produces the latter while
 //! some library helpers might produce the former in the future.
 
+pub mod diff;
 pub mod export;
 
 use crate::braze::error::BrazeApiError;
@@ -65,6 +66,8 @@ pub struct Cli {
 pub enum Command {
     /// Pull state from Braze into local files
     Export(export::ExportArgs),
+    /// Show drift between local files and Braze
+    Diff(diff::DiffArgs),
 }
 
 /// Top-level CLI entry point. Returns the process exit code per
@@ -127,6 +130,10 @@ fn load_and_resolve_config(cli: &Cli) -> anyhow::Result<ResolvedConfig> {
 async fn dispatch(cli: &Cli, resolved: ResolvedConfig, config_dir: &Path) -> anyhow::Result<()> {
     match &cli.command {
         Command::Export(args) => export::run(args, resolved, config_dir).await,
+        Command::Diff(args) => {
+            let format = cli.format.unwrap_or_default();
+            diff::run(args, resolved, config_dir, format).await
+        }
     }
 }
 
@@ -175,12 +182,11 @@ mod tests {
     fn parses_export_with_resource_filter() {
         let cli =
             Cli::try_parse_from(["braze-sync", "export", "--resource", "catalog_schema"]).unwrap();
-        match cli.command {
-            Command::Export(args) => {
-                assert_eq!(args.resource, Some(ResourceKind::CatalogSchema));
-                assert_eq!(args.name, None);
-            }
-        }
+        let Command::Export(args) = cli.command else {
+            panic!("expected Export subcommand");
+        };
+        assert_eq!(args.resource, Some(ResourceKind::CatalogSchema));
+        assert_eq!(args.name, None);
     }
 
     #[test]
@@ -194,12 +200,40 @@ mod tests {
             "cardiology",
         ])
         .unwrap();
-        match cli.command {
-            Command::Export(args) => {
-                assert_eq!(args.resource, Some(ResourceKind::CatalogSchema));
-                assert_eq!(args.name.as_deref(), Some("cardiology"));
-            }
-        }
+        let Command::Export(args) = cli.command else {
+            panic!("expected Export subcommand");
+        };
+        assert_eq!(args.resource, Some(ResourceKind::CatalogSchema));
+        assert_eq!(args.name.as_deref(), Some("cardiology"));
+    }
+
+    #[test]
+    fn parses_diff_with_fail_on_drift() {
+        let cli = Cli::try_parse_from(["braze-sync", "diff", "--fail-on-drift"]).unwrap();
+        let Command::Diff(args) = cli.command else {
+            panic!("expected Diff subcommand");
+        };
+        assert!(args.fail_on_drift);
+        assert_eq!(args.resource, None);
+    }
+
+    #[test]
+    fn parses_diff_with_resource_and_name() {
+        let cli = Cli::try_parse_from([
+            "braze-sync",
+            "diff",
+            "--resource",
+            "catalog_schema",
+            "--name",
+            "cardiology",
+        ])
+        .unwrap();
+        let Command::Diff(args) = cli.command else {
+            panic!("expected Diff subcommand");
+        };
+        assert_eq!(args.resource, Some(ResourceKind::CatalogSchema));
+        assert_eq!(args.name.as_deref(), Some("cardiology"));
+        assert!(!args.fail_on_drift);
     }
 
     #[test]

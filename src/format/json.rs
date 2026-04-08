@@ -21,7 +21,13 @@ use serde::Serialize;
 
 pub fn render(summary: &DiffSummary) -> String {
     let root = JsonRoot::from(summary);
-    serde_json::to_string_pretty(&root).expect("internal wire types serialize cleanly")
+    let mut s = serde_json::to_string_pretty(&root).expect("internal wire types serialize cleanly");
+    // Formatter contract: render returns a display-ready string ending
+    // with exactly one newline. table::render already does; this matches.
+    // insta strips trailing newlines, so the existing snapshots are
+    // unaffected.
+    s.push('\n');
+    s
 }
 
 // =====================================================================
