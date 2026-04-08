@@ -1,0 +1,47 @@
+---
+source: src/format/snapshot_tests.rs
+expression: "JsonFormatter.format(&fixtures::catalog_schema_with_mixed_field_diffs())"
+---
+{
+  "version": 1,
+  "summary": {
+    "changed": 1,
+    "in_sync": 0,
+    "destructive": 1,
+    "orphan": 0
+  },
+  "diffs": [
+    {
+      "kind": "catalog_schema",
+      "name": "cardiology",
+      "op": "modified",
+      "field_diffs": [
+        {
+          "op": "modified",
+          "from": {
+            "name": "is_active",
+            "type": "string"
+          },
+          "to": {
+            "name": "is_active",
+            "type": "boolean"
+          }
+        },
+        {
+          "op": "added",
+          "field": {
+            "name": "severity_level",
+            "type": "number"
+          }
+        },
+        {
+          "op": "removed",
+          "field": {
+            "name": "legacy_code",
+            "type": "string"
+          }
+        }
+      ]
+    }
+  ]
+}

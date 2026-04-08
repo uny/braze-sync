@@ -1,0 +1,66 @@
+---
+source: src/format/snapshot_tests.rs
+expression: "JsonFormatter.format(&fixtures::all_kinds_mixed())"
+---
+{
+  "version": 1,
+  "summary": {
+    "changed": 5,
+    "in_sync": 0,
+    "destructive": 0,
+    "orphan": 0
+  },
+  "diffs": [
+    {
+      "kind": "catalog_schema",
+      "name": "cardiology",
+      "op": "modified",
+      "field_diffs": [
+        {
+          "op": "added",
+          "field": {
+            "name": "score",
+            "type": "number"
+          }
+        }
+      ]
+    },
+    {
+      "kind": "catalog_items",
+      "catalog_name": "cardiology",
+      "added": 1,
+      "modified": 0,
+      "removed": 0,
+      "unchanged": 100
+    },
+    {
+      "kind": "content_block",
+      "name": "promo",
+      "op": "modified",
+      "orphan": false,
+      "text_diff": {
+        "additions": 5,
+        "deletions": 3
+      }
+    },
+    {
+      "kind": "email_template",
+      "name": "welcome",
+      "op": "unchanged",
+      "subject_changed": true,
+      "body_html_diff": {
+        "additions": 20,
+        "deletions": 8
+      },
+      "metadata_changed": false,
+      "orphan": false
+    },
+    {
+      "kind": "custom_attribute",
+      "name": "marketing_segment",
+      "op": "deprecation_toggled",
+      "from": false,
+      "to": true
+    }
+  ]
+}

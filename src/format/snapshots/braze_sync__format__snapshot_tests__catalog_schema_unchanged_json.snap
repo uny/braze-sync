@@ -1,0 +1,21 @@
+---
+source: src/format/snapshot_tests.rs
+expression: "JsonFormatter.format(&fixtures::catalog_schema_unchanged())"
+---
+{
+  "version": 1,
+  "summary": {
+    "changed": 0,
+    "in_sync": 1,
+    "destructive": 0,
+    "orphan": 0
+  },
+  "diffs": [
+    {
+      "kind": "catalog_schema",
+      "name": "stable",
+      "op": "unchanged",
+      "field_diffs": []
+    }
+  ]
+}
