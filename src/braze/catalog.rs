@@ -2,9 +2,9 @@
 
 use crate::braze::error::BrazeApiError;
 use crate::braze::BrazeClient;
-use crate::resource::Catalog;
+use crate::resource::{Catalog, CatalogField, CatalogFieldType};
 use reqwest::StatusCode;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Wire shape of `GET /catalogs` and `GET /catalogs/{name}` responses.
 ///
@@ -64,16 +64,74 @@ impl BrazeClient {
             Err(e) => Err(e),
         }
     }
+
+    /// `POST /catalogs/{name}/fields` — add one field to a catalog schema.
+    ///
+    /// **ASSUMED** wire format `{"fields": [{"name": "...", "type": "..."}]}`
+    /// per IMPLEMENTATION.md §8.3 + Braze public docs. Phase C E2E tests
+    /// against a real Braze sandbox will validate before v1.0; if Braze
+    /// uses a different envelope only the small wire types in this file
+    /// need to change. v0.1.0 sends one POST per added field; batching
+    /// optimization is deferred to Phase C scale work.
+    pub async fn add_catalog_field(
+        &self,
+        catalog_name: &str,
+        field: &CatalogField,
+    ) -> Result<(), BrazeApiError> {
+        let body = AddFieldsRequest {
+            fields: vec![WireField {
+                name: &field.name,
+                field_type: field.field_type,
+            }],
+        };
+        let req = self.post(&["catalogs", catalog_name, "fields"]).json(&body);
+        self.send_ok(req).await
+    }
+
+    /// `DELETE /catalogs/{name}/fields/{field}` — remove a field. **Destructive**.
+    ///
+    /// 404 from Braze stays as `Http { status: 404, .. }` rather than
+    /// being mapped to `NotFound`. The use case is different from
+    /// get_catalog: a 404 here means "the field you wanted to delete is
+    /// already gone", which is a state-drift signal the user should see
+    /// rather than silently no-op. A future `--ignore-missing` flag in
+    /// `apply` can opt into idempotent behavior.
+    pub async fn delete_catalog_field(
+        &self,
+        catalog_name: &str,
+        field_name: &str,
+    ) -> Result<(), BrazeApiError> {
+        let req = self.delete(&["catalogs", catalog_name, "fields", field_name]);
+        self.send_ok(req).await
+    }
+}
+
+// =====================================================================
+// Wire types — write side. See `add_catalog_field`.
+// =====================================================================
+
+#[derive(Serialize)]
+struct AddFieldsRequest<'a> {
+    fields: Vec<WireField<'a>>,
+}
+
+#[derive(Serialize)]
+struct WireField<'a> {
+    name: &'a str,
+    /// Reuses the domain type's snake_case `Serialize` impl from A2 so
+    /// the wire string ("string", "number", ...) stays in sync with
+    /// `CatalogFieldType` definitions automatically.
+    #[serde(rename = "type")]
+    field_type: CatalogFieldType,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resource::CatalogFieldType;
     use secrecy::SecretString;
     use serde_json::json;
     use url::Url;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{body_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn make_client(server: &MockServer) -> BrazeClient {
@@ -313,5 +371,123 @@ mod tests {
         let dbg = format!("{client:?}");
         assert!(!dbg.contains("test-key"), "leaked api key in: {dbg}");
         assert!(dbg.contains("<redacted>"));
+    }
+
+    // =================================================================
+    // Phase A9: write side
+    // =================================================================
+
+    #[tokio::test]
+    async fn add_catalog_field_happy_path_sends_correct_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/catalogs/cardiology/fields"))
+            .and(header("authorization", "Bearer test-key"))
+            .and(body_json(json!({
+                "fields": [{"name": "severity_level", "type": "number"}]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let field = CatalogField {
+            name: "severity_level".into(),
+            field_type: CatalogFieldType::Number,
+        };
+        client
+            .add_catalog_field("cardiology", &field)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn add_catalog_field_unauthorized_propagates() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/catalogs/cardiology/fields"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("invalid key"))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let field = CatalogField {
+            name: "x".into(),
+            field_type: CatalogFieldType::String,
+        };
+        let err = client
+            .add_catalog_field("cardiology", &field)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BrazeApiError::Unauthorized), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn add_catalog_field_retries_on_429_then_succeeds() {
+        let server = MockServer::start().await;
+        // Success mounted first; the limited 429 mock is mounted second
+        // and wiremock matches the most-recently-mounted one until it
+        // exhausts its `up_to_n_times` budget.
+        Mock::given(method("POST"))
+            .and(path("/catalogs/cardiology/fields"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "ok"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/catalogs/cardiology/fields"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let field = CatalogField {
+            name: "x".into(),
+            field_type: CatalogFieldType::String,
+        };
+        client
+            .add_catalog_field("cardiology", &field)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_catalog_field_happy_path_uses_segment_encoded_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/catalogs/cardiology/fields/legacy_code"))
+            .and(header("authorization", "Bearer test-key"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        client
+            .delete_catalog_field("cardiology", "legacy_code")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_catalog_field_server_error_returns_http() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/catalogs/cardiology/fields/x"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("oops"))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let err = client
+            .delete_catalog_field("cardiology", "x")
+            .await
+            .unwrap_err();
+        match err {
+            BrazeApiError::Http { status, body } => {
+                assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+                assert!(body.contains("oops"));
+            }
+            other => panic!("expected Http, got {other:?}"),
+        }
     }
 }

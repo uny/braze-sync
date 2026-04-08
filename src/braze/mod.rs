@@ -95,12 +95,31 @@ impl BrazeClient {
             .header(reqwest::header::ACCEPT, "application/json")
     }
 
-    /// Send `builder`, applying rate limiting and 429 retry, and decode
-    /// the JSON body as `T` on success.
-    pub(crate) async fn send_json<T: serde::de::DeserializeOwned>(
+    pub(crate) fn post(&self, segments: &[&str]) -> RequestBuilder {
+        let url = self.url_for(segments);
+        self.http
+            .post(url)
+            .bearer_auth(self.api_key.expose_secret())
+            .header(reqwest::header::ACCEPT, "application/json")
+    }
+
+    pub(crate) fn delete(&self, segments: &[&str]) -> RequestBuilder {
+        let url = self.url_for(segments);
+        self.http
+            .delete(url)
+            .bearer_auth(self.api_key.expose_secret())
+            .header(reqwest::header::ACCEPT, "application/json")
+    }
+
+    /// Execute `builder` with rate-limit acquire + 429 retry, returning
+    /// the raw response on success or a typed error on failure. Shared
+    /// transport layer used by both [`Self::send_json`] and
+    /// [`Self::send_ok`] so the retry / auth-mapping policy lives in
+    /// exactly one place.
+    async fn send_with_retry(
         &self,
         builder: RequestBuilder,
-    ) -> Result<T, BrazeApiError> {
+    ) -> Result<reqwest::Response, BrazeApiError> {
         let mut attempt: u32 = 0;
         loop {
             self.limiter.acquire().await;
@@ -111,8 +130,7 @@ impl BrazeClient {
             let status = resp.status();
 
             if status.is_success() {
-                let body: T = resp.json().await?;
-                return Ok(body);
+                return Ok(resp);
             }
             match status {
                 StatusCode::TOO_MANY_REQUESTS if attempt < MAX_RETRIES => {
@@ -131,6 +149,25 @@ impl BrazeClient {
                 }
             }
         }
+    }
+
+    /// Send `builder` and decode the JSON body as `T` on success.
+    pub(crate) async fn send_json<T: serde::de::DeserializeOwned>(
+        &self,
+        builder: RequestBuilder,
+    ) -> Result<T, BrazeApiError> {
+        let resp = self.send_with_retry(builder).await?;
+        Ok(resp.json::<T>().await?)
+    }
+
+    /// Send `builder` and discard the response body. Used for endpoints
+    /// whose only meaningful output is the HTTP status (POST add field,
+    /// DELETE field). Drains the body so the connection can return to
+    /// the reqwest pool cleanly even when the response is 204 No Content.
+    pub(crate) async fn send_ok(&self, builder: RequestBuilder) -> Result<(), BrazeApiError> {
+        let resp = self.send_with_retry(builder).await?;
+        let _ = resp.bytes().await;
+        Ok(())
     }
 }
 
