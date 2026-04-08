@@ -1,29 +1,18 @@
 //! Top-level error type for braze-sync.
 //!
-//! Library code returns `Result<T, Error>` defined here. The CLI layer wraps
-//! this with `anyhow` and maps variants to the frozen exit codes from
-//! IMPLEMENTATION.md §7.1.
-//!
-//! Phase A2: the `Api` variant references a Braze error type that does not
-//! exist yet (it lands in A5). To keep the dependency graph honest without
-//! creating premature modules, we define a minimal placeholder
-//! `BrazeApiErrorPlaceholder` here and re-export it. A5 will replace it with
-//! the real `crate::braze::error::BrazeApiError` and delete the placeholder.
+//! Library code returns `Result<T, Error>` defined here. The CLI layer
+//! wraps this with `anyhow` and maps variants to the frozen exit codes
+//! from IMPLEMENTATION.md §7.1.
 
 use std::path::PathBuf;
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Placeholder for the Braze API error type. Replaced in Phase A5.
-#[derive(Error, Debug)]
-#[error("braze api error (placeholder): {0}")]
-pub struct BrazeApiErrorPlaceholder(pub String);
-
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Braze API error: {0}")]
-    Api(#[from] BrazeApiErrorPlaceholder),
+    Api(#[from] crate::braze::error::BrazeApiError),
 
     #[error("Configuration error: {0}")]
     Config(String),
