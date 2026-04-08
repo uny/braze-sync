@@ -65,7 +65,7 @@ futures-util = "0.3"
 blake3 = "1"
 
 # Misc
-url = "2"
+url = { version = "2", features = ["serde"] }
 secrecy = "0.10"
 
 [dev-dependencies]
