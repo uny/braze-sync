@@ -98,7 +98,12 @@ pub async fn run(
     Ok(())
 }
 
-async fn compute_catalog_schema_diffs(
+/// Compute the per-catalog-schema diff between local files and Braze.
+///
+/// `pub(crate)` so [`crate::cli::apply`] can reuse the exact same plan
+/// computation that the diff command displays — apply is "compute the
+/// plan and then execute it", so they MUST agree on what the plan is.
+pub(crate) async fn compute_catalog_schema_diffs(
     client: &BrazeClient,
     catalogs_root: &Path,
     name_filter: Option<&str>,

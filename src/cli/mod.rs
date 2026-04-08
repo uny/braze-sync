@@ -19,6 +19,7 @@
 //! matters because `?` from braze API methods produces the latter while
 //! some library helpers might produce the former in the future.
 
+pub mod apply;
 pub mod diff;
 pub mod export;
 
@@ -68,6 +69,8 @@ pub enum Command {
     Export(export::ExportArgs),
     /// Show drift between local files and Braze
     Diff(diff::DiffArgs),
+    /// Apply local intent to Braze (dry-run by default)
+    Apply(apply::ApplyArgs),
 }
 
 /// Top-level CLI entry point. Returns the process exit code per
@@ -133,6 +136,10 @@ async fn dispatch(cli: &Cli, resolved: ResolvedConfig, config_dir: &Path) -> any
         Command::Diff(args) => {
             let format = cli.format.unwrap_or_default();
             diff::run(args, resolved, config_dir, format).await
+        }
+        Command::Apply(args) => {
+            let format = cli.format.unwrap_or_default();
+            apply::run(args, resolved, config_dir, format).await
         }
     }
 }
