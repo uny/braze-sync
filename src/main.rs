@@ -1,8 +1,11 @@
 //! `braze-sync` binary entry point.
 //!
-//! Phase A1 skeleton: dispatch to `cli::run()` will be wired up in A6.
+//! Defers all logic to [`braze_sync::cli`] so the binary stays a thin
+//! wrapper around the library — keeps the surface symmetric for embedding
+//! and integration testing via `assert_cmd`.
 
-fn main() {
-    eprintln!("braze-sync: not yet implemented (Phase A1 skeleton)");
-    std::process::exit(1);
+#[tokio::main]
+async fn main() {
+    let code = braze_sync::cli::run().await;
+    std::process::exit(code);
 }

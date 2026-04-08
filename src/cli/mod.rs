@@ -1,0 +1,287 @@
+//! CLI dispatch entry point.
+//!
+//! Two-stage error model so the frozen exit codes from
+//! IMPLEMENTATION.md §7.1 are deterministic regardless of which step
+//! fails:
+//!
+//! 1. **Config stage** ([`load_and_resolve_config`]) — parse the YAML,
+//!    validate it, resolve the api-key environment variable. Any failure
+//!    here, including a missing or unreadable config file, exits with
+//!    code **3** (config / argument error).
+//! 2. **Dispatch stage** ([`dispatch`]) — run the requested subcommand.
+//!    Errors are mapped through [`exit_code_for`], which walks the
+//!    `anyhow::Error` chain and downcasts to the typed errors that carry
+//!    semantic meaning ([`BrazeApiError`], [`Error`]).
+//!
+//! `exit_code_for` deliberately walks the entire chain so an error wrapped
+//! as `Error::Api(BrazeApiError::Unauthorized)` and a bare
+//! `BrazeApiError::Unauthorized` map to the same exit code (4). This
+//! matters because `?` from braze API methods produces the latter while
+//! some library helpers might produce the former in the future.
+
+pub mod export;
+
+use crate::braze::error::BrazeApiError;
+use crate::config::{ConfigFile, ResolvedConfig};
+use crate::error::Error;
+use crate::format::OutputFormat;
+use anyhow::Context as _;
+use clap::{Parser, Subcommand};
+use std::path::{Path, PathBuf};
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "braze-sync",
+    version,
+    about = "GitOps CLI for managing Braze configuration as code"
+)]
+pub struct Cli {
+    /// Path to the braze-sync config file
+    #[arg(long, default_value = "./braze-sync.config.yaml", global = true)]
+    pub config: PathBuf,
+
+    /// Target environment (defaults to `default_environment` in the config)
+    #[arg(long, global = true)]
+    pub env: Option<String>,
+
+    /// Verbose tracing output (sets log level to debug)
+    #[arg(short, long, global = true)]
+    pub verbose: bool,
+
+    /// Disable colored output
+    #[arg(long, global = true)]
+    pub no_color: bool,
+
+    /// Output format. `table` for humans, `json` for CI consumption.
+    /// Used by diff/apply/validate; export ignores this in v0.1.0.
+    #[arg(long, global = true, value_enum)]
+    pub format: Option<OutputFormat>,
+
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Pull state from Braze into local files
+    Export(export::ExportArgs),
+}
+
+/// Top-level CLI entry point. Returns the process exit code per
+/// IMPLEMENTATION.md §7.1.
+pub async fn run() -> i32 {
+    let cli = match Cli::try_parse() {
+        Ok(c) => c,
+        Err(e) => {
+            // clap prints help/version to stdout and parse errors to stderr.
+            e.print().ok();
+            return match e.kind() {
+                clap::error::ErrorKind::DisplayHelp
+                | clap::error::ErrorKind::DisplayVersion
+                | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => 0,
+                _ => 3,
+            };
+        }
+    };
+
+    init_tracing(cli.verbose);
+    if let Err(e) = crate::config::load_dotenv() {
+        // dotenv failures are non-fatal — config resolution will surface
+        // any actually missing vars with a clearer error.
+        tracing::warn!("dotenv: {e}");
+    }
+
+    // Stage 1: config (any error → exit 3).
+    let resolved = match load_and_resolve_config(&cli) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            return 3;
+        }
+    };
+    let config_dir = cli
+        .config
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    // Stage 2: dispatch (errors → exit_code_for chain walk).
+    match dispatch(&cli, resolved, &config_dir).await {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            exit_code_for(&e)
+        }
+    }
+}
+
+fn load_and_resolve_config(cli: &Cli) -> anyhow::Result<ResolvedConfig> {
+    let cfg = ConfigFile::load(&cli.config)
+        .with_context(|| format!("failed to load config from {}", cli.config.display()))?;
+    let resolved = cfg
+        .resolve(cli.env.as_deref())
+        .context("failed to resolve environment from config")?;
+    Ok(resolved)
+}
+
+async fn dispatch(cli: &Cli, resolved: ResolvedConfig, config_dir: &Path) -> anyhow::Result<()> {
+    match &cli.command {
+        Command::Export(args) => export::run(args, resolved, config_dir).await,
+    }
+}
+
+fn init_tracing(verbose: bool) {
+    let default_level = if verbose { "debug" } else { "warn" };
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_level));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
+}
+
+/// Map a stage-2 error to a §7.1 exit code by walking the
+/// `anyhow::Error` chain.
+fn exit_code_for(err: &anyhow::Error) -> i32 {
+    for cause in err.chain() {
+        if let Some(b) = cause.downcast_ref::<BrazeApiError>() {
+            return match b {
+                BrazeApiError::Unauthorized => 4,
+                BrazeApiError::RateLimitExhausted => 5,
+                _ => 1,
+            };
+        }
+        if let Some(top) = cause.downcast_ref::<Error>() {
+            match top {
+                // Walk into the chain — the wrapped BrazeApiError is the
+                // next entry.
+                Error::Api(_) => {}
+                Error::DestructiveBlocked => return 6,
+                Error::DriftDetected { .. } => return 2,
+                Error::Config(_) | Error::MissingEnv(_) => return 3,
+                _ => return 1,
+            }
+        }
+    }
+    1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resource::ResourceKind;
+
+    #[test]
+    fn parses_export_with_resource_filter() {
+        let cli =
+            Cli::try_parse_from(["braze-sync", "export", "--resource", "catalog_schema"]).unwrap();
+        match cli.command {
+            Command::Export(args) => {
+                assert_eq!(args.resource, Some(ResourceKind::CatalogSchema));
+                assert_eq!(args.name, None);
+            }
+        }
+    }
+
+    #[test]
+    fn parses_export_with_name_filter() {
+        let cli = Cli::try_parse_from([
+            "braze-sync",
+            "export",
+            "--resource",
+            "catalog_schema",
+            "--name",
+            "cardiology",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Export(args) => {
+                assert_eq!(args.resource, Some(ResourceKind::CatalogSchema));
+                assert_eq!(args.name.as_deref(), Some("cardiology"));
+            }
+        }
+    }
+
+    #[test]
+    fn name_requires_resource() {
+        let result = Cli::try_parse_from(["braze-sync", "export", "--name", "cardiology"]);
+        assert!(
+            result.is_err(),
+            "expected --name without --resource to error"
+        );
+    }
+
+    #[test]
+    fn config_default_path() {
+        let cli = Cli::try_parse_from(["braze-sync", "export"]).unwrap();
+        assert_eq!(cli.config, PathBuf::from("./braze-sync.config.yaml"));
+    }
+
+    #[test]
+    fn global_flags_position_independent() {
+        let cli = Cli::try_parse_from(["braze-sync", "export", "--config", "/tmp/x.yaml"]).unwrap();
+        assert_eq!(cli.config, PathBuf::from("/tmp/x.yaml"));
+    }
+
+    #[test]
+    fn env_override_parsed() {
+        let cli = Cli::try_parse_from(["braze-sync", "--env", "prod", "export"]).unwrap();
+        assert_eq!(cli.env.as_deref(), Some("prod"));
+    }
+
+    #[test]
+    fn format_value_parsed_as_enum() {
+        let cli = Cli::try_parse_from(["braze-sync", "--format", "json", "export"]).unwrap();
+        assert_eq!(cli.format, Some(OutputFormat::Json));
+    }
+
+    #[test]
+    fn exit_code_for_unauthorized() {
+        let err = anyhow::Error::new(BrazeApiError::Unauthorized);
+        assert_eq!(exit_code_for(&err), 4);
+    }
+
+    #[test]
+    fn exit_code_for_rate_limit_exhausted() {
+        let err = anyhow::Error::new(BrazeApiError::RateLimitExhausted);
+        assert_eq!(exit_code_for(&err), 5);
+    }
+
+    #[test]
+    fn exit_code_for_drift_detected() {
+        let err = anyhow::Error::new(Error::DriftDetected { count: 3 });
+        assert_eq!(exit_code_for(&err), 2);
+    }
+
+    #[test]
+    fn exit_code_for_destructive_blocked() {
+        let err = anyhow::Error::new(Error::DestructiveBlocked);
+        assert_eq!(exit_code_for(&err), 6);
+    }
+
+    #[test]
+    fn exit_code_for_missing_env() {
+        let err = anyhow::Error::new(Error::MissingEnv("X".into()));
+        assert_eq!(exit_code_for(&err), 3);
+    }
+
+    #[test]
+    fn exit_code_for_config_error() {
+        let err = anyhow::Error::new(Error::Config("oops".into()));
+        assert_eq!(exit_code_for(&err), 3);
+    }
+
+    #[test]
+    fn exit_code_for_api_wrapped_unauthorized_unwraps_to_4() {
+        // Error::Api(BrazeApiError::Unauthorized) — chain walk must reach
+        // the inner BrazeApiError on the second iteration.
+        let err = anyhow::Error::new(Error::Api(BrazeApiError::Unauthorized));
+        assert_eq!(exit_code_for(&err), 4);
+    }
+
+    #[test]
+    fn exit_code_for_other_anyhow_is_one() {
+        let err = anyhow::anyhow!("some random failure");
+        assert_eq!(exit_code_for(&err), 1);
+    }
+}

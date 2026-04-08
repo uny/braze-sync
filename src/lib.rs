@@ -4,9 +4,11 @@
 //! public surface fills in incrementally over Phase A → Phase B per §13.
 
 pub mod braze;
+pub mod cli;
 pub mod config;
 pub mod diff;
 pub mod error;
+pub mod format;
 pub mod fs;
 pub mod resource;
 
