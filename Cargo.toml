@@ -2,7 +2,7 @@
 name = "braze-sync"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.86"
 license = "MIT"
 description = "GitOps CLI for managing Braze configuration as code"
 repository = "https://github.com/uny/braze-sync"
