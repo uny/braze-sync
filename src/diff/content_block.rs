@@ -8,7 +8,7 @@ pub struct ContentBlockDiff {
     pub name: String,
     pub op: DiffOp<ContentBlock>,
     pub text_diff: Option<TextDiffSummary>,
-    /// Braze にあるが Git にない場合 true。§11.6 参照。
+    /// True when present in Braze but missing from Git. See §11.6.
     pub orphan: bool,
 }
 

@@ -179,6 +179,11 @@ impl BrazeClient {
     }
 }
 
+/// Parse a `Retry-After` header as integer seconds. HTTP-date format
+/// (RFC 7231 §7.1.3) is not handled and falls through to `None`, which
+/// the caller maps to `DEFAULT_RETRY_AFTER`. Braze only sends seconds
+/// in practice; if that changes, extend this function rather than adding
+/// a full HTTP-date parser.
 fn parse_retry_after(resp: &reqwest::Response) -> Option<Duration> {
     resp.headers()
         .get(reqwest::header::RETRY_AFTER)?

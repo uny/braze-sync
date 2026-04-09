@@ -10,16 +10,16 @@ pub struct CustomAttributeDiff {
 
 #[derive(Debug, Clone)]
 pub enum CustomAttributeOp {
-    /// Braze にあるが local registry にない。アクション: `export` を促す。
+    /// Present in Braze but missing from local registry. Action: prompt `export`.
     UnregisteredInGit,
-    /// Local registry にあるが Braze にない。多くは typo。
+    /// Present in local registry but not in Braze. Often a typo.
     PresentInGitOnly,
-    /// `deprecated` flag が変わった。`apply` が実際に行う唯一の mutation。
+    /// `deprecated` flag changed. The only mutation `apply` actually performs.
     DeprecationToggled {
         from: bool,
         to: bool,
     },
-    /// description だけ変わった。API がないため `apply` は何もしない。
+    /// Only the description changed. No API to update it, so `apply` is a no-op.
     MetadataOnly,
     Unchanged,
 }

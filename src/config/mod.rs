@@ -68,6 +68,20 @@ impl ConfigFile {
                 self.default_environment
             )));
         }
+        // Validate that all endpoint URLs use http or https. Non-hierarchical
+        // schemes (mailto:, data:, etc.) would panic in BrazeClient::url_for
+        // when calling path_segments_mut().
+        for (name, env) in &self.environments {
+            match env.api_endpoint.scheme() {
+                "http" | "https" => {}
+                scheme => {
+                    return Err(Error::Config(format!(
+                        "environment '{name}': api_endpoint must use http or https \
+                         (got '{scheme}')"
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -128,7 +142,7 @@ impl ConfigFile {
 /// traversal — to populate `std::env` before config resolution. A missing
 /// file is the common dev case and is not an error.
 ///
-/// IMPLEMENTATION.md §10: dotenvy 経由、CWD のみ、再帰探索しない。
+/// IMPLEMENTATION.md §10: via dotenvy, CWD only, no parent traversal.
 pub fn load_dotenv() -> Result<()> {
     match dotenvy::from_path(".env") {
         Ok(()) => Ok(()),
@@ -258,6 +272,24 @@ environments:
         let f = write_config(yaml);
         let err = ConfigFile::load(f.path()).unwrap_err();
         assert!(matches!(err, Error::YamlParse { .. }), "got: {err:?}");
+    }
+
+    #[test]
+    fn rejects_non_http_endpoint_scheme() {
+        let yaml = r#"
+version: 1
+default_environment: dev
+environments:
+  dev:
+    api_endpoint: ftp://rest.braze.eu
+    api_key_env: BRAZE_DEV_API_KEY
+"#;
+        let f = write_config(yaml);
+        let err = ConfigFile::load(f.path()).unwrap_err();
+        assert!(matches!(err, Error::Config(_)));
+        let msg = err.to_string();
+        assert!(msg.contains("http"), "expected http scheme hint: {msg}");
+        assert!(msg.contains("ftp"), "expected actual scheme: {msg}");
     }
 
     #[test]
