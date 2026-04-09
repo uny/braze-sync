@@ -44,6 +44,9 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     }
     drop(file);
 
-    std::fs::rename(&tmp_path, path)?;
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e.into());
+    }
     Ok(())
 }

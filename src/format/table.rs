@@ -122,7 +122,7 @@ fn render_catalog_items(out: &mut String, d: &CatalogItemsDiff) {
 
 fn render_content_block(out: &mut String, d: &ContentBlockDiff) {
     if d.orphan {
-        out.push_str("   ⚠ orphaned (exists in Braze, not in Git — see --archive-orphans)\n");
+        out.push_str("   ⚠ orphaned (exists in Braze, not in Git)\n");
         return;
     }
     match &d.op {
@@ -145,7 +145,7 @@ fn render_content_block(out: &mut String, d: &ContentBlockDiff) {
 
 fn render_email_template(out: &mut String, d: &EmailTemplateDiff) {
     if d.orphan {
-        out.push_str("   ⚠ orphaned (exists in Braze, not in Git — see --archive-orphans)\n");
+        out.push_str("   ⚠ orphaned (exists in Braze, not in Git)\n");
         return;
     }
     if matches!(d.op, DiffOp::Added(_)) {

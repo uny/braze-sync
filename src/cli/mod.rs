@@ -57,7 +57,7 @@ pub struct Cli {
     pub no_color: bool,
 
     /// Output format. `table` for humans, `json` for CI consumption.
-    /// Used by diff/apply/validate; export ignores this in v0.1.0.
+    /// Used by diff/apply; export and validate ignore this in v0.1.0.
     #[arg(long, global = true, value_enum)]
     pub format: Option<OutputFormat>,
 
@@ -94,7 +94,7 @@ pub async fn run() -> i32 {
         }
     };
 
-    init_tracing(cli.verbose);
+    init_tracing(cli.verbose, cli.no_color);
     if let Err(e) = crate::config::load_dotenv() {
         // dotenv failures are non-fatal — config resolution will surface
         // any actually missing vars with a clearer error.
@@ -210,12 +210,13 @@ pub(crate) fn warn_unimplemented(kind: ResourceKind) {
     eprintln!("⚠ {}: not yet implemented in this binary", kind.as_str());
 }
 
-fn init_tracing(verbose: bool) {
+fn init_tracing(verbose: bool, no_color: bool) {
     let default_level = if verbose { "debug" } else { "warn" };
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_level));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
+        .with_ansi(!no_color)
         .with_writer(std::io::stderr)
         .try_init();
 }
@@ -239,11 +240,11 @@ fn exit_code_for(err: &anyhow::Error) -> i32 {
                 Error::DestructiveBlocked => return 6,
                 Error::DriftDetected { .. } => return 2,
                 Error::Config(_) | Error::MissingEnv(_) => return 3,
+                Error::RateLimitExhausted { .. } => return 5,
                 Error::Io(_)
                 | Error::YamlParse { .. }
                 | Error::CsvParse { .. }
                 | Error::InvalidFormat { .. }
-                | Error::RateLimitExhausted { .. }
                 | Error::CatalogItemSchemaMismatch { .. }
                 | Error::CustomAttributeCreateNotSupported { .. } => return 1,
             }
@@ -409,6 +410,12 @@ mod tests {
         // the inner BrazeApiError on the second iteration.
         let err = anyhow::Error::new(Error::Api(BrazeApiError::Unauthorized));
         assert_eq!(exit_code_for(&err), 4);
+    }
+
+    #[test]
+    fn exit_code_for_top_level_rate_limit_exhausted() {
+        let err = anyhow::Error::new(Error::RateLimitExhausted { retries: 3 });
+        assert_eq!(exit_code_for(&err), 5);
     }
 
     #[test]

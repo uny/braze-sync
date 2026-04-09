@@ -72,6 +72,11 @@ impl ConfigFile {
         // schemes (mailto:, data:, etc.) would panic in BrazeClient::url_for
         // when calling path_segments_mut().
         for (name, env) in &self.environments {
+            if env.api_key_env.trim().is_empty() {
+                return Err(Error::Config(format!(
+                    "environment '{name}': api_key_env must not be empty"
+                )));
+            }
             match env.api_endpoint.scheme() {
                 "http" | "https" => {}
                 scheme => {
@@ -434,6 +439,22 @@ environments:
             !dbg.contains("super-secret-token-abc-123"),
             "Debug output leaked api key: {dbg}"
         );
+    }
+
+    #[test]
+    fn rejects_empty_api_key_env() {
+        let yaml = r#"
+version: 1
+default_environment: dev
+environments:
+  dev:
+    api_endpoint: https://rest.fra-02.braze.eu
+    api_key_env: ""
+"#;
+        let f = write_config(yaml);
+        let err = ConfigFile::load(f.path()).unwrap_err();
+        assert!(matches!(err, Error::Config(_)), "got: {err:?}");
+        assert!(err.to_string().contains("api_key_env"));
     }
 
     #[test]

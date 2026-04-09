@@ -27,7 +27,11 @@ v0.2.0 → v0.5.0.
 ## Install
 
 ```bash
+# From crates.io (once published):
 cargo install braze-sync
+
+# Or build from source:
+cargo install --path .
 ```
 
 ## Quick start
@@ -118,9 +122,9 @@ These will be lifted across the v0.x → v1.0 milestones:
   and returns the first page. Workspaces with very many catalogs
   (>50) may see truncated results until pagination support lands in
   Phase C scale validation.
-- **`--no-color` is a no-op.** ANSI color output isn't implemented
-  yet; the flag is reserved in the v0.1.0 CLI surface so it stays
-  available post-1.0 without breaking existing scripts.
+- **`--no-color` only affects tracing output.** v0.1.0 does not emit
+  ANSI colors in table or diff output, so the flag currently only
+  suppresses ANSI escapes from the tracing subscriber on stderr.
 
 ## Exit codes
 
