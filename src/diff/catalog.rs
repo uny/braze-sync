@@ -39,7 +39,12 @@ pub fn diff_schema(local: Option<&Catalog>, remote: Option<&Catalog>) -> Option<
         }),
         (Some(l), Some(r)) => {
             let field_diffs = diff_fields(&l.fields, &r.fields);
-            let op = if l.normalized() == r.normalized() {
+            // Base the top-level op solely on field-level changes.
+            // Description-only differences are not actionable in v0.1.0
+            // (no endpoint to update catalog descriptions), so treating
+            // them as Modified would show "1 changed" with no detail
+            // lines and "Applied 0 change(s)" — confusing for users.
+            let op = if field_diffs.is_empty() {
                 DiffOp::Unchanged
             } else {
                 DiffOp::Modified {
@@ -240,6 +245,24 @@ mod tests {
         let d = diff_schema(Some(&l), Some(&r)).unwrap();
         // Normalized comparison makes field order irrelevant at both the
         // top-level op and the field-diff layer.
+        assert!(matches!(d.op, DiffOp::Unchanged));
+        assert!(d.field_diffs.is_empty());
+        assert!(!d.has_changes());
+    }
+
+    #[test]
+    fn description_only_difference_is_not_drift() {
+        let l = Catalog {
+            name: "c".into(),
+            description: Some("local description".into()),
+            fields: vec![field("id", CatalogFieldType::String)],
+        };
+        let r = Catalog {
+            name: "c".into(),
+            description: Some("remote description".into()),
+            fields: vec![field("id", CatalogFieldType::String)],
+        };
+        let d = diff_schema(Some(&l), Some(&r)).unwrap();
         assert!(matches!(d.op, DiffOp::Unchanged));
         assert!(d.field_diffs.is_empty());
         assert!(!d.has_changes());

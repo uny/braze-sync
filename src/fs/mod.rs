@@ -37,8 +37,11 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     let tmp_path = parent.join(tmp_name);
 
     let mut file = std::fs::File::create(&tmp_path)?;
-    file.write_all(contents)?;
-    file.sync_all()?;
+    if let Err(e) = file.write_all(contents).and_then(|_| file.sync_all()) {
+        drop(file);
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e.into());
+    }
     drop(file);
 
     std::fs::rename(&tmp_path, path)?;

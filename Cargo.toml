@@ -45,18 +45,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # Rate limiting
 governor = "0.7"
 
-# Diff
-similar = { version = "2", features = ["text", "inline"] }
-
-# Output formatting (progress bar for Phase B catalog items batched apply)
-indicatif = "0.17"
-
 # File system
 dotenvy = "0.15"
 
-# CSV / streaming for catalog items
+# CSV for catalog items error types (Phase B)
 csv = "1"
-futures-util = "0.3"
 
 # Hashing for catalog items diff
 blake3 = "1"

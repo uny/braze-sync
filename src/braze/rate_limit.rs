@@ -20,7 +20,16 @@ impl RateLimiter {
     /// misconfigured config can't lock the limiter at zero throughput.
     pub fn new(per_minute: u32) -> Self {
         let fallback = NonZeroU32::new(40).expect("40 != 0");
-        let n = NonZeroU32::new(per_minute).unwrap_or(fallback);
+        let n = match NonZeroU32::new(per_minute) {
+            Some(n) => n,
+            None => {
+                tracing::warn!(
+                    "rate_limit_per_minute is 0, falling back to {}/min",
+                    fallback
+                );
+                fallback
+            }
+        };
         Self {
             inner: GovernorLimiter::direct(Quota::per_minute(n)),
         }
