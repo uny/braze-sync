@@ -26,11 +26,26 @@ v0.2.0 → v0.5.0.
 
 ## Install
 
-```bash
-# From crates.io (once published):
-cargo install braze-sync
+**Pre-built binaries** (recommended):
 
-# Or build from source:
+Download from [GitHub Releases](https://github.com/uny/braze-sync/releases/latest)
+for Linux (x86_64, aarch64), macOS (x86_64, Apple Silicon), and Windows (x86_64).
+
+**Homebrew** (macOS / Linux):
+
+```bash
+brew install uny/tap/braze-sync
+```
+
+**cargo install** (requires Rust toolchain):
+
+```bash
+cargo install braze-sync
+```
+
+**Build from source:**
+
+```bash
 cargo install --path .
 ```
 
