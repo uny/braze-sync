@@ -10,6 +10,7 @@ use crate::diff::custom_attribute::{CustomAttributeDiff, CustomAttributeOp};
 use crate::diff::email_template::EmailTemplateDiff;
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::resource::{CatalogField, ResourceKind};
+use std::fmt::Write as _;
 
 pub fn render(summary: &DiffSummary) -> String {
     let mut out = String::new();
@@ -19,13 +20,14 @@ pub fn render(summary: &DiffSummary) -> String {
         out.push('\n');
     }
 
-    out.push_str(&format!(
-        "Summary: {} changed, {} in sync, {} orphan, {} destructive\n",
+    let _ = writeln!(
+        out,
+        "Summary: {} changed, {} in sync, {} orphan, {} destructive",
         summary.changed_count(),
         summary.in_sync_count(),
         summary.orphan_count(),
         summary.destructive_count(),
-    ));
+    );
 
     out
 }
@@ -38,7 +40,7 @@ fn render_one(out: &mut String, diff: &ResourceDiff) {
         kind_icon(diff.kind())
     };
     let label = kind_label(diff.kind());
-    out.push_str(&format!("{icon} {label}: {}\n", diff.name()));
+    let _ = writeln!(out, "{icon} {label}: {}", diff.name());
 
     if unchanged {
         out.push_str("   no drift\n");
@@ -86,14 +88,21 @@ fn render_catalog_schema(out: &mut String, d: &CatalogSchemaDiff) {
     }
     for fd in &d.field_diffs {
         match fd {
-            DiffOp::Added(f) => out.push_str(&format!("   + field: {}\n", fmt_field(f))),
-            DiffOp::Removed(f) => out.push_str(&format!("   - field: {}\n", fmt_field(f))),
-            DiffOp::Modified { from, to } => out.push_str(&format!(
-                "   ~ field: {} ({} → {})\n",
-                to.name,
-                from.field_type.as_str(),
-                to.field_type.as_str(),
-            )),
+            DiffOp::Added(f) => {
+                let _ = writeln!(out, "   + field: {}", fmt_field(f));
+            }
+            DiffOp::Removed(f) => {
+                let _ = writeln!(out, "   - field: {}", fmt_field(f));
+            }
+            DiffOp::Modified { from, to } => {
+                let _ = writeln!(
+                    out,
+                    "   ~ field: {} ({} → {})",
+                    to.name,
+                    from.field_type.as_str(),
+                    to.field_type.as_str(),
+                );
+            }
             DiffOp::Unchanged => {}
         }
     }
@@ -101,13 +110,14 @@ fn render_catalog_schema(out: &mut String, d: &CatalogSchemaDiff) {
 
 fn render_catalog_items(out: &mut String, d: &CatalogItemsDiff) {
     let total = d.added_ids.len() + d.modified_ids.len() + d.removed_ids.len() + d.unchanged_count;
-    out.push_str(&format!(
-        "   + {} added, ~ {} modified, - {} removed (in {} total)\n",
+    let _ = writeln!(
+        out,
+        "   + {} added, ~ {} modified, - {} removed (in {} total)",
         d.added_ids.len(),
         d.modified_ids.len(),
         d.removed_ids.len(),
         total,
-    ));
+    );
 }
 
 fn render_content_block(out: &mut String, d: &ContentBlockDiff) {
@@ -120,10 +130,11 @@ fn render_content_block(out: &mut String, d: &ContentBlockDiff) {
         DiffOp::Removed(_) => out.push_str("   - removed content block\n"),
         DiffOp::Modified { .. } => {
             if let Some(td) = &d.text_diff {
-                out.push_str(&format!(
-                    "   ~ content changed (+{} -{})\n",
+                let _ = writeln!(
+                    out,
+                    "   ~ content changed (+{} -{})",
                     td.additions, td.deletions,
-                ));
+                );
             } else {
                 out.push_str("   ~ content changed\n");
             }
@@ -146,16 +157,18 @@ fn render_email_template(out: &mut String, d: &EmailTemplateDiff) {
         out.push_str("   ~ subject changed\n");
     }
     if let Some(td) = &d.body_html_diff {
-        out.push_str(&format!(
-            "   ~ body_html changed (+{} -{})\n",
+        let _ = writeln!(
+            out,
+            "   ~ body_html changed (+{} -{})",
             td.additions, td.deletions
-        ));
+        );
     }
     if let Some(td) = &d.body_plaintext_diff {
-        out.push_str(&format!(
-            "   ~ body_plaintext changed (+{} -{})\n",
+        let _ = writeln!(
+            out,
+            "   ~ body_plaintext changed (+{} -{})",
             td.additions, td.deletions
-        ));
+        );
     }
     if d.metadata_changed {
         out.push_str("   ~ metadata changed\n");
@@ -165,7 +178,7 @@ fn render_email_template(out: &mut String, d: &EmailTemplateDiff) {
 fn render_custom_attribute(out: &mut String, d: &CustomAttributeDiff) {
     match &d.op {
         CustomAttributeOp::DeprecationToggled { from, to } => {
-            out.push_str(&format!("   ~ deprecated: {from} → {to}\n"));
+            let _ = writeln!(out, "   ~ deprecated: {from} → {to}");
         }
         CustomAttributeOp::UnregisteredInGit => {
             out.push_str("   ⚠ exists in Braze but not in Git registry (run export)\n");

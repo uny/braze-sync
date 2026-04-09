@@ -1,8 +1,4 @@
-//! Content Block diff — Phase A2 stub.
-//!
-//! Full implementation (text diff via `similar`, orphan tracking, etc.)
-//! lands in Phase B1. The struct is defined here so
-//! [`crate::diff::ResourceDiff`] compiles end-to-end during Phase A.
+//! Content Block diff types.
 
 use crate::diff::DiffOp;
 use crate::resource::ContentBlock;

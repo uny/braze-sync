@@ -1,9 +1,6 @@
-//! Custom Attribute diff — Phase A2 stub.
+//! Custom Attribute diff types.
 //!
-//! Full implementation lands in Phase B4 (registry mode). The variants are
-//! defined now so the type appears in [`crate::diff::ResourceDiff`] and
-//! `apply` knows from day one that the only mutation it can perform is the
-//! deprecation flag toggle.
+//! The only mutation `apply` can perform is the deprecation flag toggle.
 
 #[derive(Debug, Clone)]
 pub struct CustomAttributeDiff {

@@ -9,11 +9,8 @@ use serde::{Deserialize, Serialize};
 /// Wire shape of `GET /catalogs` and `GET /catalogs/{name}` responses.
 ///
 /// **ASSUMED** based on IMPLEMENTATION.md §8.3 and Braze public docs.
-/// Phase C E2E tests against a real Braze sandbox will validate (and
-/// adjust if needed) before v1.0 freeze. If the actual shape differs,
-/// only this struct and the small wrapping logic in this file need to
-/// change — the public surface (`list_catalogs`, `get_catalog`) is
-/// stable.
+/// If the actual shape differs, only this struct and the wrapping
+/// logic in this file need to change.
 ///
 /// Fields use serde defaults so an unexpected-but-related shape from
 /// Braze (e.g. an extra status field) doesn't break parsing.
@@ -21,19 +18,14 @@ use serde::{Deserialize, Serialize};
 struct CatalogsResponse {
     #[serde(default)]
     catalogs: Vec<Catalog>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    message: Option<String>,
 }
 
 impl BrazeClient {
     /// `GET /catalogs` — list every catalog schema in the workspace.
     ///
-    /// v0.1.0 sends a single request and returns the first page. The
-    /// Braze catalog API supports cursor-based pagination, but
-    /// pagination handling lands in Phase C alongside scale validation.
-    /// Workspaces with very large numbers of catalogs may see truncated
-    /// results until then; the README and CLI help (A6) flag this.
+    /// v0.1.0 sends a single request and returns the first page.
+    /// Pagination handling is not yet implemented; workspaces with many
+    /// catalogs may see truncated results.
     pub async fn list_catalogs(&self) -> Result<Vec<Catalog>, BrazeApiError> {
         let req = self.get(&["catalogs"]);
         let resp: CatalogsResponse = self.send_json(req).await?;
@@ -68,11 +60,8 @@ impl BrazeClient {
     /// `POST /catalogs/{name}/fields` — add one field to a catalog schema.
     ///
     /// **ASSUMED** wire format `{"fields": [{"name": "...", "type": "..."}]}`
-    /// per IMPLEMENTATION.md §8.3 + Braze public docs. Phase C E2E tests
-    /// against a real Braze sandbox will validate before v1.0; if Braze
-    /// uses a different envelope only the small wire types in this file
-    /// need to change. v0.1.0 sends one POST per added field; batching
-    /// optimization is deferred to Phase C scale work.
+    /// per IMPLEMENTATION.md §8.3 + Braze public docs. v0.1.0 sends one
+    /// POST per added field.
     pub async fn add_catalog_field(
         &self,
         catalog_name: &str,
@@ -106,10 +95,6 @@ impl BrazeClient {
     }
 }
 
-// =====================================================================
-// Wire types — write side. See `add_catalog_field`.
-// =====================================================================
-
 #[derive(Serialize)]
 struct AddFieldsRequest<'a> {
     fields: Vec<WireField<'a>>,
@@ -118,9 +103,8 @@ struct AddFieldsRequest<'a> {
 #[derive(Serialize)]
 struct WireField<'a> {
     name: &'a str,
-    /// Reuses the domain type's snake_case `Serialize` impl from A2 so
-    /// the wire string ("string", "number", ...) stays in sync with
-    /// `CatalogFieldType` definitions automatically.
+    /// Reuses the domain type's snake_case `Serialize` impl so the
+    /// wire string stays in sync with `CatalogFieldType` automatically.
     #[serde(rename = "type")]
     field_type: CatalogFieldType,
 }
@@ -372,10 +356,6 @@ mod tests {
         assert!(!dbg.contains("test-key"), "leaked api key in: {dbg}");
         assert!(dbg.contains("<redacted>"));
     }
-
-    // =================================================================
-    // Phase A9: write side
-    // =================================================================
 
     #[tokio::test]
     async fn add_catalog_field_happy_path_sends_correct_body() {

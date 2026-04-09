@@ -22,10 +22,8 @@ use std::path::Path;
 /// and Windows, so a previous file at `path` is replaced atomically from a
 /// reader's perspective.
 pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
     let file_name = path.file_name().ok_or_else(|| Error::InvalidFormat {
         path: path.to_path_buf(),
         message: "atomic write target has no file name".into(),

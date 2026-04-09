@@ -1,7 +1,7 @@
 //! `braze-sync validate` — local-only structural and naming checks.
 //!
-//! Phase A11 wires Catalog Schema. Other resource kinds are visible in
-//! `--resource` and emit a "not yet implemented (Phase B)" warning.
+//! v0.1.0 supports Catalog Schema. Other resource kinds emit a "not yet
+//! implemented" warning.
 //!
 //! Validate is special among CLI commands: **it does not need a Braze
 //! API key**. The whole point is "I want a pre-merge check that runs in
@@ -22,6 +22,8 @@ use clap::Args;
 use regex_lite::Regex;
 use std::path::{Path, PathBuf};
 
+use super::{selected_kinds, warn_unimplemented};
+
 #[derive(Args, Debug)]
 pub struct ValidateArgs {
     /// Limit validation to a specific resource kind.
@@ -36,10 +38,7 @@ struct ValidationIssue {
 }
 
 pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> anyhow::Result<()> {
-    let kinds: Vec<ResourceKind> = match args.resource {
-        Some(k) => vec![k],
-        None => ResourceKind::all().to_vec(),
-    };
+    let kinds = selected_kinds(args.resource);
 
     let mut issues: Vec<ValidationIssue> = Vec::new();
 
@@ -53,12 +52,7 @@ pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> an
                     &mut issues,
                 )?;
             }
-            other => {
-                eprintln!(
-                    "⚠ {}: not yet implemented in this binary (Phase B)",
-                    other.as_str()
-                );
-            }
+            other => warn_unimplemented(other),
         }
     }
 

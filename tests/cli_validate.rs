@@ -6,33 +6,10 @@
 //! BRAZE_API_KEY in the environment — `validate` must work in CI
 //! contexts (fork PRs) where the secret isn't available.
 
+mod common;
+
 use assert_cmd::Command;
-use std::fs;
-use std::path::{Path, PathBuf};
-
-fn write_config(dir: &Path, naming_pattern: Option<&str>) -> PathBuf {
-    let config_path = dir.join("braze-sync.config.yaml");
-    let mut yaml = String::from(
-        "version: 1
-default_environment: test
-environments:
-  test:
-    api_endpoint: http://127.0.0.1:1
-    api_key_env: BRAZE_VALIDATE_TEST_NOT_SET
-",
-    );
-    if let Some(p) = naming_pattern {
-        yaml.push_str(&format!("naming:\n  catalog_name_pattern: \"{p}\"\n"));
-    }
-    fs::write(&config_path, yaml).unwrap();
-    config_path
-}
-
-fn write_schema_raw(dir: &Path, dir_name: &str, content: &str) {
-    let cat_dir = dir.join("catalogs").join(dir_name);
-    fs::create_dir_all(&cat_dir).unwrap();
-    fs::write(cat_dir.join("schema.yaml"), content).unwrap();
-}
+use common::{write_config_for_validate as write_config, write_schema_raw};
 
 #[test]
 fn validate_passes_for_well_formed_catalog() {

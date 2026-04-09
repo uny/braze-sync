@@ -1,12 +1,11 @@
 //! `braze-sync diff` — show drift between local files and Braze.
 //!
-//! Phase A8 wires Catalog Schema only. The other resource kinds are visible
-//! in `--resource` and emit a "not yet implemented (Phase B)" warning when
-//! selected, mirroring `export`.
+//! v0.1.0 supports Catalog Schema only. The other resource kinds emit a
+//! "not yet implemented" warning.
 //!
 //! Output goes to **stdout** so scripts can `braze-sync diff > drift.txt`
-//! cleanly. Status / Phase-B warnings go to stderr. The formatter is
-//! chosen by the global `--format` flag (default: `table`).
+//! cleanly. Status warnings go to stderr. The formatter is chosen by the
+//! global `--format` flag (default: `table`).
 //!
 //! With `--fail-on-drift`, a non-empty `summary.changed_count()` makes the
 //! command exit with code 2 (`Error::DriftDetected`) so CI pipelines can
@@ -25,6 +24,8 @@ use anyhow::Context as _;
 use clap::Args;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+
+use super::{selected_kinds, warn_unimplemented};
 
 #[derive(Args, Debug)]
 pub struct DiffArgs {
@@ -48,21 +49,9 @@ pub async fn run(
     config_dir: &Path,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    // Compute filesystem roots before consuming `resolved` for the client.
     let catalogs_root = config_dir.join(&resolved.resources.catalog_schema.path);
-
-    let ResolvedConfig {
-        api_endpoint,
-        api_key,
-        rate_limit_per_minute,
-        ..
-    } = resolved;
-    let client = BrazeClient::new(api_endpoint, api_key, rate_limit_per_minute);
-
-    let kinds: Vec<ResourceKind> = match args.resource {
-        Some(k) => vec![k],
-        None => ResourceKind::all().to_vec(),
-    };
+    let client = BrazeClient::from_resolved(&resolved);
+    let kinds = selected_kinds(args.resource);
 
     let mut summary = DiffSummary::default();
     for kind in kinds {
@@ -75,10 +64,7 @@ pub async fn run(
                 summary.diffs.extend(diffs);
             }
             other => {
-                eprintln!(
-                    "⚠ {}: not yet implemented in this binary (Phase B)",
-                    other.as_str()
-                );
+                warn_unimplemented(other);
             }
         }
     }

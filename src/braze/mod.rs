@@ -3,7 +3,7 @@
 //! Layered:
 //! - [`rate_limit`]: token-bucket throttle (governor)
 //! - [`error`]: typed [`error::BrazeApiError`] variants
-//! - [`catalog`] (and, in Phase B, sibling modules per resource):
+//! - [`catalog`] (and sibling modules per resource):
 //!   per-endpoint async methods written as `impl BrazeClient { ... }`
 //!   blocks
 //!
@@ -50,6 +50,14 @@ impl std::fmt::Debug for BrazeClient {
 }
 
 impl BrazeClient {
+    pub fn from_resolved(resolved: &crate::config::ResolvedConfig) -> Self {
+        Self::new(
+            resolved.api_endpoint.clone(),
+            resolved.api_key.clone(),
+            resolved.rate_limit_per_minute,
+        )
+    }
+
     pub fn new(base_url: Url, api_key: SecretString, rpm: u32) -> Self {
         let http = Client::builder()
             .user_agent(concat!("braze-sync/", env!("CARGO_PKG_VERSION")))

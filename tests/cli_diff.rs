@@ -6,37 +6,13 @@
 //! `spawn_blocking` for the same reason as cli_export.rs: assert_cmd's
 //! sync wait would otherwise hold the only worker and starve wiremock.
 
+mod common;
+
 use assert_cmd::Command;
+use common::{write_config, write_local_schema};
 use serde_json::json;
-use std::fs;
-use std::path::{Path, PathBuf};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
-
-fn write_config(dir: &Path, server_uri: &str) -> PathBuf {
-    let config_path = dir.join("braze-sync.config.yaml");
-    let yaml = format!(
-        "version: 1
-default_environment: test
-environments:
-  test:
-    api_endpoint: {server_uri}
-    api_key_env: BRAZE_API_KEY
-"
-    );
-    fs::write(&config_path, yaml).unwrap();
-    config_path
-}
-
-fn write_local_schema(dir: &Path, name: &str, fields: &[(&str, &str)]) {
-    let cat_dir = dir.join("catalogs").join(name);
-    fs::create_dir_all(&cat_dir).unwrap();
-    let mut yaml = format!("name: {name}\nfields:\n");
-    for (n, t) in fields {
-        yaml.push_str(&format!("  - name: {n}\n    type: {t}\n"));
-    }
-    fs::write(cat_dir.join("schema.yaml"), yaml).unwrap();
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn diff_no_drift_when_local_matches_remote() {

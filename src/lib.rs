@@ -1,7 +1,6 @@
 //! braze-sync: GitOps CLI for managing Braze configuration as code.
 //!
-//! See `docs/local/IMPLEMENTATION.md` for the full design contract. The
-//! public surface fills in incrementally over Phase A → Phase B per §13.
+//! See `docs/local/IMPLEMENTATION.md` for the full design contract.
 
 pub mod braze;
 pub mod cli;

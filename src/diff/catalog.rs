@@ -1,15 +1,7 @@
 //! Catalog Schema and Catalog Items diff. See IMPLEMENTATION.md §11.1 / §11.2.
-//!
-//! Phase A2 implements the Schema diff in full. The Items diff struct is
-//! defined here so [`super::ResourceDiff`] compiles, but the streaming /
-//! hash-based diff logic lands in Phase B3 (v0.4.0).
 
 use crate::diff::DiffOp;
 use crate::resource::{Catalog, CatalogField};
-
-// =====================================================================
-// Catalog Schema diff
-// =====================================================================
 
 #[derive(Debug, Clone)]
 pub struct CatalogSchemaDiff {
@@ -89,10 +81,6 @@ fn diff_fields(local: &[CatalogField], remote: &[CatalogField]) -> Vec<DiffOp<Ca
     }
     ops
 }
-
-// =====================================================================
-// Catalog Items diff (stub — full implementation in Phase B3)
-// =====================================================================
 
 #[derive(Debug, Clone)]
 pub struct CatalogItemsDiff {

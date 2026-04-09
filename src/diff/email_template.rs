@@ -1,8 +1,4 @@
-//! Email Template diff — Phase A2 stub.
-//!
-//! Per-part diff (subject / body_html / body_plaintext / metadata) and the
-//! orphan path land in Phase B2. Struct is here so
-//! [`crate::diff::ResourceDiff`] compiles.
+//! Email Template diff types.
 
 use crate::diff::content_block::TextDiffSummary;
 use crate::diff::DiffOp;

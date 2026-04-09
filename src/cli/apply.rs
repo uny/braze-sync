@@ -1,8 +1,7 @@
 //! `braze-sync apply` — push local intent to Braze.
 //!
-//! Phase A10 wires Catalog Schema only (field add / field delete via the
-//! A9 BrazeClient methods). The other resource kinds emit a "not yet
-//! implemented (Phase B)" warning when selected via `--resource`.
+//! v0.1.0 supports Catalog Schema only (field add / field delete). The
+//! other resource kinds emit a "not yet implemented" warning.
 //!
 //! ## Safety chain
 //!
@@ -41,6 +40,7 @@ use clap::Args;
 use std::path::Path;
 
 use super::diff::compute_catalog_schema_diffs;
+use super::{selected_kinds, warn_unimplemented};
 
 #[derive(Args, Debug)]
 pub struct ApplyArgs {
@@ -79,21 +79,9 @@ pub async fn run(
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let catalogs_root = config_dir.join(&resolved.resources.catalog_schema.path);
+    let client = BrazeClient::from_resolved(&resolved);
+    let kinds = selected_kinds(args.resource);
 
-    let ResolvedConfig {
-        api_endpoint,
-        api_key,
-        rate_limit_per_minute,
-        ..
-    } = resolved;
-    let client = BrazeClient::new(api_endpoint, api_key, rate_limit_per_minute);
-
-    let kinds: Vec<ResourceKind> = match args.resource {
-        Some(k) => vec![k],
-        None => ResourceKind::all().to_vec(),
-    };
-
-    // === Step 1: Compute the plan (= recomputed diff). ===
     let mut summary = DiffSummary::default();
     for kind in kinds {
         match kind {
@@ -104,18 +92,10 @@ pub async fn run(
                         .context("computing catalog_schema plan")?;
                 summary.diffs.extend(diffs);
             }
-            other => {
-                eprintln!(
-                    "⚠ {}: not yet implemented in this binary (Phase B)",
-                    other.as_str()
-                );
-            }
+            other => warn_unimplemented(other),
         }
     }
 
-    // === Step 2: Print the plan. ===
-    // Header on stderr, body on stdout — keeps JSON output on stdout
-    // parseable for CI consumers.
     let mode_label = if args.confirm {
         "Plan:"
     } else {
@@ -124,36 +104,28 @@ pub async fn run(
     eprintln!("{mode_label}");
     print!("{}", format.formatter().format(&summary));
 
-    // === Step 3: Empty plan — done. ===
     if summary.changed_count() == 0 {
         eprintln!("No changes to apply.");
         return Ok(());
     }
 
-    // === Step 4: Dry-run mode — exit before any write call. ===
     if !args.confirm {
         eprintln!("DRY RUN — pass --confirm to apply these changes.");
         return Ok(());
     }
 
-    // === Step 5: Destructive guard. ===
     if summary.destructive_count() > 0 && !args.allow_destructive {
         return Err(Error::DestructiveBlocked.into());
     }
 
-    // === Step 6: Pre-validate. ===
-    // Surface unsupported operations BEFORE making any API calls so we
-    // never leave Braze half-applied.
     check_for_unsupported_ops(&summary)?;
 
-    // === Step 7: Apply. ===
     let mut applied = 0;
     for diff in &summary.diffs {
         if let ResourceDiff::CatalogSchema(d) = diff {
             applied += apply_catalog_schema(&client, d).await?;
         }
-        // Other ResourceDiff variants are Phase B; the warnings above
-        // already told the user we're skipping them.
+        // Other ResourceDiff variants are not yet implemented.
     }
 
     eprintln!("✓ Applied {applied} change(s).");

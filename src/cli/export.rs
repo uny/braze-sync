@@ -1,8 +1,7 @@
 //! `braze-sync export` — pull current state from Braze into local files.
 //!
-//! Phase A6 wires Catalog Schema end-to-end. The other resource kinds are
-//! visible in `--resource` value enum but produce a "not yet implemented"
-//! warning when selected; they fill in across Phase B.
+//! v0.1.0 supports Catalog Schema. The other resource kinds produce a
+//! "not yet implemented" warning when selected.
 
 use crate::braze::error::BrazeApiError;
 use crate::braze::BrazeClient;
@@ -12,6 +11,8 @@ use crate::resource::ResourceKind;
 use anyhow::Context as _;
 use clap::Args;
 use std::path::Path;
+
+use super::{selected_kinds, warn_unimplemented};
 
 #[derive(Args, Debug)]
 pub struct ExportArgs {
@@ -31,22 +32,9 @@ pub async fn run(
     resolved: ResolvedConfig,
     config_dir: &Path,
 ) -> anyhow::Result<()> {
-    // Compute filesystem roots from `resolved` *before* we move its
-    // SecretString into the BrazeClient constructor.
     let catalogs_root = config_dir.join(&resolved.resources.catalog_schema.path);
-
-    let ResolvedConfig {
-        api_endpoint,
-        api_key,
-        rate_limit_per_minute,
-        ..
-    } = resolved;
-    let client = BrazeClient::new(api_endpoint, api_key, rate_limit_per_minute);
-
-    let kinds: Vec<ResourceKind> = match args.resource {
-        Some(k) => vec![k],
-        None => ResourceKind::all().to_vec(),
-    };
+    let client = BrazeClient::from_resolved(&resolved);
+    let kinds = selected_kinds(args.resource);
 
     let mut total_written: usize = 0;
     for kind in kinds {
@@ -59,13 +47,7 @@ pub async fn run(
                 total_written += n;
             }
             other => {
-                // The 4 Phase-B resource kinds. Not yet implemented in
-                // this binary; emit a warning so a `--resource` filter
-                // doesn't silently no-op.
-                eprintln!(
-                    "⚠ {}: not yet implemented in this binary (Phase B)",
-                    other.as_str()
-                );
+                warn_unimplemented(other);
             }
         }
     }

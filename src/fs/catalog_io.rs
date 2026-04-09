@@ -12,8 +12,7 @@
 //!     └── items.csv
 //! ```
 //!
-//! Phase A4 implements schema only. Items I/O lands in Phase B3 alongside
-//! the streaming CSV reader / writer.
+//! v0.1.0 implements schema only. Items I/O is not yet handled here.
 
 use crate::error::{Error, Result};
 use crate::fs::write_atomic;
@@ -40,18 +39,24 @@ const SCHEMA_FILE_NAME: &str = "schema.yaml";
 ///   `Err(InvalidFormat)`. Stopping here makes diff / apply correctness
 ///   trivially debuggable.
 pub fn load_all_schemas(catalogs_root: &Path) -> Result<Vec<Catalog>> {
-    if !catalogs_root.exists() {
-        return Ok(Vec::new());
-    }
-    if !catalogs_root.is_dir() {
-        return Err(Error::InvalidFormat {
-            path: catalogs_root.to_path_buf(),
-            message: "expected a directory for the catalogs root".into(),
-        });
-    }
+    let read_dir = match std::fs::read_dir(catalogs_root) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            // read_dir on a file (not a dir) returns an OS-specific error;
+            // surface it as InvalidFormat for a clearer message.
+            if catalogs_root.is_file() {
+                return Err(Error::InvalidFormat {
+                    path: catalogs_root.to_path_buf(),
+                    message: "expected a directory for the catalogs root".into(),
+                });
+            }
+            return Err(e.into());
+        }
+    };
 
     let mut schemas = Vec::new();
-    for entry in std::fs::read_dir(catalogs_root)? {
+    for entry in read_dir {
         let entry = entry?;
         if !entry.file_type()?.is_dir() {
             continue;

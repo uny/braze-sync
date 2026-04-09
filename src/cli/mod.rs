@@ -28,6 +28,7 @@ use crate::braze::error::BrazeApiError;
 use crate::config::{ConfigFile, ResolvedConfig};
 use crate::error::Error;
 use crate::format::OutputFormat;
+use crate::resource::ResourceKind;
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
@@ -175,6 +176,19 @@ async fn dispatch(cli: &Cli, resolved: ResolvedConfig, config_dir: &Path) -> any
     }
 }
 
+/// Expand an optional resource filter to the list of kinds to process.
+pub(crate) fn selected_kinds(filter: Option<ResourceKind>) -> Vec<ResourceKind> {
+    match filter {
+        Some(k) => vec![k],
+        None => ResourceKind::all().to_vec(),
+    }
+}
+
+/// Warn on stderr about a resource kind not yet implemented.
+pub(crate) fn warn_unimplemented(kind: ResourceKind) {
+    eprintln!("⚠ {}: not yet implemented in this binary", kind.as_str());
+}
+
 fn init_tracing(verbose: bool) {
     let default_level = if verbose { "debug" } else { "warn" };
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -204,7 +218,13 @@ fn exit_code_for(err: &anyhow::Error) -> i32 {
                 Error::DestructiveBlocked => return 6,
                 Error::DriftDetected { .. } => return 2,
                 Error::Config(_) | Error::MissingEnv(_) => return 3,
-                _ => return 1,
+                Error::Io(_)
+                | Error::YamlParse { .. }
+                | Error::CsvParse { .. }
+                | Error::InvalidFormat { .. }
+                | Error::RateLimitExhausted { .. }
+                | Error::CatalogItemSchemaMismatch { .. }
+                | Error::CustomAttributeCreateNotSupported { .. } => return 1,
             }
         }
     }

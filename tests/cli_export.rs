@@ -11,27 +11,14 @@
 //! `#[tokio::test]` would deadlock because the blocking subprocess wait
 //! would hold the only worker.
 
+mod common;
+
 use assert_cmd::Command;
+use common::write_config;
 use serde_json::json;
 use std::fs;
-use std::path::Path;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
-
-fn write_config(dir: &Path, server_uri: &str) -> std::path::PathBuf {
-    let config_path = dir.join("braze-sync.config.yaml");
-    let yaml = format!(
-        "version: 1
-default_environment: test
-environments:
-  test:
-    api_endpoint: {server_uri}
-    api_key_env: BRAZE_API_KEY
-"
-    );
-    fs::write(&config_path, yaml).unwrap();
-    config_path
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn export_catalog_schemas_writes_files_and_exits_zero() {
