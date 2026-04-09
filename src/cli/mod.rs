@@ -25,7 +25,7 @@ pub mod export;
 pub mod validate;
 
 use crate::braze::error::BrazeApiError;
-use crate::config::{ConfigFile, ResolvedConfig};
+use crate::config::{ConfigFile, ResolvedConfig, ResourcesConfig};
 use crate::error::Error;
 use crate::format::OutputFormat;
 use crate::resource::ResourceKind;
@@ -176,11 +176,32 @@ async fn dispatch(cli: &Cli, resolved: ResolvedConfig, config_dir: &Path) -> any
     }
 }
 
-/// Expand an optional resource filter to the list of kinds to process.
-pub(crate) fn selected_kinds(filter: Option<ResourceKind>) -> Vec<ResourceKind> {
+/// Expand an optional resource filter to the list of kinds to process,
+/// excluding any kinds disabled in the config.
+pub(crate) fn selected_kinds(
+    filter: Option<ResourceKind>,
+    resources: &ResourcesConfig,
+) -> Vec<ResourceKind> {
     match filter {
-        Some(k) => vec![k],
-        None => ResourceKind::all().to_vec(),
+        Some(k) => {
+            if !resources.is_enabled(k) {
+                eprintln!("⚠ {}: disabled in config, skipping", k.as_str());
+                vec![]
+            } else {
+                vec![k]
+            }
+        }
+        None => ResourceKind::all()
+            .iter()
+            .copied()
+            .filter(|k| {
+                let enabled = resources.is_enabled(*k);
+                if !enabled {
+                    tracing::debug!("{}: disabled in config, skipping", k.as_str());
+                }
+                enabled
+            })
+            .collect(),
     }
 }
 

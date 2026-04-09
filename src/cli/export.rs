@@ -34,7 +34,7 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let catalogs_root = config_dir.join(&resolved.resources.catalog_schema.path);
     let client = BrazeClient::from_resolved(&resolved);
-    let kinds = selected_kinds(args.resource);
+    let kinds = selected_kinds(args.resource, &resolved.resources);
 
     let mut total_written: usize = 0;
     for kind in kinds {

@@ -39,7 +39,7 @@ pub fn diff_schema(local: Option<&Catalog>, remote: Option<&Catalog>) -> Option<
         }),
         (Some(l), Some(r)) => {
             let field_diffs = diff_fields(&l.fields, &r.fields);
-            let op = if l == r {
+            let op = if l.normalized() == r.normalized() {
                 DiffOp::Unchanged
             } else {
                 DiffOp::Modified {
@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn field_diff_is_order_independent() {
+    fn field_order_difference_is_not_drift() {
         let l = cat(
             "c",
             vec![
@@ -238,9 +238,11 @@ mod tests {
             ],
         );
         let d = diff_schema(Some(&l), Some(&r)).unwrap();
-        // Top-level Catalog equality is order-sensitive (Vec equality), so
-        // op is Modified, but no field-level changes are recorded.
+        // Normalized comparison makes field order irrelevant at both the
+        // top-level op and the field-diff layer.
+        assert!(matches!(d.op, DiffOp::Unchanged));
         assert!(d.field_diffs.is_empty());
+        assert!(!d.has_changes());
     }
 
     #[test]

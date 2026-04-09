@@ -80,7 +80,7 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let catalogs_root = config_dir.join(&resolved.resources.catalog_schema.path);
     let client = BrazeClient::from_resolved(&resolved);
-    let kinds = selected_kinds(args.resource);
+    let kinds = selected_kinds(args.resource, &resolved.resources);
 
     let mut summary = DiffSummary::default();
     for kind in kinds {

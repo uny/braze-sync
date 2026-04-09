@@ -38,7 +38,7 @@ struct ValidationIssue {
 }
 
 pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> anyhow::Result<()> {
-    let kinds = selected_kinds(args.resource);
+    let kinds = selected_kinds(args.resource, &cfg.resources);
 
     let mut issues: Vec<ValidationIssue> = Vec::new();
 

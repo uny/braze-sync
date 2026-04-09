@@ -73,6 +73,19 @@ pub struct ResourcesConfig {
     pub custom_attribute: ResourceConfig,
 }
 
+impl ResourcesConfig {
+    pub fn is_enabled(&self, kind: crate::resource::ResourceKind) -> bool {
+        use crate::resource::ResourceKind;
+        match kind {
+            ResourceKind::CatalogSchema => self.catalog_schema.enabled,
+            ResourceKind::CatalogItems => self.catalog_items.enabled,
+            ResourceKind::ContentBlock => self.content_block.enabled,
+            ResourceKind::EmailTemplate => self.email_template.enabled,
+            ResourceKind::CustomAttribute => self.custom_attribute.enabled,
+        }
+    }
+}
+
 impl Default for ResourcesConfig {
     fn default() -> Self {
         Self {

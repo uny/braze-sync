@@ -18,6 +18,10 @@ use serde::{Deserialize, Serialize};
 struct CatalogsResponse {
     #[serde(default)]
     catalogs: Vec<Catalog>,
+    /// Pagination cursor returned by Braze when more pages exist.
+    /// v0.1.0 does not follow cursors; if present, a warning is logged.
+    #[serde(default)]
+    next_cursor: Option<String>,
 }
 
 impl BrazeClient {
@@ -29,6 +33,14 @@ impl BrazeClient {
     pub async fn list_catalogs(&self) -> Result<Vec<Catalog>, BrazeApiError> {
         let req = self.get(&["catalogs"]);
         let resp: CatalogsResponse = self.send_json(req).await?;
+        if let Some(cursor) = &resp.next_cursor {
+            if !cursor.is_empty() {
+                tracing::warn!(
+                    "Braze returned a pagination cursor; only the first page \
+                     of catalogs was fetched (pagination is not yet implemented)"
+                );
+            }
+        }
         Ok(resp.catalogs)
     }
 
