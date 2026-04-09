@@ -59,6 +59,7 @@ pub fn load_all_schemas(catalogs_root: &Path) -> Result<Vec<Catalog>> {
     for entry in read_dir {
         let entry = entry?;
         if !entry.file_type()?.is_dir() {
+            tracing::debug!(path = %entry.path().display(), "skipping non-directory entry");
             continue;
         }
         let dir = entry.path();

@@ -103,6 +103,7 @@ fn validate_catalog_schemas(
     for entry in std::fs::read_dir(catalogs_root)? {
         let entry = entry?;
         if !entry.file_type()?.is_dir() {
+            tracing::debug!(path = %entry.path().display(), "skipping non-directory entry");
             continue;
         }
         let dir = entry.path();

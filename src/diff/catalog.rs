@@ -63,6 +63,11 @@ pub fn diff_schema(local: Option<&Catalog>, remote: Option<&Catalog>) -> Option<
 
 /// Field-level diff. `Unchanged` field-pairs are *not* recorded in the
 /// output to keep diff summaries quiet.
+///
+/// Output ordering: Added and Modified ops come first (sorted by field
+/// name via BTreeMap iteration), followed by Removed ops (also sorted
+/// by field name). This is deterministic across runs and ensures
+/// `apply` processes additions before removals — the safer direction.
 fn diff_fields(local: &[CatalogField], remote: &[CatalogField]) -> Vec<DiffOp<CatalogField>> {
     use std::collections::BTreeMap;
     let l: BTreeMap<&String, &CatalogField> = local.iter().map(|f| (&f.name, f)).collect();

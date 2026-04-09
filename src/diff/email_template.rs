@@ -6,6 +6,8 @@ use crate::diff::DiffOp;
 #[derive(Debug, Clone)]
 pub struct EmailTemplateDiff {
     pub name: String,
+    // TODO(phase-b): change to DiffOp<EmailTemplate> for symmetry with
+    // CatalogSchemaDiff — natural to refactor when B2 implements this resource.
     pub op: DiffOp<()>,
     pub subject_changed: bool,
     pub body_html_diff: Option<TextDiffSummary>,
