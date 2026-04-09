@@ -14,14 +14,17 @@ pub mod catalog_io;
 use crate::error::{Error, Result};
 use std::path::Path;
 
-/// Atomically write `contents` to `path` by writing to a sibling temp file
-/// and renaming on top of the target. Creates parent directories as needed.
+/// Write `contents` to `path` via write-to-temp-then-rename so readers
+/// never see a partially-written file. Creates parent directories as needed.
 ///
-/// Same-directory rename guarantees the operation does not cross filesystem
-/// boundaries. `std::fs::rename` overwrites the destination on both Unix
-/// and Windows, so a previous file at `path` is replaced atomically from a
-/// reader's perspective.
+/// The temp file is fsynced before the rename to ensure data reaches stable
+/// storage even on a crash between write and rename. The temp name includes
+/// the process ID to avoid collisions if two braze-sync processes write to
+/// the same workspace concurrently. Same-directory rename guarantees the
+/// operation does not cross filesystem boundaries.
 pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
+    use std::io::Write;
+
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
     let file_name = path.file_name().ok_or_else(|| Error::InvalidFormat {
@@ -30,10 +33,14 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     })?;
 
     let mut tmp_name = file_name.to_os_string();
-    tmp_name.push(".tmp");
+    tmp_name.push(format!(".{}.tmp", std::process::id()));
     let tmp_path = parent.join(tmp_name);
 
-    std::fs::write(&tmp_path, contents)?;
+    let mut file = std::fs::File::create(&tmp_path)?;
+    file.write_all(contents)?;
+    file.sync_all()?;
+    drop(file);
+
     std::fs::rename(&tmp_path, path)?;
     Ok(())
 }

@@ -27,6 +27,12 @@ pub enum CatalogFieldType {
     Time,
     Object,
     Array,
+    /// Catch-all for field types not yet known to this binary version.
+    /// Forward-compat: prevents deserialization failures when Braze adds
+    /// new field types. Round-trips as `"unknown"` — the original type
+    /// name is not preserved. Upgrade braze-sync for full support.
+    #[serde(other)]
+    Unknown,
 }
 
 impl CatalogFieldType {
@@ -43,6 +49,7 @@ impl CatalogFieldType {
             Self::Time => "time",
             Self::Object => "object",
             Self::Array => "array",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -117,6 +124,38 @@ mod tests {
     fn catalog_field_type_serializes_snake_case() {
         let yaml = serde_yml::to_string(&CatalogFieldType::Boolean).unwrap();
         assert_eq!(yaml.trim(), "boolean");
+    }
+
+    #[test]
+    fn unknown_field_type_deserializes_without_failure() {
+        // Forward compat: if Braze adds a field type this binary doesn't
+        // know about, the catalog should still parse — the unknown type
+        // round-trips as "unknown" rather than crashing the entire export.
+        let yaml = "name: future\nfields:\n  - name: x\n    type: hyperlink\n";
+        let cat: Catalog = serde_yml::from_str(yaml).unwrap();
+        assert_eq!(cat.fields[0].field_type, CatalogFieldType::Unknown);
+        assert_eq!(cat.fields[0].field_type.as_str(), "unknown");
+    }
+
+    #[test]
+    fn unknown_field_type_does_not_break_known_fields() {
+        // A catalog with a mix of known and unknown types should parse
+        // the known types correctly.
+        let yaml = "\
+name: mixed
+fields:
+  - name: id
+    type: string
+  - name: fancy
+    type: quantum_entanglement
+  - name: score
+    type: number
+";
+        let cat: Catalog = serde_yml::from_str(yaml).unwrap();
+        assert_eq!(cat.fields.len(), 3);
+        assert_eq!(cat.fields[0].field_type, CatalogFieldType::String);
+        assert_eq!(cat.fields[1].field_type, CatalogFieldType::Unknown);
+        assert_eq!(cat.fields[2].field_type, CatalogFieldType::Number);
     }
 
     #[test]
