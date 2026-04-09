@@ -1,0 +1,79 @@
+[package]
+name = "braze-sync"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.86"
+license = "MIT"
+description = "GitOps CLI for managing Braze configuration as code"
+repository = "https://github.com/uny/braze-sync"
+homepage = "https://github.com/uny/braze-sync"
+keywords = ["braze", "gitops", "cli", "marketing", "devops"]
+categories = ["command-line-utilities"]
+readme = "README.md"
+
+[[bin]]
+name = "braze-sync"
+path = "src/main.rs"
+
+[lib]
+name = "braze_sync"
+path = "src/lib.rs"
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Async runtime
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "time", "sync", "io-util"] }
+
+# HTTP — rustls only, no openssl
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip", "stream"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yml = "0.0.12"
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Rate limiting
+governor = "0.7"
+
+# File system
+dotenvy = "0.15"
+
+# CSV for catalog items error types (Phase B)
+csv = "1"
+
+# Hashing for catalog items diff
+blake3 = "1"
+
+# Misc
+url = { version = "2", features = ["serde"] }
+
+# Naming pattern validation (validate command). regex-lite is the
+# lightweight cousin of `regex`: smaller binary, fewer deps, no Unicode
+# tables. Sufficient for catalog/content-block/custom-attribute name
+# patterns from IMPLEMENTATION.md §10.
+regex-lite = "0.1"
+secrecy = "0.10"
+
+[dev-dependencies]
+insta = { version = "1", features = ["yaml", "json"] }
+wiremock = "0.6"
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+pretty_assertions = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+opt-level = 3

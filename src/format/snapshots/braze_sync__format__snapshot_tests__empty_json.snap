@@ -1,0 +1,14 @@
+---
+source: src/format/snapshot_tests.rs
+expression: "JsonFormatter.format(&fixtures::empty())"
+---
+{
+  "version": 1,
+  "summary": {
+    "changed": 0,
+    "in_sync": 0,
+    "destructive": 0,
+    "orphan": 0
+  },
+  "diffs": []
+}

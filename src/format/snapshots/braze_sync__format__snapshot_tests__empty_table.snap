@@ -1,0 +1,5 @@
+---
+source: src/format/snapshot_tests.rs
+expression: "TableFormatter.format(&fixtures::empty())"
+---
+Summary: 0 changed, 0 in sync, 0 orphan, 0 destructive

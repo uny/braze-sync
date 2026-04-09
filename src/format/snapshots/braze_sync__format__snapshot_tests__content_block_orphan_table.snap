@@ -1,0 +1,8 @@
+---
+source: src/format/snapshot_tests.rs
+expression: "TableFormatter.format(&fixtures::content_block_orphan())"
+---
+📝 Content Block: legacy_promo
+   ⚠ orphaned (exists in Braze, not in Git)
+
+Summary: 1 changed, 0 in sync, 1 orphan, 0 destructive

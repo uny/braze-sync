@@ -1,0 +1,10 @@
+---
+source: src/format/snapshot_tests.rs
+expression: "TableFormatter.format(&fixtures::catalog_schema_with_mixed_field_diffs())"
+---
+📋 Catalog Schema: cardiology
+   ~ field: is_active (string → boolean)
+   + field: severity_level (number)
+   - field: legacy_code (string)
+
+Summary: 1 changed, 0 in sync, 0 orphan, 1 destructive

@@ -1,0 +1,8 @@
+---
+source: src/format/snapshot_tests.rs
+expression: "TableFormatter.format(&fixtures::catalog_schema_unchanged())"
+---
+✅ Catalog Schema: stable
+   no drift
+
+Summary: 0 changed, 1 in sync, 0 orphan, 0 destructive
