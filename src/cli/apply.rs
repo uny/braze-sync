@@ -209,7 +209,12 @@ async fn apply_content_block(
         if archived == d.name {
             return Ok(0);
         }
-        // Update endpoint requires the full body, not a partial.
+        // Update endpoint requires the full body, not a partial. Safe
+        // re: state — `get_content_block` defaults state to Active
+        // (Braze /info has no state field) and `update_content_block`
+        // omits state from the wire body, so this rename can never
+        // toggle the remote state as a side effect. If either of those
+        // invariants ever changes, the orphan path needs revisiting.
         let mut cb = client
             .get_content_block(id)
             .await

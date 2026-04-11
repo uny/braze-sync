@@ -392,13 +392,27 @@ async fn content_block_confirm_update_posts_to_update_endpoint_with_id() {
 async fn content_block_orphan_without_archive_flag_makes_no_write_calls() {
     // Default orphan policy: report-only. The honest-orphan §11.6
     // contract requires zero write calls when --archive-orphans is
-    // absent, even with --confirm + --allow-destructive.
+    // absent, even with --confirm + --allow-destructive — the only
+    // knob that turns archival on is --archive-orphans itself.
+    // (Content Block has no destructive ops, so --allow-destructive
+    // is operationally a no-op for this resource; passing it here
+    // pins that an operator who confuses the two flags can't
+    // accidentally trigger an archive rename.)
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/content_blocks/list"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "content_blocks": [{"content_block_id": "id-orphan", "name": "legacy"}]
         })))
+        .mount(&server)
+        .await;
+    // /info must NOT be fetched: with no archive flag we never need
+    // the body, and a stray fetch would suggest the orphan path is
+    // doing more than the §11.6 report-only contract allows.
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
         .mount(&server)
         .await;
     Mock::given(method("POST"))
@@ -416,7 +430,13 @@ async fn content_block_orphan_without_archive_flag_makes_no_write_calls() {
             .unwrap()
             .env("BRAZE_API_KEY", "test-key")
             .args(["--config", config_path.to_str().unwrap()])
-            .args(["apply", "--resource", "content_block", "--confirm"])
+            .args([
+                "apply",
+                "--resource",
+                "content_block",
+                "--confirm",
+                "--allow-destructive",
+            ])
             .assert()
             .success();
     })

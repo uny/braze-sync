@@ -108,10 +108,14 @@ pub fn save_content_block(root: &Path, cb: &ContentBlock) -> Result<()> {
         tags: cb.tags.clone(),
         state: cb.state,
     };
-    let mut text = frontmatter::render(&path, &fm, &cb.content)?;
-    if !text.ends_with('\n') {
-        text.push('\n');
-    }
+    // Body is written byte-exact. A previous version unconditionally
+    // appended `\n` here, which caused any Braze block whose stored
+    // content lacked a trailing newline to round-trip as `body\n`,
+    // diff as Modified, and (if Braze normalizes trailing whitespace
+    // on store) loop forever. `frontmatter::render` already terminates
+    // the closing fence with `\n`, so an empty body still produces a
+    // valid file; only the no-trailing-newline body case is affected.
+    let text = frontmatter::render(&path, &fm, &cb.content)?;
     write_atomic(&path, text.as_bytes())?;
     Ok(())
 }
@@ -268,6 +272,44 @@ mod tests {
         let loaded = load_all_content_blocks(dir.path()).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].content, "v2\n");
+    }
+
+    #[test]
+    fn body_without_trailing_newline_round_trips_byte_exact() {
+        // Regression: a previous save_content_block appended `\n`
+        // unconditionally, so a Braze block whose stored content was
+        // `Hello` (no terminator) would reload as `Hello\n` and diff
+        // as Modified forever. The fix preserves body bytes verbatim.
+        let dir = tempfile::tempdir().unwrap();
+        let original = ContentBlock {
+            name: "no_eol".into(),
+            description: None,
+            content: "Hello".into(),
+            tags: vec![],
+            state: ContentBlockState::Active,
+        };
+        save_content_block(dir.path(), &original).unwrap();
+        let loaded = load_all_content_blocks(dir.path()).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].content, "Hello");
+        assert_eq!(loaded[0], original);
+    }
+
+    #[test]
+    fn multiline_body_without_trailing_newline_round_trips() {
+        // Same fidelity guarantee for the harder case where the body
+        // contains internal newlines but no terminator.
+        let dir = tempfile::tempdir().unwrap();
+        let original = ContentBlock {
+            name: "multi".into(),
+            description: None,
+            content: "line one\nline two".into(),
+            tags: vec![],
+            state: ContentBlockState::Active,
+        };
+        save_content_block(dir.path(), &original).unwrap();
+        let loaded = load_all_content_blocks(dir.path()).unwrap();
+        assert_eq!(loaded[0].content, "line one\nline two");
     }
 
     #[test]
