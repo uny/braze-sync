@@ -44,4 +44,16 @@ pub enum BrazeApiError {
         endpoint: &'static str,
         detail: String,
     },
+
+    /// Braze returned HTTP 200 with a non-success `message` field that
+    /// does not match any known not-found phrase. Surfaced verbatim so
+    /// an unexpected server-side failure is loud instead of being
+    /// silently misclassified as `NotFound` — the wire shapes in v0.2.0
+    /// are ASSUMED per IMPLEMENTATION.md §8.3, so any unrecognised
+    /// status message is exactly the signal the operator needs to see.
+    #[error("Braze {endpoint}: unexpected message in 200 response: {message}")]
+    UnexpectedApiMessage {
+        endpoint: &'static str,
+        message: String,
+    },
 }

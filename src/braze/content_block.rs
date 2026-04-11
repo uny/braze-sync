@@ -59,17 +59,31 @@ impl BrazeClient {
     }
 
     /// Braze returns 200 with a non-success `message` field for unknown
-    /// ids instead of a 404, so we remap that case to `NotFound` to keep
-    /// the call sites consistent with the catalog client.
+    /// ids instead of a 404, so we need to discriminate here rather than
+    /// relying on HTTP status. Recognised not-found phrases remap to
+    /// `NotFound` so callers can branch cleanly; any other non-"success"
+    /// message surfaces verbatim as `UnexpectedApiMessage` so a real
+    /// failure is not silently swallowed. The wire shapes are ASSUMED
+    /// per IMPLEMENTATION.md §8.3 — a blanket "non-success → NotFound"
+    /// rule would misclassify every future surprise as a missing id.
     pub async fn get_content_block(&self, id: &str) -> Result<ContentBlock, BrazeApiError> {
         let req = self
             .get(&["content_blocks", "info"])
             .query(&[("content_block_id", id)]);
         let wire: ContentBlockInfoResponse = self.send_json(req).await?;
-        if !wire.is_success() {
-            return Err(BrazeApiError::NotFound {
-                resource: format!("content_block id '{id}'"),
-            });
+        match wire.classify_message() {
+            InfoMessageClass::Success => {}
+            InfoMessageClass::NotFound => {
+                return Err(BrazeApiError::NotFound {
+                    resource: format!("content_block id '{id}'"),
+                });
+            }
+            InfoMessageClass::Unexpected(message) => {
+                return Err(BrazeApiError::UnexpectedApiMessage {
+                    endpoint: "/content_blocks/info",
+                    message,
+                });
+            }
         }
         Ok(ContentBlock {
             name: wire.name,
@@ -159,11 +173,37 @@ struct ContentBlockInfoResponse {
     message: Option<String>,
 }
 
+/// Outcome of classifying the `message` field on a `/content_blocks/info`
+/// response. `NotFound` preserves the call-site branching contract; the
+/// `Unexpected` arm exists so an unknown message does not get silently
+/// folded into `NotFound` — see the doc comment on `get_content_block`.
+enum InfoMessageClass {
+    Success,
+    NotFound,
+    Unexpected(String),
+}
+
 impl ContentBlockInfoResponse {
-    fn is_success(&self) -> bool {
-        match &self.message {
-            None => true,
-            Some(m) => m.eq_ignore_ascii_case("success"),
+    fn classify_message(&self) -> InfoMessageClass {
+        let Some(raw) = self.message.as_deref() else {
+            return InfoMessageClass::Success;
+        };
+        let trimmed = raw.trim();
+        if trimmed.eq_ignore_ascii_case("success") {
+            return InfoMessageClass::Success;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        // Match the known not-found phrasings conservatively. Anything
+        // we don't recognise must NOT be treated as NotFound — that is
+        // the whole point of this classifier over the previous boolean
+        // check.
+        if lower.contains("not found")
+            || lower.contains("no content block")
+            || lower.contains("does not exist")
+        {
+            InfoMessageClass::NotFound
+        } else {
+            InfoMessageClass::Unexpected(raw.to_string())
         }
     }
 }
@@ -293,6 +333,35 @@ mod tests {
         assert_eq!(cb.tags, vec!["pr".to_string(), "dialog".to_string()]);
         // Braze does not return state; we default to Active.
         assert_eq!(cb.state, ContentBlockState::Active);
+    }
+
+    #[tokio::test]
+    async fn info_with_unrecognised_error_message_surfaces_as_unexpected() {
+        // Regression guard: before this change, any non-"success"
+        // message was blanket-remapped to NotFound, which would silently
+        // mask a real server-side failure as a missing id. The classifier
+        // now only remaps known not-found phrases, so a novel message
+        // has to come back as `UnexpectedApiMessage`.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/content_blocks/info"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "message": "Internal server hiccup, please retry"
+            })))
+            .mount(&server)
+            .await;
+        let client = make_client(&server);
+        let err = client.get_content_block("some-id").await.unwrap_err();
+        match err {
+            BrazeApiError::UnexpectedApiMessage { endpoint, message } => {
+                assert_eq!(endpoint, "/content_blocks/info");
+                assert!(
+                    message.contains("Internal server hiccup"),
+                    "message not preserved verbatim: {message}"
+                );
+            }
+            other => panic!("expected UnexpectedApiMessage, got {other:?}"),
+        }
     }
 
     #[tokio::test]
