@@ -1,9 +1,13 @@
 //! `braze-sync apply` — the only command that mutates remote state.
 //!
 //! Recomputes the diff via the same code path as `diff`, prints it,
-//! then short-circuits unless `--confirm` is set. Pre-validates the
-//! plan before any API call so a half-applied workspace is impossible,
-//! and aborts the loop on the first failure.
+//! then short-circuits unless `--confirm` is set. Pre-validates
+//! unsupported/destructive ops before any API call, then walks the
+//! plan and aborts on the first write failure. Braze has no
+//! cross-resource transaction, so a mid-loop failure can still leave
+//! earlier writes applied — the pre-validation prevents *known-bad*
+//! plans from firing any writes at all, but it does not promise
+//! cross-write atomicity.
 
 use crate::braze::BrazeClient;
 use crate::config::ResolvedConfig;
@@ -140,7 +144,8 @@ pub async fn run(
 }
 
 /// Reject ops the API can't actually perform. Runs before any write
-/// call so a partial apply is impossible.
+/// call so a statically-known-bad plan cannot fire a partial apply;
+/// runtime write failures can still leave earlier writes in place.
 fn check_for_unsupported_ops(summary: &DiffSummary) -> anyhow::Result<()> {
     for diff in &summary.diffs {
         if let ResourceDiff::CatalogSchema(d) = diff {
