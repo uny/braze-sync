@@ -90,7 +90,10 @@ impl BrazeClient {
             description: cb.description.as_deref(),
             content: &cb.content,
             tags: &cb.tags,
-            state: cb.state,
+            // Create is the one time braze-sync communicates an initial
+            // state to Braze. On update we omit state entirely — see the
+            // note on update_content_block.
+            state: Some(cb.state),
         };
         let req = self.post(&["content_blocks", "create"]).json(&body);
         let resp: ContentBlockCreateResponse = self.send_json(req).await?;
@@ -99,6 +102,17 @@ impl BrazeClient {
 
     /// Used both for body changes and for the `--archive-orphans` rename
     /// (same id, `[ARCHIVED-...]` name).
+    ///
+    /// `state` is intentionally omitted from the request body. The
+    /// diff layer excludes it from `syncable_eq` (there is no state
+    /// field on `/content_blocks/info`, so we cannot read it back and
+    /// cannot compare it), and the README documents it as a local-only
+    /// field. Forwarding `cb.state` here would let local edits leak
+    /// into Braze piggyback-style whenever another field changed, and
+    /// could silently overwrite a real remote state that braze-sync
+    /// has no way to observe — the same "infinite drift" trap the
+    /// honest-orphan design exists to avoid. Leaving state off makes
+    /// the wire-level behavior match the documented semantics.
     pub async fn update_content_block(
         &self,
         id: &str,
@@ -110,7 +124,7 @@ impl BrazeClient {
             description: cb.description.as_deref(),
             content: &cb.content,
             tags: &cb.tags,
-            state: cb.state,
+            state: None,
         };
         let req = self.post(&["content_blocks", "update"]).json(&body);
         self.send_ok(req).await
@@ -163,7 +177,8 @@ struct ContentBlockWriteBody<'a> {
     description: Option<&'a str>,
     content: &'a str,
     tags: &'a [String],
-    state: ContentBlockState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<ContentBlockState>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -358,7 +373,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_sends_id_in_body() {
+    async fn update_sends_id_in_body_and_omits_state() {
+        // Pins two invariants: the update body carries
+        // `content_block_id` (so Braze knows which block to modify),
+        // and it does NOT carry a `state` field. State is local-only
+        // per the README and `diff::content_block::syncable_eq`;
+        // sending it here would let a local `state: draft` silently
+        // overwrite the remote whenever another field happened to
+        // change.
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/content_blocks/update"))
@@ -366,20 +388,22 @@ mod tests {
                 "content_block_id": "id-1",
                 "name": "promo",
                 "content": "Updated body",
-                "tags": [],
-                "state": "active"
+                "tags": []
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
             .mount(&server)
             .await;
 
         let client = make_client(&server);
+        // Deliberately pick Draft here: if the client still forwarded
+        // state on update, `body_json` above would fail to match
+        // because the body would carry `"state": "draft"`.
         let cb = ContentBlock {
             name: "promo".into(),
             description: None,
             content: "Updated body".into(),
             tags: vec![],
-            state: ContentBlockState::Active,
+            state: ContentBlockState::Draft,
         };
         client.update_content_block("id-1", &cb).await.unwrap();
     }

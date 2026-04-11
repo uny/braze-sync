@@ -152,9 +152,11 @@ These will be lifted across the v0.x → v1.0 milestones:
 - **Content block `state` is local-only.** The `state: active|draft`
   field in `content_blocks/<name>.liquid` frontmatter is parsed and
   round-tripped, but Braze's content_blocks API does not expose state,
-  so braze-sync's diff intentionally ignores it. Treat it as a
-  documentation aid for the file's reader rather than a syncable
-  property.
+  so braze-sync's diff intentionally ignores it. `apply` writes the
+  field exactly once — when *creating* a new block — and never sends
+  it on updates, so editing `state` in a file that already exists on
+  Braze has no effect. Treat it as a documentation aid for the file's
+  reader rather than a syncable property.
 - **No pagination yet.** v0.2.0 sends a single page request to
   `/catalogs` and `/content_blocks/list` (limit 100). For
   `/content_blocks/list` this is a **hard error** if Braze reports more

@@ -347,14 +347,18 @@ async fn content_block_confirm_update_posts_to_update_endpoint_with_id() {
         })))
         .mount(&server)
         .await;
+    // Pins the update body. `state` is deliberately absent — see
+    // `braze::content_block::update_content_block` for the rationale
+    // (state is local-only per the README and must not be sent on
+    // updates, where it could silently overwrite remote state that
+    // braze-sync cannot observe via /info).
     Mock::given(method("POST"))
         .and(path("/content_blocks/update"))
         .and(body_json(json!({
             "content_block_id": "id-promo",
             "name": "promo",
             "content": "new body\n",
-            "tags": [],
-            "state": "active"
+            "tags": []
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
         .expect(1)
