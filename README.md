@@ -163,10 +163,21 @@ These will be lifted across the v0.x → v1.0 milestones:
   results than fit on one page, or if a full page comes back with no
   total to verify against — workspaces with >100 content blocks cannot
   use v0.2.0 yet. Without the guard, `apply` could create duplicates of
-  blocks living on page 2+ (their names would diff as `Added`). For
-  `/catalogs` v0.2.0 still only warns; the same guard will be applied
-  symmetrically in a follow-up. Pagination support lands in Phase C
-  scale validation.
+  blocks living on page 2+ (their names would diff as `Added`). This
+  limit is symmetric for `--name <foo>`: content blocks have no
+  get-by-name endpoint, so `diff --name`, `apply --name`, and
+  `export --name` still list-then-filter and hit the same page cap.
+  For `/catalogs` v0.2.0 still only warns; the same guard will be
+  applied symmetrically in a follow-up. Pagination support lands in
+  Phase C scale validation.
+- **`--archive-orphans` is a two-step read-modify-write.** The rename
+  fetches `/content_blocks/info` to preserve the body, then posts
+  `/content_blocks/update` with the archived name. If another operator
+  edits the same block in the dashboard between those two calls, the
+  update clobbers their change with the pre-rename body. Safe for the
+  single-operator GitOps workflow v0.2.0 targets; a compare-and-swap
+  header would lift it, but Braze's content_blocks API does not
+  currently document one.
 - **`--no-color` only affects tracing output.** v0.2.0 does not emit
   ANSI colors in table or diff output, so the flag currently only
   suppresses ANSI escapes from the tracing subscriber on stderr.
