@@ -56,4 +56,17 @@ pub enum BrazeApiError {
         endpoint: &'static str,
         message: String,
     },
+
+    /// A list endpoint returned two entries sharing the same `name`.
+    /// Braze is expected to enforce name uniqueness for named resources
+    /// (content blocks, email templates), so this is a contract
+    /// violation rather than an operator-fixable condition. We surface
+    /// it loudly because the diff/apply path indexes by name — silently
+    /// keeping only one of a duplicate pair would hide a resource from
+    /// every subsequent list/update/archive operation.
+    #[error("Braze {endpoint}: duplicate name {name:?} in list response")]
+    DuplicateNameInListResponse {
+        endpoint: &'static str,
+        name: String,
+    },
 }

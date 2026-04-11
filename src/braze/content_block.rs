@@ -33,6 +33,13 @@ impl BrazeClient {
         // because we'd rather refuse a workspace that happens to have
         // exactly LIST_LIMIT blocks than let apply create duplicates of
         // page-2 blocks in a workspace with LIST_LIMIT + N.
+        // The remaining `_ => None` arm also covers `None if returned <
+        // LIST_LIMIT`: a short page with no `count` is trusted as the
+        // full workspace because every paginated API we know of returns
+        // exactly `limit` when more pages exist. If Braze ever returns a
+        // soft-filtered short page (e.g. tombstoned entries hidden
+        // server-side), that assumption would silently truncate — worth
+        // revisiting in Phase C alongside real pagination.
         let truncation_detail: Option<String> = match resp.count {
             Some(total) if total > returned => Some(format!("got {returned} of {total} results")),
             None if returned >= LIST_LIMIT as usize => Some(format!(
@@ -46,6 +53,22 @@ impl BrazeClient {
                 endpoint: "/content_blocks/list",
                 detail,
             });
+        }
+
+        // Duplicate names would collapse the name→id index in
+        // `diff::compute_content_block_plan`, making one of a pair
+        // invisible to every subsequent list/update/archive op. Braze
+        // is expected to enforce uniqueness, so this is a loud contract
+        // violation, not a recoverable condition.
+        let mut seen: std::collections::HashSet<&str> =
+            std::collections::HashSet::with_capacity(resp.content_blocks.len());
+        for entry in &resp.content_blocks {
+            if !seen.insert(entry.name.as_str()) {
+                return Err(BrazeApiError::DuplicateNameInListResponse {
+                    endpoint: "/content_blocks/list",
+                    name: entry.name.clone(),
+                });
+            }
         }
 
         Ok(resp
@@ -639,6 +662,36 @@ mod tests {
         let client = make_client(&server);
         let summaries = client.list_content_blocks().await.unwrap();
         assert_eq!(summaries.len(), 100);
+    }
+
+    #[tokio::test]
+    async fn list_errors_on_duplicate_name_in_response() {
+        // Regression guard: if Braze ever violates its own name-uniqueness
+        // contract, the BTreeMap-based name→id index in
+        // `diff::compute_content_block_plan` would silently keep only
+        // the last id for a duplicate pair, hiding one of the two blocks
+        // from every subsequent list/update/archive op. Fail loud instead.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/content_blocks/list"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 2,
+                "content_blocks": [
+                    {"content_block_id": "id-a", "name": "dup"},
+                    {"content_block_id": "id-b", "name": "dup"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let client = make_client(&server);
+        let err = client.list_content_blocks().await.unwrap_err();
+        match err {
+            BrazeApiError::DuplicateNameInListResponse { endpoint, name } => {
+                assert_eq!(endpoint, "/content_blocks/list");
+                assert_eq!(name, "dup");
+            }
+            other => panic!("expected DuplicateNameInListResponse, got {other:?}"),
+        }
     }
 
     #[tokio::test]
