@@ -28,14 +28,9 @@ struct CatalogsResponse {
 impl BrazeClient {
     /// `GET /catalogs` — list every catalog schema in the workspace.
     ///
-    /// Sends a single request. Pagination is not yet implemented, so
-    /// if Braze reports a `next_cursor` the client hard-fails with
-    /// [`BrazeApiError::PaginationNotImplemented`] rather than silently
-    /// returning page 1. The previous v0.2.0 behavior was to log a
-    /// warning and keep going, which let `apply` on a >1-page workspace
-    /// re-create the page-2 catalogs and mis-report drift against them.
-    /// Fail-closed matches the pattern established by
-    /// `list_content_blocks`.
+    /// Fails closed on `next_cursor` rather than returning page 1: a
+    /// partial view would let `apply` re-create page-2 catalogs and
+    /// mis-report drift. Mirrors `list_content_blocks`.
     pub async fn list_catalogs(&self) -> Result<Vec<Catalog>, BrazeApiError> {
         let req = self.get(&["catalogs"]);
         let resp: CatalogsResponse = self.send_json(req).await?;
@@ -210,12 +205,8 @@ mod tests {
     #[tokio::test]
     async fn list_catalogs_ignores_unknown_fields_in_response() {
         // Forward compat: a future Braze response with extra fields
-        // (both at the top level and inside catalog entries) should
-        // still parse cleanly because no struct in the chain uses
-        // deny_unknown_fields. `next_cursor` is deliberately NOT set
-        // here — the cursor path has its own test
-        // (`list_catalogs_errors_when_next_cursor_present`) so this
-        // case stays focused on unknown-field tolerance alone.
+        // (top-level and inside catalog entries) should still parse
+        // because no struct in the chain uses deny_unknown_fields.
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/catalogs"))
@@ -244,11 +235,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_catalogs_errors_when_next_cursor_present() {
-        // Regression guard for the v0.2.0 silent-truncation bug:
-        // a non-empty `next_cursor` must surface as
-        // `PaginationNotImplemented` so that a workspace with >1 page
-        // of catalogs cannot feed `apply` a partial view of remote
-        // state. Empty-string cursor is tested separately below.
+        // Regression guard: v0.2.0 silently returned page 1 here.
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/catalogs"))

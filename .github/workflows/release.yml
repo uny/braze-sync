@@ -105,10 +105,8 @@ jobs:
           generate_release_notes: true
           files: artifacts/*
 
-  # Publish to crates.io so `cargo install braze-sync` picks up the new
-  # version. Runs last, after the GitHub Release is live, so a publish
-  # failure leaves the binary artifacts in place and an operator can
-  # retry `cargo publish` manually.
+  # Runs after `release` so a publish failure leaves binaries uploaded
+  # and `cargo publish` can be retried manually.
   publish:
     needs: release
     runs-on: ubuntu-latest
