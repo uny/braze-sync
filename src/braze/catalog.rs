@@ -19,7 +19,8 @@ struct CatalogsResponse {
     #[serde(default)]
     catalogs: Vec<Catalog>,
     /// Pagination cursor returned by Braze when more pages exist.
-    /// v0.1.0 does not follow cursors; if present, a warning is logged.
+    /// Its presence is the signal we use to fail closed — see
+    /// `list_catalogs`.
     #[serde(default)]
     next_cursor: Option<String>,
 }
@@ -27,18 +28,22 @@ struct CatalogsResponse {
 impl BrazeClient {
     /// `GET /catalogs` — list every catalog schema in the workspace.
     ///
-    /// v0.1.0 sends a single request and returns the first page.
-    /// Pagination handling is not yet implemented; workspaces with many
-    /// catalogs may see truncated results.
+    /// Fails closed on `next_cursor` rather than returning page 1: a
+    /// partial view would let `apply` re-create page-2 catalogs and
+    /// mis-report drift. Mirrors `list_content_blocks`.
     pub async fn list_catalogs(&self) -> Result<Vec<Catalog>, BrazeApiError> {
         let req = self.get(&["catalogs"]);
         let resp: CatalogsResponse = self.send_json(req).await?;
-        if let Some(cursor) = &resp.next_cursor {
+        if let Some(cursor) = resp.next_cursor.as_deref() {
             if !cursor.is_empty() {
-                tracing::warn!(
-                    "Braze returned a pagination cursor; only the first page \
-                     of catalogs was fetched (pagination is not yet implemented)"
-                );
+                return Err(BrazeApiError::PaginationNotImplemented {
+                    endpoint: "/catalogs",
+                    detail: format!(
+                        "got {} catalog(s) plus a non-empty next_cursor; \
+                         aborting to prevent silent truncation",
+                        resp.catalogs.len()
+                    ),
+                });
             }
         }
         Ok(resp.catalogs)
@@ -200,9 +205,8 @@ mod tests {
     #[tokio::test]
     async fn list_catalogs_ignores_unknown_fields_in_response() {
         // Forward compat: a future Braze response with extra fields
-        // (both at the top level and inside catalog entries) should
-        // still parse cleanly because no struct in the chain uses
-        // deny_unknown_fields.
+        // (top-level and inside catalog entries) should still parse
+        // because no struct in the chain uses deny_unknown_fields.
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/catalogs"))
@@ -218,7 +222,7 @@ mod tests {
                         ]
                     }
                 ],
-                "next_cursor": "abc",
+                "future_top_level": {"whatever": true},
                 "message": "success"
             })))
             .mount(&server)
@@ -227,6 +231,54 @@ mod tests {
         let cats = client.list_catalogs().await.unwrap();
         assert_eq!(cats.len(), 1);
         assert_eq!(cats[0].name, "future");
+    }
+
+    #[tokio::test]
+    async fn list_catalogs_errors_when_next_cursor_present() {
+        // Regression guard: v0.2.0 silently returned page 1 here.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/catalogs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "catalogs": [
+                    {"name": "cardiology", "fields": [{"name": "id", "type": "string"}]}
+                ],
+                "next_cursor": "abc123"
+            })))
+            .mount(&server)
+            .await;
+        let client = make_client(&server);
+        let err = client.list_catalogs().await.unwrap_err();
+        match err {
+            BrazeApiError::PaginationNotImplemented { endpoint, detail } => {
+                assert_eq!(endpoint, "/catalogs");
+                assert!(detail.contains("next_cursor"), "detail: {detail}");
+                assert!(detail.contains("1 catalog"), "detail: {detail}");
+            }
+            other => panic!("expected PaginationNotImplemented, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_catalogs_empty_string_cursor_is_treated_as_no_more_pages() {
+        // Some paginated APIs return `next_cursor: ""` on the last
+        // page instead of omitting the field. Treat that as "no more
+        // pages" rather than tripping the fail-closed guard — the
+        // alternative would turn every workspace under one page into
+        // an error.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/catalogs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "catalogs": [{"name": "only", "fields": []}],
+                "next_cursor": ""
+            })))
+            .mount(&server)
+            .await;
+        let client = make_client(&server);
+        let cats = client.list_catalogs().await.unwrap();
+        assert_eq!(cats.len(), 1);
+        assert_eq!(cats[0].name, "only");
     }
 
     #[tokio::test]
