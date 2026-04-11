@@ -174,6 +174,7 @@ pub(crate) async fn compute_content_block_plan(
                     .get_content_block(id)
                     .await
                     .map(|cb| (name.to_string(), cb))
+                    .with_context(|| format!("fetching content block '{name}'"))
             }
         }))
         .buffer_unordered(FETCH_CONCURRENCY)
@@ -189,11 +190,22 @@ pub(crate) async fn compute_content_block_plan(
         let local_cb = local_by_name.get(name).copied();
         let remote_cb = fetched.get(name);
         let remote_present = id_index.contains_key(name);
+        // Spell out only the legal triples. `fetched` carries only names
+        // present on BOTH sides, and `try_collect` aborts on the first
+        // /info failure, so a shared name always lands in `fetched`. The
+        // previous `(Some, None, _)` arm accepted `remote_present == true`
+        // and would have routed a partial-fetch shared name through
+        // `Added`, silently creating a duplicate in Braze on apply.
         let diff_result = match (local_cb, remote_cb, remote_present) {
-            (Some(l), Some(r), _) => diff_content_block(Some(l), Some(r)),
-            (Some(l), None, _) => diff_content_block(Some(l), None),
-            (None, _, true) => Some(ContentBlockDiff::orphan(name)),
-            (None, _, false) => None,
+            (Some(l), Some(r), true) => diff_content_block(Some(l), Some(r)),
+            (Some(l), None, false) => diff_content_block(Some(l), None),
+            (None, None, true) => Some(ContentBlockDiff::orphan(name)),
+            _ => unreachable!(
+                "content_block diff invariant violated for '{name}': \
+                 local={} remote={} remote_present={remote_present}",
+                local_cb.is_some(),
+                remote_cb.is_some(),
+            ),
         };
         if let Some(d) = diff_result {
             diffs.push(ResourceDiff::ContentBlock(d));

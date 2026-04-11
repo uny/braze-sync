@@ -490,6 +490,45 @@ async fn content_block_apply_aborts_on_paginated_list_response() {
     );
 }
 
+/// Custom matcher that asserts an `[ARCHIVED-...]` rename request body
+/// has the right shape AND does not carry a `state` field.
+///
+/// State is local-only per the README and `diff::content_block::syncable_eq`
+/// — see `braze::content_block::update_content_block` for the full
+/// rationale. The unit test in that module pins state-absence at the
+/// `BrazeClient` level; this matcher pins it again at the binary level so
+/// a future refactor that bypasses `update_content_block` (or constructs
+/// its own request body) can't silently leak state into the wire.
+struct ArchiveRenameBody {
+    expected_id: &'static str,
+    expected_content: &'static str,
+    expected_tags: serde_json::Value,
+    original_name: &'static str,
+}
+
+impl wiremock::Match for ArchiveRenameBody {
+    fn matches(&self, request: &wiremock::Request) -> bool {
+        let body: serde_json::Value = match serde_json::from_slice(&request.body) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let Some(obj) = body.as_object() else {
+            return false;
+        };
+        if obj.contains_key("state") {
+            return false;
+        }
+        let id_ok = obj.get("content_block_id").and_then(|v| v.as_str()) == Some(self.expected_id);
+        let content_ok = obj.get("content").and_then(|v| v.as_str()) == Some(self.expected_content);
+        let tags_ok = obj.get("tags") == Some(&self.expected_tags);
+        let name_ok = obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .is_some_and(|n| n.starts_with("[ARCHIVED-") && n.ends_with(self.original_name));
+        id_ok && content_ok && tags_ok && name_ok
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn content_block_archive_orphans_renames_via_update() {
     // With --archive-orphans, the orphan is renamed via POST /update
@@ -514,14 +553,75 @@ async fn content_block_archive_orphans_renames_via_update() {
         .expect(1)
         .mount(&server)
         .await;
-    // Match by URL + id + content; the name is stamped with today's
-    // date so we can't pin the exact body literal here. Use a partial
-    // matcher: any /update POST hitting this path is acceptable, and
-    // .expect(1) ensures exactly one call fires.
+    // Pin the request body shape AND the absence of `state` via
+    // ArchiveRenameBody. The name carries today's date so a literal
+    // body_json match would couple to the system clock; the matcher
+    // checks the dynamic field's prefix/suffix instead.
     Mock::given(method("POST"))
         .and(path("/content_blocks/update"))
+        .and(ArchiveRenameBody {
+            expected_id: "id-orphan",
+            expected_content: "preserved body\n",
+            expected_tags: json!(["pr"]),
+            original_name: "] legacy",
+        })
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
         .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args([
+                "apply",
+                "--resource",
+                "content_block",
+                "--confirm",
+                "--archive-orphans",
+            ])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn content_block_archive_orphans_skips_already_archived_blocks() {
+    // Idempotent re-archive: an orphan whose name already carries the
+    // [ARCHIVED-YYYY-MM-DD] prefix must NOT trigger another /info or
+    // /update call. The unit test for `archive_name` covers the pure
+    // function; this test pins the binary-level short-circuit in
+    // `apply_content_block` so a future refactor can't regress it
+    // (otherwise re-running `apply --archive-orphans` would stamp
+    // `[ARCHIVED-today] [ARCHIVED-yesterday] foo`).
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [
+                {"content_block_id": "id-old", "name": "[ARCHIVED-2024-01-01] ancient"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    // /info must NOT be called — the short-circuit fires before the fetch.
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    // No POST should fire either.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
         .mount(&server)
         .await;
 

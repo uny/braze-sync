@@ -143,7 +143,7 @@ fn check_for_unsupported_ops(summary: &DiffSummary) -> anyhow::Result<()> {
             match &d.op {
                 DiffOp::Added(_) => {
                     return Err(anyhow!(
-                        "creating a new catalog '{}' is not supported in v0.1.0; \
+                        "creating a new catalog '{}' is not supported by braze-sync; \
                          create the catalog in the Braze dashboard first, then run \
                          `braze-sync export` to populate the local schema",
                         d.name
@@ -151,7 +151,7 @@ fn check_for_unsupported_ops(summary: &DiffSummary) -> anyhow::Result<()> {
                 }
                 DiffOp::Removed(_) => {
                     return Err(anyhow!(
-                        "deleting catalog '{}' (top-level) is not supported in v0.1.0; \
+                        "deleting catalog '{}' (top-level) is not supported by braze-sync; \
                          only field-level changes can be applied",
                         d.name
                     ));
@@ -164,7 +164,7 @@ fn check_for_unsupported_ops(summary: &DiffSummary) -> anyhow::Result<()> {
                 if let DiffOp::Modified { from, to } = fd {
                     return Err(anyhow!(
                         "modifying field '{}' on catalog '{}' (type {} → {}) \
-                         is not supported in v0.1.0; the change would be \
+                         is not supported by braze-sync; the change would be \
                          data-losing on the field. Drop the field manually \
                          in the Braze dashboard and re-run `braze-sync apply`",
                         to.name,
@@ -206,7 +206,10 @@ async fn apply_content_block(
             return Ok(0);
         }
         // Update endpoint requires the full body, not a partial.
-        let mut cb = client.get_content_block(id).await?;
+        let mut cb = client
+            .get_content_block(id)
+            .await
+            .with_context(|| format!("fetching content block '{}' for archive rename", d.name))?;
         cb.name = archived;
         tracing::info!(
             content_block = %d.name,

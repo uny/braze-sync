@@ -108,14 +108,20 @@ async fn export_content_blocks(
         return Ok(0);
     }
 
-    let blocks: Vec<crate::resource::ContentBlock> = futures::stream::iter(
-        targets
-            .iter()
-            .map(|s| async move { client.get_content_block(&s.content_block_id).await }),
-    )
-    .buffer_unordered(FETCH_CONCURRENCY)
-    .try_collect()
-    .await?;
+    let blocks: Vec<crate::resource::ContentBlock> =
+        futures::stream::iter(targets.iter().map(|s| {
+            let name = s.name.as_str();
+            let id = s.content_block_id.as_str();
+            async move {
+                client
+                    .get_content_block(id)
+                    .await
+                    .with_context(|| format!("fetching content block '{name}'"))
+            }
+        }))
+        .buffer_unordered(FETCH_CONCURRENCY)
+        .try_collect()
+        .await?;
 
     for cb in &blocks {
         content_block_io::save_content_block(content_blocks_root, cb)?;
