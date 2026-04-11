@@ -101,9 +101,32 @@ pub fn diff(
 }
 
 /// Equality for the fields braze-sync can actually push to Braze.
-/// Excludes `state` — see the module docs.
+/// Excludes `state` — see the module docs. Tags are compared as a
+/// multiset because Braze's content block APIs don't document tag-order
+/// stability across `/info` fetches; an order-sensitive comparison would
+/// surface a reorder as Modified, let apply push the local order back,
+/// and potentially flip on the next diff — the same infinite-drift
+/// failure mode the `state` exclusion exists to prevent.
 fn syncable_eq(a: &ContentBlock, b: &ContentBlock) -> bool {
-    a.name == b.name && a.description == b.description && a.content == b.content && a.tags == b.tags
+    a.name == b.name
+        && a.description == b.description
+        && a.content == b.content
+        && tags_eq_unordered(&a.tags, &b.tags)
+}
+
+/// Multiset equality: same length + same elements after sort. Keeps
+/// duplicate-awareness (unlike a set) so `["a","a"]` vs `["a"]` still
+/// surfaces as a real change on the off chance Braze ever returns
+/// duplicated tags.
+fn tags_eq_unordered(a: &[String], b: &[String]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut a: Vec<&str> = a.iter().map(String::as_str).collect();
+    let mut b: Vec<&str> = b.iter().map(String::as_str).collect();
+    a.sort_unstable();
+    b.sort_unstable();
+    a == b
 }
 
 fn compute_text_diff(from: &str, to: &str) -> TextDiffSummary {
@@ -206,6 +229,33 @@ mod tests {
         let d = diff(Some(&l), Some(&r)).unwrap();
         assert!(matches!(d.op, DiffOp::Modified { .. }));
         assert!(d.text_diff.is_none());
+    }
+
+    #[test]
+    fn tag_reorder_alone_is_not_drift() {
+        // Braze's content block APIs don't document tag-order stability
+        // across /info fetches, so a reorder must surface as Unchanged.
+        // Otherwise apply would push local order back and the diff could
+        // flip forever — same infinite-drift mode as the state exclusion.
+        let mut l = cb("tag_reorder", "body\n");
+        let mut r = cb("tag_reorder", "body\n");
+        l.tags = vec!["alpha".into(), "beta".into(), "gamma".into()];
+        r.tags = vec!["gamma".into(), "alpha".into(), "beta".into()];
+        let d = diff(Some(&l), Some(&r)).unwrap();
+        assert!(matches!(d.op, DiffOp::Unchanged), "got {:?}", d.op);
+        assert!(!d.has_changes());
+    }
+
+    #[test]
+    fn tag_multiset_difference_with_same_length_is_drift() {
+        // Regression guard: sort+eq must not collapse same-length vecs
+        // with different element sets into "equal".
+        let mut l = cb("tag_set", "body\n");
+        let mut r = cb("tag_set", "body\n");
+        l.tags = vec!["a".into(), "b".into()];
+        r.tags = vec!["a".into(), "c".into()];
+        let d = diff(Some(&l), Some(&r)).unwrap();
+        assert!(matches!(d.op, DiffOp::Modified { .. }));
     }
 
     #[test]
