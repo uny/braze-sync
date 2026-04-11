@@ -109,9 +109,25 @@ pub fn diff(
 /// failure mode the `state` exclusion exists to prevent.
 fn syncable_eq(a: &ContentBlock, b: &ContentBlock) -> bool {
     a.name == b.name
-        && a.description == b.description
+        && desc_eq(&a.description, &b.description)
         && a.content == b.content
         && tags_eq_unordered(&a.tags, &b.tags)
+}
+
+/// `None` and `Some("")` both mean "no description" for the purposes
+/// of diffing. Braze's `/info` omits the field entirely when a block
+/// has no description, so it always deserializes as `None`; a local
+/// file that carries `description: ""` (either because an operator
+/// typed an empty value or because YAML round-tripped a missing key
+/// that way) would otherwise diff as Modified forever, push the empty
+/// string on apply, come back as `None` again on the next fetch, and
+/// loop — the same infinite-drift failure mode as the `state`
+/// exclusion. Treating the two as equal here is the narrowest fix
+/// that preserves file fidelity (we deliberately do NOT normalize on
+/// load, so an intentional `description: ""` still round-trips to
+/// disk byte-for-byte).
+fn desc_eq(a: &Option<String>, b: &Option<String>) -> bool {
+    a.as_deref().unwrap_or("") == b.as_deref().unwrap_or("")
 }
 
 /// Multiset equality: same length + same elements after sort. Keeps
@@ -266,6 +282,52 @@ mod tests {
         let d = diff(Some(&l), Some(&r)).unwrap();
         assert!(matches!(d.op, DiffOp::Unchanged));
         assert!(!d.has_changes());
+    }
+
+    #[test]
+    fn empty_local_description_equals_missing_remote_description() {
+        // Regression guard for the `desc_eq` fix. A local file with
+        // `description: ""` must diff equal against a remote /info
+        // response that omits the field entirely (which deserializes
+        // as `None`). Otherwise apply would push the empty string,
+        // Braze would normalize it back to no-description, and the
+        // next diff would flip — classic infinite-drift.
+        let mut l = cb("desc_empty_local", "body\n");
+        let mut r = cb("desc_empty_local", "body\n");
+        l.description = Some(String::new());
+        r.description = None;
+        let d = diff(Some(&l), Some(&r)).unwrap();
+        assert!(matches!(d.op, DiffOp::Unchanged), "got {:?}", d.op);
+        assert!(!d.has_changes());
+    }
+
+    #[test]
+    fn missing_local_description_equals_empty_remote_description() {
+        // The symmetric case: if Braze ever returns `description: ""`
+        // explicitly (the wire shape is ASSUMED, so this isn't
+        // impossible), a local file without the field must still diff
+        // equal so the two representations don't loop against each other.
+        let mut l = cb("desc_empty_remote", "body\n");
+        let mut r = cb("desc_empty_remote", "body\n");
+        l.description = None;
+        r.description = Some(String::new());
+        let d = diff(Some(&l), Some(&r)).unwrap();
+        assert!(matches!(d.op, DiffOp::Unchanged), "got {:?}", d.op);
+        assert!(!d.has_changes());
+    }
+
+    #[test]
+    fn real_description_difference_is_still_modified() {
+        // `desc_eq` must NOT collapse genuinely distinct descriptions.
+        // Guards against a fix that accidentally unwrap-or-empties
+        // both sides into the same non-empty string (which `==` would
+        // otherwise catch, but belt and braces).
+        let mut l = cb("desc_real", "body\n");
+        let mut r = cb("desc_real", "body\n");
+        l.description = Some("new".into());
+        r.description = Some("old".into());
+        let d = diff(Some(&l), Some(&r)).unwrap();
+        assert!(matches!(d.op, DiffOp::Modified { .. }));
     }
 
     #[test]

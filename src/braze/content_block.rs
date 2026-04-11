@@ -231,6 +231,15 @@ impl ContentBlockInfoResponse {
     }
 }
 
+/// Wire body shared by `/content_blocks/create` and `.../update`. Both
+/// endpoints are replace-all on the fields serialized here: `tags` is
+/// always sent (an empty array drops every tag server-side) and
+/// `content` overwrites the current body. `description` is sent when
+/// `Some` (including `Some("")` — see `diff::content_block::desc_eq`
+/// for why empty-string is semantically equivalent to no description
+/// at diff time but still goes over the wire if present locally).
+/// `state` is the one field we intentionally do NOT round-trip on
+/// update — see the doc comment on `update_content_block`.
 #[derive(Serialize)]
 struct ContentBlockWriteBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -636,6 +645,33 @@ mod tests {
             matches!(err, BrazeApiError::PaginationNotImplemented { .. }),
             "got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn list_short_page_with_no_count_is_trusted_as_complete() {
+        // Pins the `_ => None` arm of the truncation match for the
+        // non-empty-short-page-no-count case. `list_empty_array`
+        // covers the 0-entry flavour; this test nails down that a
+        // partial-but-under-LIMIT page without `count` is accepted
+        // as the full workspace. Matches the comment on
+        // `list_content_blocks` about every known paginated API
+        // returning exactly `limit` when more pages exist.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/content_blocks/list"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content_blocks": [
+                    {"content_block_id": "id-1", "name": "a"},
+                    {"content_block_id": "id-2", "name": "b"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let client = make_client(&server);
+        let summaries = client.list_content_blocks().await.unwrap();
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].name, "a");
+        assert_eq!(summaries[1].name, "b");
     }
 
     #[tokio::test]

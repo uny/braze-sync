@@ -146,6 +146,12 @@ pub async fn run(
 /// Reject ops the API can't actually perform. Runs before any write
 /// call so a statically-known-bad plan cannot fire a partial apply;
 /// runtime write failures can still leave earlier writes in place.
+///
+/// ContentBlock diffs are deliberately not inspected here: every shape
+/// the diff layer can produce (`Added` → create, `Modified` → update,
+/// `orphan` → archive-or-noop) maps to a supported API call, so there
+/// is nothing to statically reject. If a future diff shape is added
+/// (e.g. content-type change with no in-place update), re-evaluate.
 fn check_for_unsupported_ops(summary: &DiffSummary) -> anyhow::Result<()> {
     for diff in &summary.diffs {
         if let ResourceDiff::CatalogSchema(d) = diff {
