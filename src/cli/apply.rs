@@ -108,8 +108,12 @@ pub async fn run(
 
     check_for_unsupported_ops(&summary)?;
 
-    // One canonical archive timestamp per run, even across multiple orphans.
-    let today = chrono::Local::now().date_naive();
+    // One canonical archive timestamp per run, even across multiple
+    // orphans. UTC (not Local) so two operators running the same archive
+    // on the same wall-clock day from different timezones produce the
+    // same `[ARCHIVED-YYYY-MM-DD]` prefix — determinism across a team
+    // matters more than matching the operator's local calendar.
+    let today = chrono::Utc::now().date_naive();
 
     let mut applied = 0;
     for diff in &summary.diffs {

@@ -22,6 +22,11 @@ struct Frontmatter {
     description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     tags: Vec<String>,
+    // Local-only documentation field: parsed and round-tripped, but
+    // deliberately excluded from `diff::content_block::syncable_eq` and
+    // from the update wire body. Editing this on a block that already
+    // exists in Braze has no effect. See `src/diff/content_block.rs`
+    // module docs for the "infinite drift" rationale.
     #[serde(default)]
     state: ContentBlockState,
 }
