@@ -104,14 +104,10 @@ pub fn content_block_body_modified() -> DiffSummary {
 }
 
 pub fn content_block_orphan() -> DiffSummary {
-    let d = ContentBlockDiff {
-        name: "legacy_promo".into(),
-        op: DiffOp::Unchanged,
-        text_diff: None,
-        orphan: true,
-    };
     DiffSummary {
-        diffs: vec![ResourceDiff::ContentBlock(d)],
+        diffs: vec![ResourceDiff::ContentBlock(ContentBlockDiff::orphan(
+            "legacy_promo",
+        ))],
     }
 }
 

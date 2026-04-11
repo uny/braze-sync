@@ -10,9 +10,7 @@ use clap::Args;
 use futures::stream::{StreamExt, TryStreamExt};
 use std::path::Path;
 
-const FETCH_CONCURRENCY: usize = 8;
-
-use super::{selected_kinds, warn_unimplemented};
+use super::{selected_kinds, warn_unimplemented, FETCH_CONCURRENCY};
 
 #[derive(Args, Debug)]
 pub struct ExportArgs {

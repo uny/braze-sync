@@ -22,13 +22,8 @@ struct Frontmatter {
     description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     tags: Vec<String>,
-    #[serde(default = "default_state")]
+    #[serde(default)]
     state: ContentBlockState,
-}
-
-fn default_state() -> ContentBlockState {
-    // Braze /info has no state field; Active is the forward-compat default.
-    ContentBlockState::Active
 }
 
 /// Load every `.liquid` file directly under `root`, sorted by name.
@@ -108,7 +103,7 @@ pub fn save_content_block(root: &Path, cb: &ContentBlock) -> Result<()> {
         tags: cb.tags.clone(),
         state: cb.state,
     };
-    let mut text = frontmatter::render(&fm, &cb.content)?;
+    let mut text = frontmatter::render(&path, &fm, &cb.content)?;
     if !text.ends_with('\n') {
         text.push('\n');
     }

@@ -8,7 +8,7 @@
 use crate::braze::BrazeClient;
 use crate::config::ResolvedConfig;
 use crate::diff::catalog::CatalogSchemaDiff;
-use crate::diff::content_block::ContentBlockDiff;
+use crate::diff::content_block::{ContentBlockDiff, ContentBlockIdIndex};
 use crate::diff::orphan;
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::error::Error;
@@ -18,7 +18,7 @@ use anyhow::{anyhow, Context as _};
 use clap::Args;
 use std::path::Path;
 
-use super::diff::{compute_catalog_schema_diffs, compute_content_block_plan, ContentBlockIdIndex};
+use super::diff::{compute_catalog_schema_diffs, compute_content_block_plan};
 use super::{selected_kinds, warn_unimplemented};
 
 #[derive(Args, Debug)]
@@ -44,9 +44,8 @@ pub struct ApplyArgs {
     pub allow_destructive: bool,
 
     /// Archive orphan Content Blocks / Email Templates by prefixing the
-    /// remote name with `[ARCHIVED-YYYY-MM-DD]`. Catalog Schema has no
-    /// orphans, so this flag is inert for catalog_schema. v0.2.0
-    /// activates it for content_block; email_template lights up in B2.
+    /// remote name with `[ARCHIVED-YYYY-MM-DD]`. Inert for resource
+    /// kinds that have no orphan concept (e.g. catalog schema).
     #[arg(long)]
     pub archive_orphans: bool,
 }
@@ -239,11 +238,10 @@ async fn apply_content_block(
             Ok(1)
         }
         // The diff layer routes remote-only blocks through the orphan
-        // path; this arm is purely defensive.
-        DiffOp::Removed(_) => Err(anyhow!(
-            "internal: ContentBlockDiff produced a Removed op; the diff layer \
-             should route this through the orphan path"
-        )),
+        // flag, never as a Removed op.
+        DiffOp::Removed(_) => {
+            unreachable!("diff layer routes content block removals through orphan")
+        }
         DiffOp::Unchanged => Ok(0),
     }
 }

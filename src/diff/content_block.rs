@@ -13,6 +13,12 @@
 use crate::diff::DiffOp;
 use crate::resource::ContentBlock;
 use similar::{ChangeTag, TextDiff};
+use std::collections::BTreeMap;
+
+/// Name → Braze `content_block_id`. Built during diff, consumed by
+/// apply to translate per-name plan entries into the id the update
+/// endpoint requires.
+pub type ContentBlockIdIndex = BTreeMap<String, String>;
 
 #[derive(Debug, Clone)]
 pub struct ContentBlockDiff {
@@ -37,6 +43,18 @@ impl ContentBlockDiff {
     pub fn is_orphan(&self) -> bool {
         self.orphan
     }
+
+    /// Canonical constructor for the remote-only / orphan shape. No
+    /// DELETE API → `op` stays `Unchanged`; callers branch on the
+    /// `orphan` flag instead.
+    pub fn orphan(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            op: DiffOp::Unchanged,
+            text_diff: None,
+            orphan: true,
+        }
+    }
 }
 
 /// Returns `None` only when both sides are absent. Local is desired
@@ -53,14 +71,7 @@ pub fn diff(
             text_diff: None,
             orphan: false,
         }),
-        // No DELETE API → op stays Unchanged; the orphan flag is what
-        // the apply path branches on.
-        (None, Some(r)) => Some(ContentBlockDiff {
-            name: r.name.clone(),
-            op: DiffOp::Unchanged,
-            text_diff: None,
-            orphan: true,
-        }),
+        (None, Some(r)) => Some(ContentBlockDiff::orphan(&r.name)),
         (Some(l), Some(r)) => {
             if syncable_eq(l, r) {
                 Some(ContentBlockDiff {

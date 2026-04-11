@@ -8,8 +8,10 @@ use crate::braze::error::BrazeApiError;
 use crate::braze::BrazeClient;
 use crate::config::ResolvedConfig;
 use crate::diff::catalog::diff_schema;
-use crate::diff::content_block::{diff as diff_content_block, ContentBlockDiff};
-use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
+use crate::diff::content_block::{
+    diff as diff_content_block, ContentBlockDiff, ContentBlockIdIndex,
+};
+use crate::diff::{DiffSummary, ResourceDiff};
 use crate::error::Error;
 use crate::format::OutputFormat;
 use crate::fs::{catalog_io, content_block_io};
@@ -20,17 +22,7 @@ use futures::stream::{StreamExt, TryStreamExt};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// Maximum concurrent in-flight Braze GET requests for fan-out fetches.
-/// The shared rate limiter still governs RPM; this just bounds peak
-/// concurrency so a workspace with hundreds of blocks doesn't open
-/// hundreds of sockets at once.
-const FETCH_CONCURRENCY: usize = 8;
-
-use super::{selected_kinds, warn_unimplemented};
-
-/// Name → Braze `content_block_id`. Apply uses it to translate
-/// per-name diff entries into the id the update endpoint requires.
-pub(crate) type ContentBlockIdIndex = BTreeMap<String, String>;
+use super::{selected_kinds, warn_unimplemented, FETCH_CONCURRENCY};
 
 #[derive(Args, Debug)]
 pub struct DiffArgs {
@@ -172,8 +164,8 @@ pub(crate) async fn compute_content_block_plan(
         .map(String::as_str)
         .filter(|n| local_by_name.contains_key(n))
         .collect();
-    let fetched: BTreeMap<String, ContentBlock> = futures::stream::iter(shared_names.iter().map(
-        |name| {
+    let fetched: BTreeMap<String, ContentBlock> =
+        futures::stream::iter(shared_names.iter().map(|name| {
             let id = id_index
                 .get(*name)
                 .expect("id_index built from the same summaries set");
@@ -183,11 +175,10 @@ pub(crate) async fn compute_content_block_plan(
                     .await
                     .map(|cb| (name.to_string(), cb))
             }
-        },
-    ))
-    .buffer_unordered(FETCH_CONCURRENCY)
-    .try_collect()
-    .await?;
+        }))
+        .buffer_unordered(FETCH_CONCURRENCY)
+        .try_collect()
+        .await?;
 
     let mut all_names: BTreeSet<&str> = BTreeSet::new();
     all_names.extend(local_by_name.keys().copied());
@@ -201,7 +192,7 @@ pub(crate) async fn compute_content_block_plan(
         let diff_result = match (local_cb, remote_cb, remote_present) {
             (Some(l), Some(r), _) => diff_content_block(Some(l), Some(r)),
             (Some(l), None, _) => diff_content_block(Some(l), None),
-            (None, _, true) => Some(orphan_diff(name)),
+            (None, _, true) => Some(ContentBlockDiff::orphan(name)),
             (None, _, false) => None,
         };
         if let Some(d) = diff_result {
@@ -210,13 +201,4 @@ pub(crate) async fn compute_content_block_plan(
     }
 
     Ok((diffs, id_index))
-}
-
-fn orphan_diff(name: &str) -> ContentBlockDiff {
-    ContentBlockDiff {
-        name: name.to_string(),
-        op: DiffOp::Unchanged,
-        text_diff: None,
-        orphan: true,
-    }
 }

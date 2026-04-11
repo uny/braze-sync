@@ -43,9 +43,9 @@ where
 /// Render `frontmatter` and `body` back to a single text document. The
 /// inverse of [`parse`]. Always emits LF line endings and ensures the
 /// frontmatter section ends with a newline before the closing fence.
-pub fn render<T: Serialize>(frontmatter: &T, body: &str) -> Result<String> {
+pub fn render<T: Serialize>(path: &Path, frontmatter: &T, body: &str) -> Result<String> {
     let yaml = serde_yml::to_string(frontmatter).map_err(|e| Error::InvalidFormat {
-        path: std::path::PathBuf::new(),
+        path: path.to_path_buf(),
         message: format!("frontmatter serialization failed: {e}"),
     })?;
 
@@ -213,7 +213,7 @@ mod tests {
             tags: vec!["a".into(), "b".into()],
         };
         let body = "hello\nworld\n";
-        let text = render(&meta, body).unwrap();
+        let text = render(&p(), &meta, body).unwrap();
         assert!(text.starts_with("---\n"));
         assert!(text.contains("name: round"));
         assert!(text.ends_with("hello\nworld\n"));
@@ -229,7 +229,7 @@ mod tests {
             name: "empty".into(),
             tags: vec![],
         };
-        let text = render(&meta, "").unwrap();
+        let text = render(&p(), &meta, "").unwrap();
         let (parsed, body): (Meta, &str) = parse(&p(), &text).unwrap();
         assert_eq!(parsed, meta);
         assert_eq!(body, "");

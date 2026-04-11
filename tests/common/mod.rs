@@ -20,15 +20,8 @@ environments:
 }
 
 /// Write a minimal braze-sync config for validate (no real server needed).
-/// Optionally sets the catalog naming pattern.
-pub fn write_config_for_validate(dir: &Path, naming_pattern: Option<&str>) -> PathBuf {
-    write_config_for_validate_full(dir, naming_pattern, None)
-}
-
-/// Like [`write_config_for_validate`] but also lets the caller set
-/// `content_block_name_pattern`. Kept as a separate function so the
-/// existing call sites don't have to grow another argument.
-pub fn write_config_for_validate_full(
+/// Optionally sets the catalog and/or content block naming pattern.
+pub fn write_config_for_validate(
     dir: &Path,
     catalog_pattern: Option<&str>,
     content_block_pattern: Option<&str>,
