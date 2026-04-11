@@ -30,4 +30,43 @@ pub enum BrazeApiError {
     /// raise the configured rate limit) rather than just retrying again.
     #[error("rate limit retries exhausted")]
     RateLimitExhausted,
+
+    /// A list endpoint returned a truncated page and v0.2.0 does not yet
+    /// implement pagination. Returned instead of silently dropping the
+    /// missing results, because for content blocks that drop would let
+    /// `apply` create duplicates of blocks living on page 2+ (and
+    /// `--archive-orphans` would miss them entirely).
+    #[error(
+        "Braze {endpoint}: pagination not implemented in v0.2.0 ({detail}); \
+         aborting to prevent duplicate-create or silent orphan loss"
+    )]
+    PaginationNotImplemented {
+        endpoint: &'static str,
+        detail: String,
+    },
+
+    /// Braze returned HTTP 200 with a non-success `message` field that
+    /// does not match any known not-found phrase. Surfaced verbatim so
+    /// an unexpected server-side failure is loud instead of being
+    /// silently misclassified as `NotFound` — the wire shapes in v0.2.0
+    /// are ASSUMED per IMPLEMENTATION.md §8.3, so any unrecognised
+    /// status message is exactly the signal the operator needs to see.
+    #[error("Braze {endpoint}: unexpected message in 200 response: {message}")]
+    UnexpectedApiMessage {
+        endpoint: &'static str,
+        message: String,
+    },
+
+    /// A list endpoint returned two entries sharing the same `name`.
+    /// Braze is expected to enforce name uniqueness for named resources
+    /// (content blocks, email templates), so this is a contract
+    /// violation rather than an operator-fixable condition. We surface
+    /// it loudly because the diff/apply path indexes by name — silently
+    /// keeping only one of a duplicate pair would hide a resource from
+    /// every subsequent list/update/archive operation.
+    #[error("Braze {endpoint}: duplicate name {name:?} in list response")]
+    DuplicateNameInListResponse {
+        endpoint: &'static str,
+        name: String,
+    },
 }

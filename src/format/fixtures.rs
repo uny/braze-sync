@@ -4,7 +4,7 @@
 //! corresponding TableFormatter / JsonFormatter snapshot is reproducible.
 
 use crate::diff::catalog::{diff_schema, CatalogItemsDiff};
-use crate::diff::content_block::{ContentBlockDiff, TextDiffSummary};
+use crate::diff::content_block::{diff as diff_content_block, ContentBlockDiff, TextDiffSummary};
 use crate::diff::custom_attribute::{CustomAttributeDiff, CustomAttributeOp};
 use crate::diff::email_template::EmailTemplateDiff;
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
@@ -71,15 +71,43 @@ pub fn catalog_items_with_changes() -> DiffSummary {
     }
 }
 
-pub fn content_block_orphan() -> DiffSummary {
-    let d = ContentBlockDiff {
-        name: "legacy_promo".into(),
-        op: DiffOp::Unchanged,
-        text_diff: None,
-        orphan: true,
+pub fn content_block_added() -> DiffSummary {
+    let cb = ContentBlock {
+        name: "fresh_promo".into(),
+        description: Some("Fresh banner".into()),
+        content: "Hello new world\n".into(),
+        tags: vec!["pr".into()],
+        state: ContentBlockState::Active,
     };
+    let d = diff_content_block(Some(&cb), None).unwrap();
     DiffSummary {
         diffs: vec![ResourceDiff::ContentBlock(d)],
+    }
+}
+
+pub fn content_block_body_modified() -> DiffSummary {
+    let local = ContentBlock {
+        name: "promo".into(),
+        description: Some("Promo".into()),
+        content: "line a\nline b\nline c\n".into(),
+        tags: vec!["pr".into()],
+        state: ContentBlockState::Active,
+    };
+    let remote = ContentBlock {
+        content: "line a\nold b\nline c\n".into(),
+        ..local.clone()
+    };
+    let d = diff_content_block(Some(&local), Some(&remote)).unwrap();
+    DiffSummary {
+        diffs: vec![ResourceDiff::ContentBlock(d)],
+    }
+}
+
+pub fn content_block_orphan() -> DiffSummary {
+    DiffSummary {
+        diffs: vec![ResourceDiff::ContentBlock(ContentBlockDiff::orphan(
+            "legacy_promo",
+        ))],
     }
 }
 
@@ -130,7 +158,6 @@ pub fn all_kinds_mixed() -> DiffSummary {
         text_diff: Some(TextDiffSummary {
             additions: 5,
             deletions: 3,
-            unified_hunks: vec![],
         }),
         orphan: false,
     };
@@ -143,7 +170,6 @@ pub fn all_kinds_mixed() -> DiffSummary {
         body_html_diff: Some(TextDiffSummary {
             additions: 20,
             deletions: 8,
-            unified_hunks: vec![],
         }),
         body_plaintext_diff: None,
         metadata_changed: false,

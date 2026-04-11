@@ -1,0 +1,8 @@
+---
+source: src/format/snapshot_tests.rs
+expression: "TableFormatter.format(&fixtures::content_block_body_modified())"
+---
+📝 Content Block: promo
+   ~ content changed (+1 -1)
+
+Summary: 1 changed, 0 in sync, 0 orphan, 0 destructive

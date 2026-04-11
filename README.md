@@ -8,9 +8,9 @@ synchronize it to Braze with the same workflow you'd use for
 detection in CI, and an `--allow-destructive` gate that has to be
 crossed explicitly before anything is dropped.
 
-## Status: v0.1.0 (Catalog Schema)
+## Status: v0.2.0 (Catalog Schema + Content Block)
 
-v0.1.0 ships **Catalog Schema** end-to-end:
+v0.2.0 ships **Catalog Schema** and **Content Block** end-to-end:
 
 | Command | What it does |
 |:---|:---|
@@ -19,10 +19,20 @@ v0.1.0 ships **Catalog Schema** end-to-end:
 | `braze-sync apply` | Applies local intent to Braze (dry-run by default) |
 | `braze-sync validate` | Local-only structural and naming checks (no API call) |
 
-Four other resource kinds (Content Block, Email Template, Catalog
-Items, Custom Attribute) are visible in `--resource` and emit a
-"not yet implemented (Phase B)" warning. They fill in across
-v0.2.0 → v0.5.0.
+Three other resource kinds (Email Template, Catalog Items, Custom
+Attribute) are visible in `--resource` and emit a "not yet implemented
+(Phase B)" warning. They fill in across v0.3.0 → v0.5.0.
+
+### Content Block specifics
+
+Content Blocks live as `content_blocks/<name>.liquid` files: YAML
+frontmatter (name, description, tags, state) followed by the Liquid
+body. `braze-sync apply` can create new blocks and update existing
+ones, but **the Braze API has no DELETE for content blocks**, so blocks
+that exist in Braze but not in Git become *orphans* — `diff` flags
+them and `apply` does nothing about them by default. Pass
+`--archive-orphans` to rename them remotely with an
+`[ARCHIVED-YYYY-MM-DD]` prefix; the data is never silently dropped.
 
 ## Install
 
@@ -118,26 +128,63 @@ API keys never live in the config file. The config only references the
 held in `secrecy::SecretString` from the moment it leaves the OS so
 that `tracing` / `Debug` / panic messages cannot leak it.
 
-## v0.1.0 limitations
+## v0.2.0 limitations
 
 These will be lifted across the v0.x → v1.0 milestones:
 
-- **Catalog Schema only.** The other four resource kinds land in
-  v0.2 → v0.5. They appear in `--resource` so the CLI surface stays
-  stable, but selecting one in v0.1.0 just emits a "not yet
-  implemented (Phase B)" warning.
-- **No catalog create / delete.** v0.1.0 manages fields on existing
+- **Catalog Schema and Content Block only.** Email Template, Catalog
+  Items, and Custom Attribute land in v0.3 → v0.5. They appear in
+  `--resource` so the CLI surface stays stable, but selecting one in
+  v0.2.0 just emits a "not yet implemented (Phase B)" warning.
+- **No catalog create / delete.** v0.2.0 manages fields on existing
   catalogs. To create a brand-new catalog, create it in the Braze
   dashboard first, then run `braze-sync export`.
 - **No field type changes.** Changing a field's type from `string` to
   `number` (or similar) is not auto-applied because the operation is
   data-losing on the field. Drop the field manually in Braze, then
   run `braze-sync apply` to re-add it with the new type.
-- **`/catalogs` pagination.** v0.1.0 sends a single GET to `/catalogs`
-  and returns the first page. Workspaces with very many catalogs
-  (>50) may see truncated results until pagination support lands in
+- **No DELETE for content blocks.** Braze's content blocks API does
+  not expose a DELETE endpoint, so blocks that exist in Braze but not
+  in Git become *orphans*. `diff` flags them; `apply` does nothing
+  about them unless you pass `--archive-orphans`, which renames them
+  remotely with an `[ARCHIVED-YYYY-MM-DD]` prefix instead of pretending
+  they were dropped.
+- **Content block `state` is local-only and not observable.** The
+  `state: active|draft` field in `content_blocks/<name>.liquid`
+  frontmatter is a purely local authoring annotation. Braze's
+  `/content_blocks/info` endpoint does not return state, so
+  `braze-sync export` writes **no `state:` line** for any block
+  fetched from Braze rather than defaulting to `active` and
+  pretending it knows. If you want the annotation, add it to the
+  file by hand after `export`. `apply` writes the field exactly
+  once — when *creating* a new block — and never sends it on
+  updates, so editing `state` on a block that already exists in
+  Braze has no effect and the next `export` will strip it again.
+  The diff layer also ignores the field to prevent an "infinite
+  drift" loop (Braze has no DELETE, so a persistently-Modified
+  Content Block is a trap).
+- **No pagination yet.** v0.2.0 sends a single page request to
+  `/catalogs` and `/content_blocks/list` (limit 100). For
+  `/content_blocks/list` this is a **hard error** if Braze reports more
+  results than fit on one page, or if a full page comes back with no
+  total to verify against — workspaces with >100 content blocks cannot
+  use v0.2.0 yet. Without the guard, `apply` could create duplicates of
+  blocks living on page 2+ (their names would diff as `Added`). This
+  limit is symmetric for `--name <foo>`: content blocks have no
+  get-by-name endpoint, so `diff --name`, `apply --name`, and
+  `export --name` still list-then-filter and hit the same page cap.
+  For `/catalogs` v0.2.0 still only warns; the same guard will be
+  applied symmetrically in a follow-up. Pagination support lands in
   Phase C scale validation.
-- **`--no-color` only affects tracing output.** v0.1.0 does not emit
+- **`--archive-orphans` is a two-step read-modify-write.** The rename
+  fetches `/content_blocks/info` to preserve the body, then posts
+  `/content_blocks/update` with the archived name. If another operator
+  edits the same block in the dashboard between those two calls, the
+  update clobbers their change with the pre-rename body. Safe for the
+  single-operator GitOps workflow v0.2.0 targets; a compare-and-swap
+  header would lift it, but Braze's content_blocks API does not
+  currently document one.
+- **`--no-color` only affects tracing output.** v0.2.0 does not emit
   ANSI colors in table or diff output, so the flag currently only
   suppresses ANSI escapes from the tracing subscriber on stderr.
 

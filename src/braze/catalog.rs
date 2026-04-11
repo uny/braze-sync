@@ -124,20 +124,10 @@ struct WireField<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use secrecy::SecretString;
+    use crate::braze::test_client as make_client;
     use serde_json::json;
-    use url::Url;
     use wiremock::matchers::{body_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    fn make_client(server: &MockServer) -> BrazeClient {
-        BrazeClient::new(
-            Url::parse(&server.uri()).unwrap(),
-            SecretString::from("test-key".to_string()),
-            // Very high rpm so the limiter is effectively a no-op in tests.
-            10_000,
-        )
-    }
 
     #[tokio::test]
     async fn list_catalogs_happy_path() {

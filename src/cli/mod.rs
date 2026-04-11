@@ -24,6 +24,12 @@ pub mod diff;
 pub mod export;
 pub mod validate;
 
+/// Maximum concurrent in-flight Braze GET requests for fan-out fetches.
+/// The shared rate limiter still governs RPM; this just bounds peak
+/// concurrency so a workspace with hundreds of resources doesn't open
+/// hundreds of sockets at once.
+pub(crate) const FETCH_CONCURRENCY: usize = 8;
+
 use crate::braze::error::BrazeApiError;
 use crate::config::{ConfigFile, ResolvedConfig, ResourcesConfig};
 use crate::error::Error;

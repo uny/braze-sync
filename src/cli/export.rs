@@ -1,18 +1,16 @@
 //! `braze-sync export` — pull current state from Braze into local files.
-//!
-//! v0.1.0 supports Catalog Schema. The other resource kinds produce a
-//! "not yet implemented" warning when selected.
 
 use crate::braze::error::BrazeApiError;
 use crate::braze::BrazeClient;
 use crate::config::ResolvedConfig;
-use crate::fs::catalog_io;
+use crate::fs::{catalog_io, content_block_io};
 use crate::resource::ResourceKind;
 use anyhow::Context as _;
 use clap::Args;
+use futures::stream::{StreamExt, TryStreamExt};
 use std::path::Path;
 
-use super::{selected_kinds, warn_unimplemented};
+use super::{selected_kinds, warn_unimplemented, FETCH_CONCURRENCY};
 
 #[derive(Args, Debug)]
 pub struct ExportArgs {
@@ -33,6 +31,7 @@ pub async fn run(
     config_dir: &Path,
 ) -> anyhow::Result<()> {
     let catalogs_root = config_dir.join(&resolved.resources.catalog_schema.path);
+    let content_blocks_root = config_dir.join(&resolved.resources.content_block.path);
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
@@ -44,6 +43,13 @@ pub async fn run(
                     .await
                     .context("exporting catalog_schema")?;
                 eprintln!("✓ catalog_schema: exported {n} resource(s)");
+                total_written += n;
+            }
+            ResourceKind::ContentBlock => {
+                let n = export_content_blocks(&client, &content_blocks_root, args.name.as_deref())
+                    .await
+                    .context("exporting content_block")?;
+                eprintln!("✓ content_block: exported {n} resource(s)");
                 total_written += n;
             }
             other => {
@@ -64,8 +70,7 @@ async fn export_catalog_schemas(
     let catalogs = match name_filter {
         Some(name) => match client.get_catalog(name).await {
             Ok(c) => vec![c],
-            // get_catalog NotFound is informational, not a hard error —
-            // export of a missing name simply writes nothing.
+            // Missing remote is informational, not a hard error.
             Err(BrazeApiError::NotFound { .. }) => {
                 eprintln!("⚠ catalog_schema: '{name}' not found in Braze");
                 Vec::new()
@@ -80,4 +85,46 @@ async fn export_catalog_schemas(
         catalog_io::save_schema(catalogs_root, &cat)?;
     }
     Ok(count)
+}
+
+/// Lists first to discover ids, then fetches `/info` per block. With
+/// `--name`, the list still happens (to translate name → id) but only
+/// the matching block's body is fetched.
+async fn export_content_blocks(
+    client: &BrazeClient,
+    content_blocks_root: &Path,
+    name_filter: Option<&str>,
+) -> anyhow::Result<usize> {
+    let summaries = client.list_content_blocks().await?;
+    let targets: Vec<_> = match name_filter {
+        Some(name) => summaries.into_iter().filter(|s| s.name == name).collect(),
+        None => summaries,
+    };
+
+    if targets.is_empty() {
+        if let Some(name) = name_filter {
+            eprintln!("⚠ content_block: '{name}' not found in Braze");
+        }
+        return Ok(0);
+    }
+
+    let blocks: Vec<crate::resource::ContentBlock> =
+        futures::stream::iter(targets.iter().map(|s| {
+            let name = s.name.as_str();
+            let id = s.content_block_id.as_str();
+            async move {
+                client
+                    .get_content_block(id)
+                    .await
+                    .with_context(|| format!("fetching content block '{name}'"))
+            }
+        }))
+        .buffer_unordered(FETCH_CONCURRENCY)
+        .try_collect()
+        .await?;
+
+    for cb in &blocks {
+        content_block_io::save_content_block(content_blocks_root, cb)?;
+    }
+    Ok(blocks.len())
 }

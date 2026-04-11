@@ -11,6 +11,7 @@ pub mod catalog;
 pub mod content_block;
 pub mod custom_attribute;
 pub mod email_template;
+pub mod orphan;
 
 /// A diff operation on a single entity. Polymorphic over the entity type so
 /// the same vocabulary applies to whole resources, individual fields, etc.

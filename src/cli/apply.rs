@@ -1,36 +1,19 @@
-//! `braze-sync apply` — push local intent to Braze.
+//! `braze-sync apply` — the only command that mutates remote state.
 //!
-//! v0.1.0 supports Catalog Schema only (field add / field delete). The
-//! other resource kinds emit a "not yet implemented" warning.
-//!
-//! ## Safety chain
-//!
-//! Apply is the only command that mutates remote state, so it goes
-//! through a strict order of checks. Each check fails closed:
-//!
-//! 1. Recompute the diff (= the apply plan) using the same code path as
-//!    the [`super::diff`] command. They cannot disagree about what would
-//!    be applied.
-//! 2. Print the plan. The header line goes to stderr so the JSON output
-//!    on stdout stays parseable for CI consumers.
-//! 3. If `summary.changed_count() == 0` → "No changes" → exit 0.
-//! 4. If `--confirm` is **not** set → "DRY RUN" → exit 0. Zero write
-//!    calls reach Braze in this branch. Verified by integration tests
-//!    that mount a `method("POST")` mock with `.expect(0)`.
-//! 5. If `summary.destructive_count() > 0 && !args.allow_destructive` →
-//!    return [`Error::DestructiveBlocked`] which `cli::exit_code_for`
-//!    maps to exit code 6 per IMPLEMENTATION.md §7.1.
-//! 6. Pre-validate the plan against v0.1.0's known unsupported
-//!    operations (top-level catalog Added / Removed, field-level
-//!    Modified). This runs **before any API call** so we can never
-//!    leave Braze half-applied.
-//! 7. Apply each change. The loop uses `?`, so the first failure aborts
-//!    the rest — partial-apply is bad-by-default. Each call is logged
-//!    via `tracing::info!` with structured fields per §2.3 #4.
+//! Recomputes the diff via the same code path as `diff`, prints it,
+//! then short-circuits unless `--confirm` is set. Pre-validates
+//! unsupported/destructive ops before any API call, then walks the
+//! plan and aborts on the first write failure. Braze has no
+//! cross-resource transaction, so a mid-loop failure can still leave
+//! earlier writes applied — the pre-validation prevents *known-bad*
+//! plans from firing any writes at all, but it does not promise
+//! cross-write atomicity.
 
 use crate::braze::BrazeClient;
 use crate::config::ResolvedConfig;
 use crate::diff::catalog::CatalogSchemaDiff;
+use crate::diff::content_block::{ContentBlockDiff, ContentBlockIdIndex};
+use crate::diff::orphan;
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::error::Error;
 use crate::format::OutputFormat;
@@ -39,7 +22,7 @@ use anyhow::{anyhow, Context as _};
 use clap::Args;
 use std::path::Path;
 
-use super::diff::compute_catalog_schema_diffs;
+use super::diff::{compute_catalog_schema_diffs, compute_content_block_plan};
 use super::{selected_kinds, warn_unimplemented};
 
 #[derive(Args, Debug)]
@@ -65,9 +48,8 @@ pub struct ApplyArgs {
     pub allow_destructive: bool,
 
     /// Archive orphan Content Blocks / Email Templates by prefixing the
-    /// remote name with `[ARCHIVED-YYYY-MM-DD]`. Catalog Schema has no
-    /// orphans, so this flag is parsed but inert in v0.1.0; it lights up
-    /// in Phase B alongside the orphan-tracking resource kinds.
+    /// remote name with `[ARCHIVED-YYYY-MM-DD]`. Inert for resource
+    /// kinds that have no orphan concept (e.g. catalog schema).
     #[arg(long)]
     pub archive_orphans: bool,
 }
@@ -79,10 +61,12 @@ pub async fn run(
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let catalogs_root = config_dir.join(&resolved.resources.catalog_schema.path);
+    let content_blocks_root = config_dir.join(&resolved.resources.content_block.path);
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
     let mut summary = DiffSummary::default();
+    let mut content_block_id_index: Option<ContentBlockIdIndex> = None;
     for kind in kinds {
         match kind {
             ResourceKind::CatalogSchema => {
@@ -91,6 +75,14 @@ pub async fn run(
                         .await
                         .context("computing catalog_schema plan")?;
                 summary.diffs.extend(diffs);
+            }
+            ResourceKind::ContentBlock => {
+                let (diffs, idx) =
+                    compute_content_block_plan(&client, &content_blocks_root, args.name.as_deref())
+                        .await
+                        .context("computing content_block plan")?;
+                summary.diffs.extend(diffs);
+                content_block_id_index = Some(idx);
             }
             other => warn_unimplemented(other),
         }
@@ -120,30 +112,53 @@ pub async fn run(
 
     check_for_unsupported_ops(&summary)?;
 
+    // One canonical archive timestamp per run, even across multiple
+    // orphans. UTC (not Local) so two operators running the same archive
+    // on the same wall-clock day from different timezones produce the
+    // same `[ARCHIVED-YYYY-MM-DD]` prefix — determinism across a team
+    // matters more than matching the operator's local calendar.
+    let today = chrono::Utc::now().date_naive();
+
     let mut applied = 0;
     for diff in &summary.diffs {
-        if let ResourceDiff::CatalogSchema(d) = diff {
-            applied += apply_catalog_schema(&client, d).await?;
+        match diff {
+            ResourceDiff::CatalogSchema(d) => {
+                applied += apply_catalog_schema(&client, d).await?;
+            }
+            ResourceDiff::ContentBlock(d) => {
+                applied += apply_content_block(
+                    &client,
+                    d,
+                    content_block_id_index.as_ref(),
+                    args.archive_orphans,
+                    today,
+                )
+                .await?;
+            }
+            _ => {}
         }
-        // Other ResourceDiff variants are not yet implemented.
     }
 
     eprintln!("✓ Applied {applied} change(s).");
     Ok(())
 }
 
-/// Walk the plan and reject anything v0.1.0 cannot actually do. Runs
-/// before any API call so a partial apply is impossible.
+/// Reject ops the API can't actually perform. Runs before any write
+/// call so a statically-known-bad plan cannot fire a partial apply;
+/// runtime write failures can still leave earlier writes in place.
+///
+/// ContentBlock diffs are deliberately not inspected here: every shape
+/// the diff layer can produce (`Added` → create, `Modified` → update,
+/// `orphan` → archive-or-noop) maps to a supported API call, so there
+/// is nothing to statically reject. If a future diff shape is added
+/// (e.g. content-type change with no in-place update), re-evaluate.
 fn check_for_unsupported_ops(summary: &DiffSummary) -> anyhow::Result<()> {
     for diff in &summary.diffs {
         if let ResourceDiff::CatalogSchema(d) = diff {
-            // Top-level catalog Added/Removed: not supported in v0.1.0.
-            // The §8.3 endpoint table only lists field-level POST/DELETE,
-            // not whole-catalog create/delete.
             match &d.op {
                 DiffOp::Added(_) => {
                     return Err(anyhow!(
-                        "creating a new catalog '{}' is not supported in v0.1.0; \
+                        "creating a new catalog '{}' is not supported by braze-sync; \
                          create the catalog in the Braze dashboard first, then run \
                          `braze-sync export` to populate the local schema",
                         d.name
@@ -151,21 +166,20 @@ fn check_for_unsupported_ops(summary: &DiffSummary) -> anyhow::Result<()> {
                 }
                 DiffOp::Removed(_) => {
                     return Err(anyhow!(
-                        "deleting catalog '{}' (top-level) is not supported in v0.1.0; \
+                        "deleting catalog '{}' (top-level) is not supported by braze-sync; \
                          only field-level changes can be applied",
                         d.name
                     ));
                 }
                 _ => {}
             }
-            // Field-level Modified (type change): not supported. Auto
-            // delete-then-add is data-losing on the changed field, which
-            // we refuse to do silently. Document a manual workaround.
+            // Field type change would require delete-then-add, which is
+            // data-losing on the field — refuse rather than silently drop.
             for fd in &d.field_diffs {
                 if let DiffOp::Modified { from, to } = fd {
                     return Err(anyhow!(
                         "modifying field '{}' on catalog '{}' (type {} → {}) \
-                         is not supported in v0.1.0; the change would be \
+                         is not supported by braze-sync; the change would be \
                          data-losing on the field. Drop the field manually \
                          in the Braze dashboard and re-run `braze-sync apply`",
                         to.name,
@@ -178,6 +192,81 @@ fn check_for_unsupported_ops(summary: &DiffSummary) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+async fn apply_content_block(
+    client: &BrazeClient,
+    d: &ContentBlockDiff,
+    id_index: Option<&ContentBlockIdIndex>,
+    archive_orphans: bool,
+    today: chrono::NaiveDate,
+) -> anyhow::Result<usize> {
+    // Orphans only mutate remote state when --archive-orphans is set;
+    // otherwise the plan-print is the entire effect.
+    if d.orphan {
+        if !archive_orphans {
+            return Ok(0);
+        }
+        let id_index = id_index.ok_or_else(|| {
+            anyhow!("internal: content_block id index missing for orphan apply path")
+        })?;
+        let id = id_index.get(&d.name).ok_or_else(|| {
+            anyhow!(
+                "internal: orphan '{}' missing from id index — list/diff drift",
+                d.name
+            )
+        })?;
+        let archived = orphan::archive_name(today, &d.name);
+        if archived == d.name {
+            return Ok(0);
+        }
+        // Update endpoint requires the full body, not a partial. Safe
+        // re: state — `get_content_block` defaults state to Active
+        // (Braze /info has no state field) and `update_content_block`
+        // omits state from the wire body, so this rename can never
+        // toggle the remote state as a side effect. If either of those
+        // invariants ever changes, the orphan path needs revisiting.
+        let mut cb = client
+            .get_content_block(id)
+            .await
+            .with_context(|| format!("fetching content block '{}' for archive rename", d.name))?;
+        cb.name = archived;
+        tracing::info!(
+            content_block = %d.name,
+            new_name = %cb.name,
+            "archiving orphan content block"
+        );
+        client.update_content_block(id, &cb).await?;
+        return Ok(1);
+    }
+
+    match &d.op {
+        DiffOp::Added(cb) => {
+            tracing::info!(content_block = %cb.name, "creating content block");
+            let _ = client.create_content_block(cb).await?;
+            Ok(1)
+        }
+        DiffOp::Modified { to, .. } => {
+            let id_index = id_index.ok_or_else(|| {
+                anyhow!("internal: content_block id index missing for modified apply path")
+            })?;
+            let id = id_index.get(&to.name).ok_or_else(|| {
+                anyhow!(
+                    "internal: modified content block '{}' missing from id index",
+                    to.name
+                )
+            })?;
+            tracing::info!(content_block = %to.name, "updating content block");
+            client.update_content_block(id, to).await?;
+            Ok(1)
+        }
+        // The diff layer routes remote-only blocks through the orphan
+        // flag, never as a Removed op.
+        DiffOp::Removed(_) => {
+            unreachable!("diff layer routes content block removals through orphan")
+        }
+        DiffOp::Unchanged => Ok(0),
+    }
 }
 
 async fn apply_catalog_schema(
@@ -207,8 +296,6 @@ async fn apply_catalog_schema(
                 count += 1;
             }
             DiffOp::Modified { .. } => {
-                // Already rejected by check_for_unsupported_ops above.
-                // Defensive in case the validate step is ever bypassed.
                 return Err(anyhow!(
                     "internal: Modified field op should have been rejected \
                      by check_for_unsupported_ops"
