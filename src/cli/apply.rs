@@ -1,7 +1,8 @@
 //! `braze-sync apply` — push local intent to Braze.
 //!
-//! v0.1.0 supports Catalog Schema only (field add / field delete). The
-//! other resource kinds emit a "not yet implemented" warning.
+//! v0.2.0 supports Catalog Schema (field add / field delete) and
+//! Content Block (create / update / archive-orphans). The other
+//! resource kinds emit a "not yet implemented" warning.
 //!
 //! ## Safety chain
 //!
@@ -31,6 +32,8 @@
 use crate::braze::BrazeClient;
 use crate::config::ResolvedConfig;
 use crate::diff::catalog::CatalogSchemaDiff;
+use crate::diff::content_block::ContentBlockDiff;
+use crate::diff::orphan;
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::error::Error;
 use crate::format::OutputFormat;
@@ -39,7 +42,7 @@ use anyhow::{anyhow, Context as _};
 use clap::Args;
 use std::path::Path;
 
-use super::diff::compute_catalog_schema_diffs;
+use super::diff::{compute_catalog_schema_diffs, compute_content_block_plan, ContentBlockIdIndex};
 use super::{selected_kinds, warn_unimplemented};
 
 #[derive(Args, Debug)]
@@ -66,8 +69,8 @@ pub struct ApplyArgs {
 
     /// Archive orphan Content Blocks / Email Templates by prefixing the
     /// remote name with `[ARCHIVED-YYYY-MM-DD]`. Catalog Schema has no
-    /// orphans, so this flag is parsed but inert in v0.1.0; it lights up
-    /// in Phase B alongside the orphan-tracking resource kinds.
+    /// orphans, so this flag is inert for catalog_schema. v0.2.0
+    /// activates it for content_block; email_template lights up in B2.
     #[arg(long)]
     pub archive_orphans: bool,
 }
@@ -79,10 +82,14 @@ pub async fn run(
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let catalogs_root = config_dir.join(&resolved.resources.catalog_schema.path);
+    let content_blocks_root = config_dir.join(&resolved.resources.content_block.path);
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
     let mut summary = DiffSummary::default();
+    // Built only when content_block diffs are present in the plan; the
+    // apply path consumes it to translate name → content_block_id.
+    let mut content_block_id_index: Option<ContentBlockIdIndex> = None;
     for kind in kinds {
         match kind {
             ResourceKind::CatalogSchema => {
@@ -91,6 +98,14 @@ pub async fn run(
                         .await
                         .context("computing catalog_schema plan")?;
                 summary.diffs.extend(diffs);
+            }
+            ResourceKind::ContentBlock => {
+                let (diffs, idx) =
+                    compute_content_block_plan(&client, &content_blocks_root, args.name.as_deref())
+                        .await
+                        .context("computing content_block plan")?;
+                summary.diffs.extend(diffs);
+                content_block_id_index = Some(idx);
             }
             other => warn_unimplemented(other),
         }
@@ -120,12 +135,31 @@ pub async fn run(
 
     check_for_unsupported_ops(&summary)?;
 
+    // Compute today's date once so a single apply run uses one
+    // canonical archive timestamp even if it processes multiple
+    // orphans. Local-clock based on the operator's machine — that's
+    // the right granularity for a human-facing dashboard label.
+    let today = chrono::Local::now().date_naive();
+
     let mut applied = 0;
     for diff in &summary.diffs {
-        if let ResourceDiff::CatalogSchema(d) = diff {
-            applied += apply_catalog_schema(&client, d).await?;
+        match diff {
+            ResourceDiff::CatalogSchema(d) => {
+                applied += apply_catalog_schema(&client, d).await?;
+            }
+            ResourceDiff::ContentBlock(d) => {
+                applied += apply_content_block(
+                    &client,
+                    d,
+                    content_block_id_index.as_ref(),
+                    args.archive_orphans,
+                    today,
+                )
+                .await?;
+            }
+            // Other ResourceDiff variants are not yet implemented.
+            _ => {}
         }
-        // Other ResourceDiff variants are not yet implemented.
     }
 
     eprintln!("✓ Applied {applied} change(s).");
@@ -178,6 +212,78 @@ fn check_for_unsupported_ops(summary: &DiffSummary) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+async fn apply_content_block(
+    client: &BrazeClient,
+    d: &ContentBlockDiff,
+    id_index: Option<&ContentBlockIdIndex>,
+    archive_orphans: bool,
+    today: chrono::NaiveDate,
+) -> anyhow::Result<usize> {
+    // Orphan branch: only acts when --archive-orphans is set. Without
+    // it, the orphan was already reported in the printed plan and we
+    // do nothing — the §11.6 honest-orphan contract.
+    if d.orphan {
+        if !archive_orphans {
+            return Ok(0);
+        }
+        let id_index = id_index.ok_or_else(|| {
+            anyhow!("internal: content_block id index missing for orphan apply path")
+        })?;
+        let id = id_index.get(&d.name).ok_or_else(|| {
+            anyhow!(
+                "internal: orphan '{}' missing from id index — list/diff drift",
+                d.name
+            )
+        })?;
+        let archived = orphan::archive_name(today, &d.name);
+        if archived == d.name {
+            // Already archived (idempotent path). Nothing to do.
+            return Ok(0);
+        }
+        // Fetch full info so the rename PATCH preserves body / metadata.
+        // The Braze update endpoint requires a full body, not a partial.
+        let mut cb = client.get_content_block(id).await?;
+        cb.name = archived;
+        tracing::info!(
+            content_block = %d.name,
+            new_name = %cb.name,
+            "archiving orphan content block"
+        );
+        client.update_content_block(id, &cb).await?;
+        return Ok(1);
+    }
+
+    match &d.op {
+        DiffOp::Added(cb) => {
+            tracing::info!(content_block = %cb.name, "creating content block");
+            let _ = client.create_content_block(cb).await?;
+            Ok(1)
+        }
+        DiffOp::Modified { to, .. } => {
+            let id_index = id_index.ok_or_else(|| {
+                anyhow!("internal: content_block id index missing for modified apply path")
+            })?;
+            let id = id_index.get(&to.name).ok_or_else(|| {
+                anyhow!(
+                    "internal: modified content block '{}' missing from id index",
+                    to.name
+                )
+            })?;
+            tracing::info!(content_block = %to.name, "updating content block");
+            client.update_content_block(id, to).await?;
+            Ok(1)
+        }
+        // Removed never appears for content blocks: the diff function
+        // routes remote-only blocks through the orphan path. Defensive
+        // arm in case the diff layer ever changes.
+        DiffOp::Removed(_) => Err(anyhow!(
+            "internal: ContentBlockDiff produced a Removed op; the diff layer \
+             should route this through the orphan path"
+        )),
+        DiffOp::Unchanged => Ok(0),
+    }
 }
 
 async fn apply_catalog_schema(

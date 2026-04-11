@@ -8,9 +8,9 @@ synchronize it to Braze with the same workflow you'd use for
 detection in CI, and an `--allow-destructive` gate that has to be
 crossed explicitly before anything is dropped.
 
-## Status: v0.1.0 (Catalog Schema)
+## Status: v0.2.0 (Catalog Schema + Content Block)
 
-v0.1.0 ships **Catalog Schema** end-to-end:
+v0.2.0 ships **Catalog Schema** and **Content Block** end-to-end:
 
 | Command | What it does |
 |:---|:---|
@@ -19,10 +19,20 @@ v0.1.0 ships **Catalog Schema** end-to-end:
 | `braze-sync apply` | Applies local intent to Braze (dry-run by default) |
 | `braze-sync validate` | Local-only structural and naming checks (no API call) |
 
-Four other resource kinds (Content Block, Email Template, Catalog
-Items, Custom Attribute) are visible in `--resource` and emit a
-"not yet implemented (Phase B)" warning. They fill in across
-v0.2.0 → v0.5.0.
+Three other resource kinds (Email Template, Catalog Items, Custom
+Attribute) are visible in `--resource` and emit a "not yet implemented
+(Phase B)" warning. They fill in across v0.3.0 → v0.5.0.
+
+### Content Block specifics
+
+Content Blocks live as `content_blocks/<name>.liquid` files: YAML
+frontmatter (name, description, tags, state) followed by the Liquid
+body. `braze-sync apply` can create new blocks and update existing
+ones, but **the Braze API has no DELETE for content blocks**, so blocks
+that exist in Braze but not in Git become *orphans* — `diff` flags
+them and `apply` does nothing about them by default. Pass
+`--archive-orphans` to rename them remotely with an
+`[ARCHIVED-YYYY-MM-DD]` prefix; the data is never silently dropped.
 
 ## Install
 
@@ -118,26 +128,38 @@ API keys never live in the config file. The config only references the
 held in `secrecy::SecretString` from the moment it leaves the OS so
 that `tracing` / `Debug` / panic messages cannot leak it.
 
-## v0.1.0 limitations
+## v0.2.0 limitations
 
 These will be lifted across the v0.x → v1.0 milestones:
 
-- **Catalog Schema only.** The other four resource kinds land in
-  v0.2 → v0.5. They appear in `--resource` so the CLI surface stays
-  stable, but selecting one in v0.1.0 just emits a "not yet
-  implemented (Phase B)" warning.
-- **No catalog create / delete.** v0.1.0 manages fields on existing
+- **Catalog Schema and Content Block only.** Email Template, Catalog
+  Items, and Custom Attribute land in v0.3 → v0.5. They appear in
+  `--resource` so the CLI surface stays stable, but selecting one in
+  v0.2.0 just emits a "not yet implemented (Phase B)" warning.
+- **No catalog create / delete.** v0.2.0 manages fields on existing
   catalogs. To create a brand-new catalog, create it in the Braze
   dashboard first, then run `braze-sync export`.
 - **No field type changes.** Changing a field's type from `string` to
   `number` (or similar) is not auto-applied because the operation is
   data-losing on the field. Drop the field manually in Braze, then
   run `braze-sync apply` to re-add it with the new type.
-- **`/catalogs` pagination.** v0.1.0 sends a single GET to `/catalogs`
-  and returns the first page. Workspaces with very many catalogs
-  (>50) may see truncated results until pagination support lands in
-  Phase C scale validation.
-- **`--no-color` only affects tracing output.** v0.1.0 does not emit
+- **No DELETE for content blocks.** Braze's content blocks API does
+  not expose a DELETE endpoint, so blocks that exist in Braze but not
+  in Git become *orphans*. `diff` flags them; `apply` does nothing
+  about them unless you pass `--archive-orphans`, which renames them
+  remotely with an `[ARCHIVED-YYYY-MM-DD]` prefix instead of pretending
+  they were dropped.
+- **Content block `state` is local-only.** The `state: active|draft`
+  field in `content_blocks/<name>.liquid` frontmatter is parsed and
+  round-tripped, but Braze's content_blocks API does not expose state,
+  so braze-sync's diff intentionally ignores it. Treat it as a
+  documentation aid for the file's reader rather than a syncable
+  property.
+- **`/catalogs` and `/content_blocks/list` pagination.** v0.2.0 sends a
+  single page request and warns if more results exist. Workspaces with
+  very many resources may see truncated results until pagination
+  support lands in Phase C scale validation.
+- **`--no-color` only affects tracing output.** v0.2.0 does not emit
   ANSI colors in table or diff output, so the flag currently only
   suppresses ANSI escapes from the tracing subscriber on stderr.
 

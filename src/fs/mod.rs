@@ -10,6 +10,8 @@
 //! See IMPLEMENTATION.md §5, §9.
 
 pub mod catalog_io;
+pub mod content_block_io;
+pub mod frontmatter;
 
 use crate::error::{Error, Result};
 use std::path::Path;

@@ -173,3 +173,142 @@ fn help_flag_exits_zero() {
         .assert()
         .success();
 }
+
+// =====================================================================
+// Content Block (v0.2.0)
+// =====================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_content_blocks_writes_liquid_files() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [
+                {"content_block_id": "id-promo", "name": "promo"},
+                {"content_block_id": "id-header", "name": "shared_header"}
+            ],
+            "message": "success"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .and(wiremock::matchers::query_param(
+            "content_block_id",
+            "id-promo",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_block_id": "id-promo",
+            "name": "promo",
+            "description": "Promo banner",
+            "content": "Hello {{ user.${first_name} }}",
+            "tags": ["pr"],
+            "message": "success"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .and(wiremock::matchers::query_param(
+            "content_block_id",
+            "id-header",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_block_id": "id-header",
+            "name": "shared_header",
+            "content": "<header>shared</header>",
+            "tags": [],
+            "message": "success"
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    let tmp_path = tmp.path().to_path_buf();
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["export", "--resource", "content_block"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    let promo = tmp_path.join("content_blocks/promo.liquid");
+    let header = tmp_path.join("content_blocks/shared_header.liquid");
+    assert!(promo.exists(), "promo.liquid should exist");
+    assert!(header.exists(), "shared_header.liquid should exist");
+
+    let promo_text = fs::read_to_string(&promo).unwrap();
+    assert!(promo_text.starts_with("---\n"));
+    assert!(promo_text.contains("name: promo"));
+    assert!(promo_text.contains("description: Promo banner"));
+    assert!(promo_text.contains("Hello {{ user.${first_name} }}"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_content_block_with_name_filter_only_fetches_matching_info() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [
+                {"content_block_id": "id-promo", "name": "promo"},
+                {"content_block_id": "id-header", "name": "shared_header"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    // Only the matching info call should fire; the non-matching one
+    // would hit this 500 mock and fail the test.
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .and(wiremock::matchers::query_param(
+            "content_block_id",
+            "id-header",
+        ))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .and(wiremock::matchers::query_param(
+            "content_block_id",
+            "id-promo",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "promo",
+            "content": "x",
+            "tags": []
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    let tmp_path = tmp.path().to_path_buf();
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["export", "--resource", "content_block", "--name", "promo"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    assert!(tmp_path.join("content_blocks/promo.liquid").exists());
+    assert!(!tmp_path
+        .join("content_blocks/shared_header.liquid")
+        .exists());
+}

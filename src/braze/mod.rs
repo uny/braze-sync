@@ -12,6 +12,7 @@
 //! once. See IMPLEMENTATION.md §8.
 
 pub mod catalog;
+pub mod content_block;
 pub mod error;
 pub mod rate_limit;
 

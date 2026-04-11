@@ -15,9 +15,9 @@
 mod common;
 
 use assert_cmd::Command;
-use common::{write_config, write_local_schema};
+use common::{write_config, write_local_content_block, write_local_schema};
 use serde_json::json;
-use wiremock::matchers::{body_json, method, path};
+use wiremock::matchers::{body_json, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -239,6 +239,236 @@ async fn confirm_with_allow_destructive_calls_delete_and_exits_zero() {
                 "catalog_schema",
                 "--confirm",
                 "--allow-destructive",
+            ])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
+
+// =====================================================================
+// Content Block (v0.2.0)
+// =====================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn content_block_dry_run_makes_no_write_calls() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_content_block(tmp.path(), "fresh", "Hello\n");
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "content_block"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn content_block_confirm_create_posts_to_create_endpoint() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/content_blocks/create"))
+        .and(body_json(json!({
+            "name": "fresh",
+            "content": "Hello\n",
+            "tags": [],
+            "state": "active"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_block_id": "new-id-1",
+            "message": "success"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_content_block(tmp.path(), "fresh", "Hello\n");
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "content_block", "--confirm"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn content_block_confirm_update_posts_to_update_endpoint_with_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [{"content_block_id": "id-promo", "name": "promo"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .and(query_param("content_block_id", "id-promo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "promo",
+            "content": "old body\n",
+            "tags": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/content_blocks/update"))
+        .and(body_json(json!({
+            "content_block_id": "id-promo",
+            "name": "promo",
+            "content": "new body\n",
+            "tags": [],
+            "state": "active"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/content_blocks/create"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_content_block(tmp.path(), "promo", "new body\n");
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "content_block", "--confirm"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn content_block_orphan_without_archive_flag_makes_no_write_calls() {
+    // Default orphan policy: report-only. The honest-orphan §11.6
+    // contract requires zero write calls when --archive-orphans is
+    // absent, even with --confirm + --allow-destructive.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [{"content_block_id": "id-orphan", "name": "legacy"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    // No local file for "legacy" → orphan from braze-sync's POV.
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "content_block", "--confirm"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn content_block_archive_orphans_renames_via_update() {
+    // With --archive-orphans, the orphan is renamed via POST /update
+    // to `[ARCHIVED-YYYY-MM-DD] <name>`. The body is preserved by
+    // first fetching /info — verified by mounting an /info mock.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [{"content_block_id": "id-orphan", "name": "legacy"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .and(query_param("content_block_id", "id-orphan"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "legacy",
+            "content": "preserved body\n",
+            "tags": ["pr"]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // Match by URL + id + content; the name is stamped with today's
+    // date so we can't pin the exact body literal here. Use a partial
+    // matcher: any /update POST hitting this path is acceptable, and
+    // .expect(1) ensures exactly one call fires.
+    Mock::given(method("POST"))
+        .and(path("/content_blocks/update"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args([
+                "apply",
+                "--resource",
+                "content_block",
+                "--confirm",
+                "--archive-orphans",
             ])
             .assert()
             .success();

@@ -1,0 +1,21 @@
+---
+source: src/format/snapshot_tests.rs
+expression: "JsonFormatter.format(&fixtures::content_block_added())"
+---
+{
+  "version": 1,
+  "summary": {
+    "changed": 1,
+    "in_sync": 0,
+    "destructive": 0,
+    "orphan": 0
+  },
+  "diffs": [
+    {
+      "kind": "content_block",
+      "name": "fresh_promo",
+      "op": "added",
+      "orphan": false
+    }
+  ]
+}

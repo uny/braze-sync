@@ -68,6 +68,34 @@ fn catalog_items_json() {
 }
 
 // =====================================================================
+// content block added (local-only)
+// =====================================================================
+
+#[test]
+fn content_block_added_table() {
+    insta::assert_snapshot!(TableFormatter.format(&fixtures::content_block_added()));
+}
+
+#[test]
+fn content_block_added_json() {
+    insta::assert_snapshot!(JsonFormatter.format(&fixtures::content_block_added()));
+}
+
+// =====================================================================
+// content block body modified (text diff present)
+// =====================================================================
+
+#[test]
+fn content_block_body_modified_table() {
+    insta::assert_snapshot!(TableFormatter.format(&fixtures::content_block_body_modified()));
+}
+
+#[test]
+fn content_block_body_modified_json() {
+    insta::assert_snapshot!(JsonFormatter.format(&fixtures::content_block_body_modified()));
+}
+
+// =====================================================================
 // content block orphan
 // =====================================================================
 

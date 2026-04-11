@@ -1,6 +1,6 @@
 [package]
 name = "braze-sync"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.86"
 license = "MIT"
@@ -53,6 +53,14 @@ csv = "1"
 
 # Hashing for catalog items diff
 blake3 = "1"
+
+# Text diff (Content Block body comparison, future Email Template parts)
+similar = "2"
+
+# Date formatting for `[ARCHIVED-YYYY-MM-DD]` orphan rename. clock feature
+# pulls in the system clock; default features are off so we don't drag in
+# iana-time-zone or oldtime baggage.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 # Misc
 url = { version = "2", features = ["serde"] }

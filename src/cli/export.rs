@@ -1,12 +1,12 @@
 //! `braze-sync export` — pull current state from Braze into local files.
 //!
-//! v0.1.0 supports Catalog Schema. The other resource kinds produce a
-//! "not yet implemented" warning when selected.
+//! v0.2.0 supports Catalog Schema and Content Block. The other resource
+//! kinds produce a "not yet implemented" warning when selected.
 
 use crate::braze::error::BrazeApiError;
 use crate::braze::BrazeClient;
 use crate::config::ResolvedConfig;
-use crate::fs::catalog_io;
+use crate::fs::{catalog_io, content_block_io};
 use crate::resource::ResourceKind;
 use anyhow::Context as _;
 use clap::Args;
@@ -33,6 +33,7 @@ pub async fn run(
     config_dir: &Path,
 ) -> anyhow::Result<()> {
     let catalogs_root = config_dir.join(&resolved.resources.catalog_schema.path);
+    let content_blocks_root = config_dir.join(&resolved.resources.content_block.path);
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
@@ -44,6 +45,13 @@ pub async fn run(
                     .await
                     .context("exporting catalog_schema")?;
                 eprintln!("✓ catalog_schema: exported {n} resource(s)");
+                total_written += n;
+            }
+            ResourceKind::ContentBlock => {
+                let n = export_content_blocks(&client, &content_blocks_root, args.name.as_deref())
+                    .await
+                    .context("exporting content_block")?;
+                eprintln!("✓ content_block: exported {n} resource(s)");
                 total_written += n;
             }
             other => {
@@ -78,6 +86,37 @@ async fn export_catalog_schemas(
     let count = catalogs.len();
     for cat in catalogs {
         catalog_io::save_schema(catalogs_root, &cat)?;
+    }
+    Ok(count)
+}
+
+/// Export content blocks. Always lists first to discover ids, then
+/// fetches `/content_blocks/info` per block to get the body. With
+/// `--name`, the list is still fetched (to translate name → id) but
+/// only the matching block has its body fetched.
+async fn export_content_blocks(
+    client: &BrazeClient,
+    content_blocks_root: &Path,
+    name_filter: Option<&str>,
+) -> anyhow::Result<usize> {
+    let summaries = client.list_content_blocks().await?;
+    let targets: Vec<_> = match name_filter {
+        Some(name) => summaries.into_iter().filter(|s| s.name == name).collect(),
+        None => summaries,
+    };
+
+    if targets.is_empty() {
+        if let Some(name) = name_filter {
+            eprintln!("⚠ content_block: '{name}' not found in Braze");
+        }
+        return Ok(0);
+    }
+
+    let mut count = 0;
+    for s in &targets {
+        let cb = client.get_content_block(&s.content_block_id).await?;
+        content_block_io::save_content_block(content_blocks_root, &cb)?;
+        count += 1;
     }
     Ok(count)
 }
