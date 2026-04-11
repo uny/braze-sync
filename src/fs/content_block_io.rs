@@ -22,13 +22,17 @@ struct Frontmatter {
     description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     tags: Vec<String>,
-    // Local-only documentation field: parsed and round-tripped, but
-    // deliberately excluded from `diff::content_block::syncable_eq` and
-    // from the update wire body. Editing this on a block that already
-    // exists in Braze has no effect. See `src/diff/content_block.rs`
-    // module docs for the "infinite drift" rationale.
-    #[serde(default)]
-    state: ContentBlockState,
+    // Local-only documentation field. Excluded from
+    // `diff::content_block::syncable_eq` and from the update wire body
+    // (see `src/diff/content_block.rs` module docs for the
+    // "infinite drift" rationale). Optional on disk so a fresh export
+    // — which cannot observe real remote state because `/info` does
+    // not return it — writes no `state:` line instead of lying with
+    // the default `active`. Operator-authored `state: draft` is still
+    // round-tripped because `save_content_block` only omits the field
+    // when its value equals the type default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    state: Option<ContentBlockState>,
 }
 
 /// Load every `.liquid` file directly under `root`, sorted by name.
@@ -92,7 +96,10 @@ pub fn read_content_block_file(path: &Path) -> Result<ContentBlock> {
         description: fm.description,
         content: body.to_string(),
         tags: fm.tags,
-        state: fm.state,
+        // Missing `state:` on disk → default (Active). Keeps the
+        // domain type non-Optional so diff/apply callers don't need
+        // an unwrap.
+        state: fm.state.unwrap_or_default(),
     })
 }
 
@@ -102,11 +109,23 @@ pub fn save_content_block(root: &Path, cb: &ContentBlock) -> Result<()> {
     validate_resource_name("content block", &cb.name)?;
     let path = root.join(format!("{}.{FILE_EXT}", cb.name));
 
+    // `state` is only emitted when it differs from the type default.
+    // Rationale: `braze::content_block::get_content_block` hard-codes
+    // `state: Active` because Braze's `/info` endpoint does not return
+    // state, so a fresh `export` cannot know whether a block is really
+    // Active or Draft. Writing the default would turn an unknown into
+    // a confident lie in the file. Operator-authored `state: draft`
+    // still round-trips because Draft is a non-default value and gets
+    // serialized explicitly.
     let fm = Frontmatter {
         name: cb.name.clone(),
         description: cb.description.clone(),
         tags: cb.tags.clone(),
-        state: cb.state,
+        state: if cb.state == ContentBlockState::default() {
+            None
+        } else {
+            Some(cb.state)
+        },
     };
     // Body is written byte-exact. A previous version unconditionally
     // appended `\n` here, which caused any Braze block whose stored
@@ -325,5 +344,76 @@ mod tests {
         save_content_block(dir.path(), &empty_body).unwrap();
         let loaded = load_all_content_blocks(dir.path()).unwrap();
         assert_eq!(loaded[0], empty_body);
+    }
+
+    #[test]
+    fn save_with_default_state_does_not_emit_state_line() {
+        // Honesty guard: `get_content_block` hard-codes state=Active
+        // because Braze's /info doesn't return state, so a fresh
+        // export cannot know the real value. Writing `state: active`
+        // would be a confident lie about a genuinely unknown field.
+        // The fix is to skip the line for the type default and let
+        // `read_content_block_file` re-default on load.
+        let dir = tempfile::tempdir().unwrap();
+        let active = ContentBlock {
+            name: "exported".into(),
+            description: None,
+            content: "Hello\n".into(),
+            tags: vec![],
+            state: ContentBlockState::Active,
+        };
+        save_content_block(dir.path(), &active).unwrap();
+        let text = std::fs::read_to_string(dir.path().join("exported.liquid")).unwrap();
+        assert!(
+            !text.contains("state:"),
+            "default-state file should not carry a state line; got:\n{text}"
+        );
+        // And it still round-trips (load defaults missing state to Active).
+        let loaded = load_all_content_blocks(dir.path()).unwrap();
+        assert_eq!(loaded[0], active);
+    }
+
+    #[test]
+    fn save_with_draft_state_emits_state_line_and_round_trips() {
+        // Counterpart to the honesty guard: operator-authored
+        // `state: draft` must still persist, otherwise the local
+        // annotation feature documented in the README is a fiction.
+        // Draft is the non-default value, so serialization keeps it.
+        let dir = tempfile::tempdir().unwrap();
+        let draft = ContentBlock {
+            name: "wip".into(),
+            description: None,
+            content: "work in progress\n".into(),
+            tags: vec![],
+            state: ContentBlockState::Draft,
+        };
+        save_content_block(dir.path(), &draft).unwrap();
+        let text = std::fs::read_to_string(dir.path().join("wip.liquid")).unwrap();
+        assert!(
+            text.contains("state: draft"),
+            "draft state should be serialized; got:\n{text}"
+        );
+        let loaded = load_all_content_blocks(dir.path()).unwrap();
+        assert_eq!(loaded[0], draft);
+    }
+
+    #[test]
+    fn load_file_without_state_line_defaults_to_active() {
+        // Symmetric guard for `save_with_default_state_does_not_emit_state_line`:
+        // after that change, the canonical on-disk shape for an Active
+        // block has no `state:` line at all. Loading must default, not
+        // fail. Overlaps with `missing_state_field_defaults_to_active`
+        // but pins the exact "no line present" shape that the new save
+        // path produces, so a future regression that re-introduces
+        // state serialization can't sneak past the round-trip tests.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("stateless.liquid"),
+            "---\nname: stateless\n---\nbody\n",
+        )
+        .unwrap();
+        let loaded = load_all_content_blocks(dir.path()).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].state, ContentBlockState::Active);
     }
 }

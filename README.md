@@ -149,14 +149,20 @@ These will be lifted across the v0.x → v1.0 milestones:
   about them unless you pass `--archive-orphans`, which renames them
   remotely with an `[ARCHIVED-YYYY-MM-DD]` prefix instead of pretending
   they were dropped.
-- **Content block `state` is local-only.** The `state: active|draft`
-  field in `content_blocks/<name>.liquid` frontmatter is parsed and
-  round-tripped, but Braze's content_blocks API does not expose state,
-  so braze-sync's diff intentionally ignores it. `apply` writes the
-  field exactly once — when *creating* a new block — and never sends
-  it on updates, so editing `state` in a file that already exists on
-  Braze has no effect. Treat it as a documentation aid for the file's
-  reader rather than a syncable property.
+- **Content block `state` is local-only and not observable.** The
+  `state: active|draft` field in `content_blocks/<name>.liquid`
+  frontmatter is a purely local authoring annotation. Braze's
+  `/content_blocks/info` endpoint does not return state, so
+  `braze-sync export` writes **no `state:` line** for any block
+  fetched from Braze rather than defaulting to `active` and
+  pretending it knows. If you want the annotation, add it to the
+  file by hand after `export`. `apply` writes the field exactly
+  once — when *creating* a new block — and never sends it on
+  updates, so editing `state` on a block that already exists in
+  Braze has no effect and the next `export` will strip it again.
+  The diff layer also ignores the field to prevent an "infinite
+  drift" loop (Braze has no DELETE, so a persistently-Modified
+  Content Block is a trap).
 - **No pagination yet.** v0.2.0 sends a single page request to
   `/catalogs` and `/content_blocks/list` (limit 100). For
   `/content_blocks/list` this is a **hard error** if Braze reports more
