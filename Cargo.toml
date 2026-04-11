@@ -60,9 +60,11 @@ blake3 = "1"
 # Text diff (Content Block body comparison, future Email Template parts)
 similar = "2"
 
-# Date formatting for `[ARCHIVED-YYYY-MM-DD]` orphan rename. clock feature
-# pulls in the system clock; default features are off so we don't drag in
-# iana-time-zone or oldtime baggage.
+# Date formatting for `[ARCHIVED-YYYY-MM-DD]` orphan rename. `clock`
+# gives us `Utc::now` and pulls `iana-time-zone` transitively — chrono's
+# `clock` feature can't be narrowed to UTC-only, so that crate is in the
+# tree even though we never touch `Local`. `default-features = false`
+# still drops the `wasmbind` default (we don't target WASM).
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 # Misc
