@@ -30,4 +30,18 @@ pub enum BrazeApiError {
     /// raise the configured rate limit) rather than just retrying again.
     #[error("rate limit retries exhausted")]
     RateLimitExhausted,
+
+    /// A list endpoint returned a truncated page and v0.2.0 does not yet
+    /// implement pagination. Returned instead of silently dropping the
+    /// missing results, because for content blocks that drop would let
+    /// `apply` create duplicates of blocks living on page 2+ (and
+    /// `--archive-orphans` would miss them entirely).
+    #[error(
+        "Braze {endpoint}: pagination not implemented in v0.2.0 ({detail}); \
+         aborting to prevent duplicate-create or silent orphan loss"
+    )]
+    PaginationNotImplemented {
+        endpoint: &'static str,
+        detail: String,
+    },
 }

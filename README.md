@@ -155,10 +155,16 @@ These will be lifted across the v0.x → v1.0 milestones:
   so braze-sync's diff intentionally ignores it. Treat it as a
   documentation aid for the file's reader rather than a syncable
   property.
-- **`/catalogs` and `/content_blocks/list` pagination.** v0.2.0 sends a
-  single page request and warns if more results exist. Workspaces with
-  very many resources may see truncated results until pagination
-  support lands in Phase C scale validation.
+- **No pagination yet.** v0.2.0 sends a single page request to
+  `/catalogs` and `/content_blocks/list` (limit 100). For
+  `/content_blocks/list` this is a **hard error** if Braze reports more
+  results than fit on one page, or if a full page comes back with no
+  total to verify against — workspaces with >100 content blocks cannot
+  use v0.2.0 yet. Without the guard, `apply` could create duplicates of
+  blocks living on page 2+ (their names would diff as `Added`). For
+  `/catalogs` v0.2.0 still only warns; the same guard will be applied
+  symmetrically in a follow-up. Pagination support lands in Phase C
+  scale validation.
 - **`--no-color` only affects tracing output.** v0.2.0 does not emit
   ANSI colors in table or diff output, so the flag currently only
   suppresses ANSI escapes from the tracing subscriber on stderr.

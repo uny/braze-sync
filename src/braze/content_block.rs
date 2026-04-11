@@ -19,23 +19,35 @@ pub struct ContentBlockSummary {
 }
 
 impl BrazeClient {
-    /// Returns one page of [`LIST_LIMIT`] summaries; workspaces with more
-    /// blocks see truncated results until pagination lands.
+    /// Returns one page of up to [`LIST_LIMIT`] summaries. Hard-errors
+    /// rather than silently truncating: see `PaginationNotImplemented`.
     pub async fn list_content_blocks(&self) -> Result<Vec<ContentBlockSummary>, BrazeApiError> {
         let req = self
             .get(&["content_blocks", "list"])
             .query(&[("limit", LIST_LIMIT.to_string())]);
         let resp: ContentBlockListResponse = self.send_json(req).await?;
-        if let Some(count) = resp.count {
-            if count > resp.content_blocks.len() {
-                tracing::warn!(
-                    returned = resp.content_blocks.len(),
-                    total = count,
-                    "Braze reported more content blocks than this page returned; \
-                     pagination is not yet implemented (v0.2.0)"
-                );
-            }
+        let returned = resp.content_blocks.len();
+
+        // Fail closed when the page is or might be truncated. The
+        // ambiguous case (full page, no `count`) is treated as truncated
+        // because we'd rather refuse a workspace that happens to have
+        // exactly LIST_LIMIT blocks than let apply create duplicates of
+        // page-2 blocks in a workspace with LIST_LIMIT + N.
+        let truncation_detail: Option<String> = match resp.count {
+            Some(total) if total > returned => Some(format!("got {returned} of {total} results")),
+            None if returned >= LIST_LIMIT as usize => Some(format!(
+                "got a full page of {returned} result(s) with no total reported; \
+                 cannot verify whether more exist"
+            )),
+            _ => None,
+        };
+        if let Some(detail) = truncation_detail {
+            return Err(BrazeApiError::PaginationNotImplemented {
+                endpoint: "/content_blocks/list",
+                detail,
+            });
         }
+
         Ok(resp
             .content_blocks
             .into_iter()
@@ -416,6 +428,92 @@ mod tests {
             }
             other => panic!("expected Http, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn list_errors_when_count_exceeds_returned() {
+        let server = MockServer::start().await;
+        let entries: Vec<serde_json::Value> = (0..100)
+            .map(|i| {
+                json!({
+                    "content_block_id": format!("id-{i}"),
+                    "name": format!("block-{i}")
+                })
+            })
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/content_blocks/list"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 250,
+                "content_blocks": entries,
+                "message": "success"
+            })))
+            .mount(&server)
+            .await;
+        let client = make_client(&server);
+        let err = client.list_content_blocks().await.unwrap_err();
+        match err {
+            BrazeApiError::PaginationNotImplemented { endpoint, detail } => {
+                assert_eq!(endpoint, "/content_blocks/list");
+                assert!(detail.contains("100"), "detail: {detail}");
+                assert!(detail.contains("250"), "detail: {detail}");
+            }
+            other => panic!("expected PaginationNotImplemented, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_errors_on_full_page_with_no_count_field() {
+        // Ambiguous case: 100 returned, no `count` to disambiguate.
+        // Fail closed rather than risk page-2 invisibility.
+        let server = MockServer::start().await;
+        let entries: Vec<serde_json::Value> = (0..100)
+            .map(|i| {
+                json!({
+                    "content_block_id": format!("id-{i}"),
+                    "name": format!("block-{i}")
+                })
+            })
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/content_blocks/list"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "content_blocks": entries })),
+            )
+            .mount(&server)
+            .await;
+        let client = make_client(&server);
+        let err = client.list_content_blocks().await.unwrap_err();
+        assert!(
+            matches!(err, BrazeApiError::PaginationNotImplemented { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_succeeds_when_count_matches_full_page_exactly() {
+        // 100 returned + count: 100 → exact full workspace, definitely
+        // no more pages, must succeed.
+        let server = MockServer::start().await;
+        let entries: Vec<serde_json::Value> = (0..100)
+            .map(|i| {
+                json!({
+                    "content_block_id": format!("id-{i}"),
+                    "name": format!("block-{i}")
+                })
+            })
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/content_blocks/list"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 100,
+                "content_blocks": entries
+            })))
+            .mount(&server)
+            .await;
+        let client = make_client(&server);
+        let summaries = client.list_content_blocks().await.unwrap();
+        assert_eq!(summaries.len(), 100);
     }
 
     #[tokio::test]
