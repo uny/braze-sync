@@ -541,12 +541,35 @@ impl wiremock::Match for ArchiveRenameBody {
         let id_ok = obj.get("content_block_id").and_then(|v| v.as_str()) == Some(self.expected_id);
         let content_ok = obj.get("content").and_then(|v| v.as_str()) == Some(self.expected_content);
         let tags_ok = obj.get("tags") == Some(&self.expected_tags);
-        let name_ok = obj
-            .get("name")
-            .and_then(|v| v.as_str())
-            .is_some_and(|n| n.starts_with("[ARCHIVED-") && n.ends_with(self.original_name));
+        // Parse the archive prefix strictly: `[ARCHIVED-YYYY-MM-DD] <original>`.
+        // A looser "starts_with / ends_with" match would happily accept
+        // `[ARCHIVED-foo] legacy` or `[ARCHIVED-] legacy`, which would
+        // silently tolerate a bug in the date formatter.
+        let name_ok = obj.get("name").and_then(|v| v.as_str()).is_some_and(|n| {
+            let Some(rest) = n.strip_prefix("[ARCHIVED-") else {
+                return false;
+            };
+            let Some((date, tail)) = rest.split_once("] ") else {
+                return false;
+            };
+            tail == self.original_name && looks_like_iso_date(date)
+        });
         id_ok && content_ok && tags_ok && name_ok
     }
+}
+
+/// Permissive ISO-shape check for `YYYY-MM-DD`. Doesn't validate the
+/// actual calendar date — an off-by-one month is already caught by the
+/// `diff::orphan` unit tests; this matcher's job is to pin the wire
+/// shape, not to re-test chrono.
+fn looks_like_iso_date(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[..4].iter().all(|b| b.is_ascii_digit())
+        && bytes[5..7].iter().all(|b| b.is_ascii_digit())
+        && bytes[8..].iter().all(|b| b.is_ascii_digit())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -583,7 +606,7 @@ async fn content_block_archive_orphans_renames_via_update() {
             expected_id: "id-orphan",
             expected_content: "preserved body\n",
             expected_tags: json!(["pr"]),
-            original_name: "] legacy",
+            original_name: "legacy",
         })
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
         .expect(1)
