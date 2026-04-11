@@ -373,6 +373,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_forwards_draft_state_to_request_body() {
+        // Counterpart to `update_sends_id_in_body_and_omits_state`: on
+        // create, state IS sent. The only difference between Active and
+        // Draft round-trips is the body_json matcher, so pinning Draft
+        // here locks in both serde variants going over the wire.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/content_blocks/create"))
+            .and(body_json(json!({
+                "name": "wip",
+                "content": "draft body",
+                "tags": [],
+                "state": "draft"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content_block_id": "id-wip"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = make_client(&server);
+        let cb = ContentBlock {
+            name: "wip".into(),
+            description: None,
+            content: "draft body".into(),
+            tags: vec![],
+            state: ContentBlockState::Draft,
+        };
+        client.create_content_block(&cb).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn update_sends_id_in_body_and_omits_state() {
         // Pins two invariants: the update body carries
         // `content_block_id` (so Braze knows which block to modify),
