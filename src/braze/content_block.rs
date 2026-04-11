@@ -1,33 +1,17 @@
-//! Content Block endpoints. See IMPLEMENTATION.md §8.3.
+//! Content Block endpoints.
 //!
-//! Braze content blocks are referenced by `name` from Liquid templates,
-//! but the API identifies them by `content_block_id` (a UUID-like
-//! string). braze-sync stores only the name in local files; the id is a
-//! transient runtime concept used to translate "the user wants to
-//! update content block X" into "POST /content_blocks/update with
-//! content_block_id=...".
-//!
-//! There is **no DELETE endpoint** in the Braze content blocks API,
-//! which is exactly why braze-sync has to express remote-only blocks as
-//! orphans (§11.6) instead of pretending it can drop them.
-//!
-//! Wire shapes here are **ASSUMED** based on Braze public docs +
-//! IMPLEMENTATION.md §8.3 and pinned by wiremock contract tests in this
-//! file. Phase C E2E gate (PHASE_A_NOTES.md §6) is responsible for
-//! confirming them against a real sandbox.
+//! Braze identifies content blocks by `content_block_id` but the templates
+//! that consume them reference `name`, so the workflow is always
+//! list-then-translate. There is no DELETE endpoint, which is why
+//! remote-only blocks are surfaced as orphans rather than `Removed` diffs.
 
 use crate::braze::error::BrazeApiError;
 use crate::braze::BrazeClient;
 use crate::resource::{ContentBlock, ContentBlockState};
 use serde::{Deserialize, Serialize};
 
-/// `GET /content_blocks/list` request: v0.2.0 always asks for a single
-/// large page. Pagination support lands in Phase C.
 const LIST_LIMIT: u32 = 100;
 
-/// Lightweight summary returned by `/content_blocks/list`. Carries
-/// just enough to build a name → id index for the apply path; fetching
-/// full content requires a follow-up `/content_blocks/info` call.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContentBlockSummary {
     pub content_block_id: String,
@@ -35,9 +19,8 @@ pub struct ContentBlockSummary {
 }
 
 impl BrazeClient {
-    /// `GET /content_blocks/list` — enumerate every content block in the
-    /// workspace. Returns one page (size [`LIST_LIMIT`]); workspaces with
-    /// more blocks may see truncated results until Phase C pagination.
+    /// Returns one page of [`LIST_LIMIT`] summaries; workspaces with more
+    /// blocks see truncated results until pagination lands.
     pub async fn list_content_blocks(&self) -> Result<Vec<ContentBlockSummary>, BrazeApiError> {
         let req = self
             .get(&["content_blocks", "list"])
@@ -63,14 +46,9 @@ impl BrazeClient {
             .collect())
     }
 
-    /// `GET /content_blocks/info?content_block_id=...` — fetch one
-    /// content block's full body and metadata. Returns the domain
-    /// [`ContentBlock`] directly.
-    ///
-    /// Braze responds 200 with a non-success `message` field for "this
-    /// id doesn't exist" rather than a 404; that case is mapped to
-    /// [`BrazeApiError::NotFound`] so callers can branch consistently
-    /// with the catalog client.
+    /// Braze returns 200 with a non-success `message` field for unknown
+    /// ids instead of a 404, so we remap that case to `NotFound` to keep
+    /// the call sites consistent with the catalog client.
     pub async fn get_content_block(&self, id: &str) -> Result<ContentBlock, BrazeApiError> {
         let req = self
             .get(&["content_blocks", "info"])
@@ -86,15 +64,13 @@ impl BrazeClient {
             description: wire.description,
             content: wire.content,
             tags: wire.tags,
-            // Braze content_blocks API does not expose a state concept;
-            // default to Active so the round-trip is stable. See README
-            // v0.2.0 limitations + diff/content_block.rs syncable_eq.
+            // Braze /info has no state field; default keeps round-trips
+            // stable. See diff/content_block.rs syncable_eq for why this
+            // can't drift the diff layer.
             state: ContentBlockState::Active,
         })
     }
 
-    /// `POST /content_blocks/create` — create a new content block.
-    /// Returns the newly assigned `content_block_id`.
     pub async fn create_content_block(&self, cb: &ContentBlock) -> Result<String, BrazeApiError> {
         let body = ContentBlockWriteBody {
             content_block_id: None,
@@ -109,9 +85,8 @@ impl BrazeClient {
         Ok(resp.content_block_id)
     }
 
-    /// `POST /content_blocks/update` — overwrite an existing content block.
     /// Used both for body changes and for the `--archive-orphans` rename
-    /// (which is "update with the same id but a `[ARCHIVED-...]` name").
+    /// (same id, `[ARCHIVED-...]` name).
     pub async fn update_content_block(
         &self,
         id: &str,
@@ -129,10 +104,6 @@ impl BrazeClient {
         self.send_ok(req).await
     }
 }
-
-// =====================================================================
-// Wire types — ASSUMED, pinned by tests below.
-// =====================================================================
 
 #[derive(Debug, Deserialize)]
 struct ContentBlockListResponse {
@@ -191,20 +162,11 @@ struct ContentBlockCreateResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::braze::test_client as make_client;
     use reqwest::StatusCode;
-    use secrecy::SecretString;
     use serde_json::json;
-    use url::Url;
     use wiremock::matchers::{body_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    fn make_client(server: &MockServer) -> BrazeClient {
-        BrazeClient::new(
-            Url::parse(&server.uri()).unwrap(),
-            SecretString::from("test-key".to_string()),
-            10_000,
-        )
-    }
 
     #[tokio::test]
     async fn list_happy_path() {
@@ -309,9 +271,6 @@ mod tests {
     #[tokio::test]
     async fn info_with_unsuccessful_message_is_not_found() {
         let server = MockServer::start().await;
-        // Braze sometimes returns 200 with `"message": "..."` carrying
-        // the failure reason instead of a 4xx. Treat any non-"success"
-        // message as NotFound for the get-by-id case.
         Mock::given(method("GET"))
             .and(path("/content_blocks/info"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -361,8 +320,6 @@ mod tests {
 
     #[tokio::test]
     async fn create_omits_description_when_none() {
-        // Test that the optional description field doesn't appear in
-        // the wire body when it's None — confirms #[serde(skip_serializing_if)].
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/content_blocks/create"))

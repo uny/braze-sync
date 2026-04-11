@@ -14,7 +14,26 @@ pub mod content_block_io;
 pub mod frontmatter;
 
 use crate::error::{Error, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Reject names that would escape the resource root or otherwise
+/// confuse the on-disk layout. Used by every resource writer as a last
+/// line of defence on top of the validate command's pattern check.
+pub(crate) fn validate_resource_name(kind_label: &str, name: &str) -> Result<()> {
+    let bad = name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0');
+    if bad {
+        return Err(Error::InvalidFormat {
+            path: PathBuf::from(name),
+            message: format!("{kind_label} name '{name}' contains invalid characters"),
+        });
+    }
+    Ok(())
+}
 
 /// Write `contents` to `path` via write-to-temp-then-rename so readers
 /// never see a partially-written file. Creates parent directories as needed.

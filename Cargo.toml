@@ -26,6 +26,9 @@ clap = { version = "4", features = ["derive", "env"] }
 # Async runtime
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "time", "sync", "io-util"] }
 
+# Concurrent stream combinators (buffer_unordered for parallel API fan-out)
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+
 # HTTP — rustls only, no openssl
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip", "stream"] }
 

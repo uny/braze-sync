@@ -1,7 +1,4 @@
 //! `braze-sync export` — pull current state from Braze into local files.
-//!
-//! v0.2.0 supports Catalog Schema and Content Block. The other resource
-//! kinds produce a "not yet implemented" warning when selected.
 
 use crate::braze::error::BrazeApiError;
 use crate::braze::BrazeClient;
@@ -10,7 +7,10 @@ use crate::fs::{catalog_io, content_block_io};
 use crate::resource::ResourceKind;
 use anyhow::Context as _;
 use clap::Args;
+use futures::stream::{StreamExt, TryStreamExt};
 use std::path::Path;
+
+const FETCH_CONCURRENCY: usize = 8;
 
 use super::{selected_kinds, warn_unimplemented};
 
@@ -72,8 +72,7 @@ async fn export_catalog_schemas(
     let catalogs = match name_filter {
         Some(name) => match client.get_catalog(name).await {
             Ok(c) => vec![c],
-            // get_catalog NotFound is informational, not a hard error —
-            // export of a missing name simply writes nothing.
+            // Missing remote is informational, not a hard error.
             Err(BrazeApiError::NotFound { .. }) => {
                 eprintln!("⚠ catalog_schema: '{name}' not found in Braze");
                 Vec::new()
@@ -90,10 +89,9 @@ async fn export_catalog_schemas(
     Ok(count)
 }
 
-/// Export content blocks. Always lists first to discover ids, then
-/// fetches `/content_blocks/info` per block to get the body. With
-/// `--name`, the list is still fetched (to translate name → id) but
-/// only the matching block has its body fetched.
+/// Lists first to discover ids, then fetches `/info` per block. With
+/// `--name`, the list still happens (to translate name → id) but only
+/// the matching block's body is fetched.
 async fn export_content_blocks(
     client: &BrazeClient,
     content_blocks_root: &Path,
@@ -112,11 +110,17 @@ async fn export_content_blocks(
         return Ok(0);
     }
 
-    let mut count = 0;
-    for s in &targets {
-        let cb = client.get_content_block(&s.content_block_id).await?;
-        content_block_io::save_content_block(content_blocks_root, &cb)?;
-        count += 1;
+    let blocks: Vec<crate::resource::ContentBlock> = futures::stream::iter(
+        targets
+            .iter()
+            .map(|s| async move { client.get_content_block(&s.content_block_id).await }),
+    )
+    .buffer_unordered(FETCH_CONCURRENCY)
+    .try_collect()
+    .await?;
+
+    for cb in &blocks {
+        content_block_io::save_content_block(content_blocks_root, cb)?;
     }
-    Ok(count)
+    Ok(blocks.len())
 }

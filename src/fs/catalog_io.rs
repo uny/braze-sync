@@ -15,9 +15,9 @@
 //! v0.1.0 implements schema only. Items I/O is not yet handled here.
 
 use crate::error::{Error, Result};
-use crate::fs::write_atomic;
+use crate::fs::{validate_resource_name, write_atomic};
 use crate::resource::Catalog;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Header prepended to every `schema.yaml` written by braze-sync. Editable
 /// — the comment is just a hint to humans browsing the file tree.
@@ -109,7 +109,7 @@ pub fn read_schema_file(path: &Path) -> Result<Catalog> {
 /// path traversal — defense in depth on top of the validate command's
 /// naming-pattern check (§7.6 / §10).
 pub fn save_schema(catalogs_root: &Path, catalog: &Catalog) -> Result<()> {
-    validate_catalog_name(&catalog.name)?;
+    validate_resource_name("catalog", &catalog.name)?;
 
     let dir = catalogs_root.join(&catalog.name);
     let path = dir.join(SCHEMA_FILE_NAME);
@@ -125,22 +125,6 @@ pub fn save_schema(catalogs_root: &Path, catalog: &Catalog) -> Result<()> {
     content.push_str(&yaml);
 
     write_atomic(&path, content.as_bytes())?;
-    Ok(())
-}
-
-fn validate_catalog_name(name: &str) -> Result<()> {
-    let bad = name.is_empty()
-        || name == "."
-        || name == ".."
-        || name.contains('/')
-        || name.contains('\\')
-        || name.contains('\0');
-    if bad {
-        return Err(Error::InvalidFormat {
-            path: PathBuf::from(name),
-            message: format!("catalog name '{name}' contains invalid characters"),
-        });
-    }
     Ok(())
 }
 

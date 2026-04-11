@@ -1,33 +1,9 @@
-//! `braze-sync apply` — push local intent to Braze.
+//! `braze-sync apply` — the only command that mutates remote state.
 //!
-//! v0.2.0 supports Catalog Schema (field add / field delete) and
-//! Content Block (create / update / archive-orphans). The other
-//! resource kinds emit a "not yet implemented" warning.
-//!
-//! ## Safety chain
-//!
-//! Apply is the only command that mutates remote state, so it goes
-//! through a strict order of checks. Each check fails closed:
-//!
-//! 1. Recompute the diff (= the apply plan) using the same code path as
-//!    the [`super::diff`] command. They cannot disagree about what would
-//!    be applied.
-//! 2. Print the plan. The header line goes to stderr so the JSON output
-//!    on stdout stays parseable for CI consumers.
-//! 3. If `summary.changed_count() == 0` → "No changes" → exit 0.
-//! 4. If `--confirm` is **not** set → "DRY RUN" → exit 0. Zero write
-//!    calls reach Braze in this branch. Verified by integration tests
-//!    that mount a `method("POST")` mock with `.expect(0)`.
-//! 5. If `summary.destructive_count() > 0 && !args.allow_destructive` →
-//!    return [`Error::DestructiveBlocked`] which `cli::exit_code_for`
-//!    maps to exit code 6 per IMPLEMENTATION.md §7.1.
-//! 6. Pre-validate the plan against v0.1.0's known unsupported
-//!    operations (top-level catalog Added / Removed, field-level
-//!    Modified). This runs **before any API call** so we can never
-//!    leave Braze half-applied.
-//! 7. Apply each change. The loop uses `?`, so the first failure aborts
-//!    the rest — partial-apply is bad-by-default. Each call is logged
-//!    via `tracing::info!` with structured fields per §2.3 #4.
+//! Recomputes the diff via the same code path as `diff`, prints it,
+//! then short-circuits unless `--confirm` is set. Pre-validates the
+//! plan before any API call so a half-applied workspace is impossible,
+//! and aborts the loop on the first failure.
 
 use crate::braze::BrazeClient;
 use crate::config::ResolvedConfig;
@@ -87,8 +63,6 @@ pub async fn run(
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
     let mut summary = DiffSummary::default();
-    // Built only when content_block diffs are present in the plan; the
-    // apply path consumes it to translate name → content_block_id.
     let mut content_block_id_index: Option<ContentBlockIdIndex> = None;
     for kind in kinds {
         match kind {
@@ -135,10 +109,7 @@ pub async fn run(
 
     check_for_unsupported_ops(&summary)?;
 
-    // Compute today's date once so a single apply run uses one
-    // canonical archive timestamp even if it processes multiple
-    // orphans. Local-clock based on the operator's machine — that's
-    // the right granularity for a human-facing dashboard label.
+    // One canonical archive timestamp per run, even across multiple orphans.
     let today = chrono::Local::now().date_naive();
 
     let mut applied = 0;
@@ -157,7 +128,6 @@ pub async fn run(
                 )
                 .await?;
             }
-            // Other ResourceDiff variants are not yet implemented.
             _ => {}
         }
     }
@@ -166,14 +136,11 @@ pub async fn run(
     Ok(())
 }
 
-/// Walk the plan and reject anything v0.1.0 cannot actually do. Runs
-/// before any API call so a partial apply is impossible.
+/// Reject ops the API can't actually perform. Runs before any write
+/// call so a partial apply is impossible.
 fn check_for_unsupported_ops(summary: &DiffSummary) -> anyhow::Result<()> {
     for diff in &summary.diffs {
         if let ResourceDiff::CatalogSchema(d) = diff {
-            // Top-level catalog Added/Removed: not supported in v0.1.0.
-            // The §8.3 endpoint table only lists field-level POST/DELETE,
-            // not whole-catalog create/delete.
             match &d.op {
                 DiffOp::Added(_) => {
                     return Err(anyhow!(
@@ -192,9 +159,8 @@ fn check_for_unsupported_ops(summary: &DiffSummary) -> anyhow::Result<()> {
                 }
                 _ => {}
             }
-            // Field-level Modified (type change): not supported. Auto
-            // delete-then-add is data-losing on the changed field, which
-            // we refuse to do silently. Document a manual workaround.
+            // Field type change would require delete-then-add, which is
+            // data-losing on the field — refuse rather than silently drop.
             for fd in &d.field_diffs {
                 if let DiffOp::Modified { from, to } = fd {
                     return Err(anyhow!(
@@ -221,9 +187,8 @@ async fn apply_content_block(
     archive_orphans: bool,
     today: chrono::NaiveDate,
 ) -> anyhow::Result<usize> {
-    // Orphan branch: only acts when --archive-orphans is set. Without
-    // it, the orphan was already reported in the printed plan and we
-    // do nothing — the §11.6 honest-orphan contract.
+    // Orphans only mutate remote state when --archive-orphans is set;
+    // otherwise the plan-print is the entire effect.
     if d.orphan {
         if !archive_orphans {
             return Ok(0);
@@ -239,11 +204,9 @@ async fn apply_content_block(
         })?;
         let archived = orphan::archive_name(today, &d.name);
         if archived == d.name {
-            // Already archived (idempotent path). Nothing to do.
             return Ok(0);
         }
-        // Fetch full info so the rename PATCH preserves body / metadata.
-        // The Braze update endpoint requires a full body, not a partial.
+        // Update endpoint requires the full body, not a partial.
         let mut cb = client.get_content_block(id).await?;
         cb.name = archived;
         tracing::info!(
@@ -275,9 +238,8 @@ async fn apply_content_block(
             client.update_content_block(id, to).await?;
             Ok(1)
         }
-        // Removed never appears for content blocks: the diff function
-        // routes remote-only blocks through the orphan path. Defensive
-        // arm in case the diff layer ever changes.
+        // The diff layer routes remote-only blocks through the orphan
+        // path; this arm is purely defensive.
         DiffOp::Removed(_) => Err(anyhow!(
             "internal: ContentBlockDiff produced a Removed op; the diff layer \
              should route this through the orphan path"
@@ -313,8 +275,6 @@ async fn apply_catalog_schema(
                 count += 1;
             }
             DiffOp::Modified { .. } => {
-                // Already rejected by check_for_unsupported_ops above.
-                // Defensive in case the validate step is ever bypassed.
                 return Err(anyhow!(
                     "internal: Modified field op should have been rejected \
                      by check_for_unsupported_ops"

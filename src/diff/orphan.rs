@@ -1,15 +1,9 @@
-//! `[ARCHIVED-YYYY-MM-DD]` orphan rename helper. See IMPLEMENTATION.md §11.6.
+//! `[ARCHIVED-YYYY-MM-DD]` orphan rename helper.
 //!
-//! Content Block (Phase B1) and Email Template (future Phase B2) cannot
-//! be deleted via the Braze API. When the apply path encounters an
-//! orphan and the user has passed `--archive-orphans`, braze-sync
-//! renames the remote resource by prefixing its name with
-//! `[ARCHIVED-YYYY-MM-DD] ` so the operator can spot it in the Braze
-//! dashboard. The data is never silently dropped.
-//!
-//! All functions in this module are pure and date-injectable so the
-//! tests can lock the format without coupling to the system clock. The
-//! CLI layer passes `chrono::Local::now().date_naive()` at call time.
+//! Resources with no DELETE endpoint get renamed instead of dropped, so
+//! operators can still find them in the Braze dashboard. Functions are
+//! pure and date-injectable so tests can lock the format without
+//! coupling to the system clock.
 
 use chrono::NaiveDate;
 
@@ -45,11 +39,9 @@ pub fn is_archived(name: &str) -> bool {
     looks_like_date(date_part)
 }
 
-/// Match `NNNN-NN-NN` without bothering to validate the actual calendar
-/// date. The whole point of this check is to detect already-archived
-/// names cheaply, not to validate the date itself — that distinction
-/// matters because we never want a malformed prefix to silently strip
-/// `[ARCHIVED-...]` and re-archive on top of it.
+/// Match `NNNN-NN-NN` without validating the actual calendar date —
+/// permissive on purpose so a wrong-day prefix is still recognized as
+/// already-archived (otherwise we'd re-stamp on top of it).
 fn looks_like_date(s: &str) -> bool {
     let bytes = s.as_bytes();
     if bytes.len() != 10 {
@@ -108,8 +100,6 @@ mod tests {
 
     #[test]
     fn empty_original_is_still_archived() {
-        // Defensive: an empty name shouldn't crash. The validate layer
-        // is supposed to reject these, but the helper should be total.
         let renamed = archive_name(day(2026, 4, 11), "");
         assert_eq!(renamed, "[ARCHIVED-2026-04-11] ");
     }

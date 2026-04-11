@@ -1,32 +1,20 @@
 //! Content Block file I/O.
 //!
-//! Layout (IMPLEMENTATION.md §9.1, §9.4):
-//!
-//! ```text
-//! <content_blocks_root>/
-//! ├── 2504_pr_post_bonus_dialog.liquid
-//! └── shared_header.liquid
-//! ```
-//!
-//! Each `.liquid` file is YAML frontmatter (`---` fenced) followed by
-//! the Liquid template body. The frontmatter carries every field from
-//! [`ContentBlock`] except `content` itself, which lives in the body.
-//! Splitting metadata from body is the whole reason this layout uses a
-//! single file with frontmatter rather than a directory: humans editing
-//! the body should not have to scroll past `tags:` to reach line 1.
+//! Each `.liquid` file is YAML frontmatter followed by the Liquid body.
+//! Single-file-with-frontmatter (rather than a directory) is deliberate
+//! so that the body starts on line 1 — operators editing templates
+//! shouldn't have to scroll past `tags:` to see what they're changing.
 
 use crate::error::{Error, Result};
-use crate::fs::{frontmatter, write_atomic};
+use crate::fs::{frontmatter, validate_resource_name, write_atomic};
 use crate::resource::{ContentBlock, ContentBlockState};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const FILE_EXT: &str = "liquid";
 
-/// Frontmatter wire shape — every [`ContentBlock`] field except `content`,
-/// which lives in the body. Kept private so changing the on-disk
-/// representation cannot affect downstream code that consumes
-/// [`ContentBlock`].
+/// On-disk wire shape. Kept private so the file layout can change
+/// without affecting consumers of the domain [`ContentBlock`].
 #[derive(Debug, Serialize, Deserialize)]
 struct Frontmatter {
     name: String,
@@ -39,18 +27,13 @@ struct Frontmatter {
 }
 
 fn default_state() -> ContentBlockState {
-    // Braze content_blocks API has no state concept; Active is the
-    // forward-compat default. See README v0.2.0 limitations.
+    // Braze /info has no state field; Active is the forward-compat default.
     ContentBlockState::Active
 }
 
-/// Load every `.liquid` file directly under `root`, sorted by name. A
-/// missing root is not an error — a fresh project is allowed to have
-/// no content blocks yet.
-///
-/// File-name validation: the basename (without `.liquid`) must match
-/// the frontmatter `name:`. This mirrors the catalog dir/name check
-/// (`fs/catalog_io.rs`) and makes diff/apply trivially auditable.
+/// Load every `.liquid` file directly under `root`, sorted by name.
+/// Missing root is not an error. Each file's stem must match its
+/// frontmatter `name:` — divergence is treated as a hard parse error.
 pub fn load_all_content_blocks(root: &Path) -> Result<Vec<ContentBlock>> {
     let read_dir = match std::fs::read_dir(root) {
         Ok(rd) => rd,
@@ -99,9 +82,8 @@ pub fn load_all_content_blocks(root: &Path) -> Result<Vec<ContentBlock>> {
     Ok(blocks)
 }
 
-/// Read a single `.liquid` file by absolute path. Does NOT validate that
-/// the file stem matches `name` — the caller (typically
-/// [`load_all_content_blocks`]) is responsible for that.
+/// Read a single `.liquid` file. Does not validate that the file stem
+/// matches `name`; callers do that.
 pub fn read_content_block_file(path: &Path) -> Result<ContentBlock> {
     let text = std::fs::read_to_string(path)?;
     let (fm, body): (Frontmatter, &str) = frontmatter::parse(path, &text)?;
@@ -114,12 +96,10 @@ pub fn read_content_block_file(path: &Path) -> Result<ContentBlock> {
     })
 }
 
-/// Write `cb` to `<root>/<cb.name>.liquid`, creating directories as
-/// needed. Rejects names that contain path separators or `..` to defeat
-/// path-traversal — defense in depth on top of the validate command's
-/// naming-pattern check.
+/// Write `cb` to `<root>/<cb.name>.liquid`. Names containing path
+/// separators or `..` are rejected as defence in depth.
 pub fn save_content_block(root: &Path, cb: &ContentBlock) -> Result<()> {
-    validate_content_block_name(&cb.name)?;
+    validate_resource_name("content block", &cb.name)?;
     let path = root.join(format!("{}.{FILE_EXT}", cb.name));
 
     let fm = Frontmatter {
@@ -133,22 +113,6 @@ pub fn save_content_block(root: &Path, cb: &ContentBlock) -> Result<()> {
         text.push('\n');
     }
     write_atomic(&path, text.as_bytes())?;
-    Ok(())
-}
-
-fn validate_content_block_name(name: &str) -> Result<()> {
-    let bad = name.is_empty()
-        || name == "."
-        || name == ".."
-        || name.contains('/')
-        || name.contains('\\')
-        || name.contains('\0');
-    if bad {
-        return Err(Error::InvalidFormat {
-            path: PathBuf::from(name),
-            message: format!("content block name '{name}' contains invalid characters"),
-        });
-    }
     Ok(())
 }
 
@@ -252,8 +216,6 @@ mod tests {
 
     #[test]
     fn missing_state_field_defaults_to_active() {
-        // Forward-compat: a future binary that drops `state` from the
-        // frontmatter should still parse cleanly.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("legacy.liquid"),

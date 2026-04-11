@@ -1,36 +1,35 @@
 //! `braze-sync diff` — show drift between local files and Braze.
 //!
-//! v0.2.0 supports Catalog Schema and Content Block. The other resource
-//! kinds emit a "not yet implemented" warning.
-//!
-//! Output goes to **stdout** so scripts can `braze-sync diff > drift.txt`
-//! cleanly. Status warnings go to stderr. The formatter is chosen by the
-//! global `--format` flag (default: `table`).
-//!
-//! With `--fail-on-drift`, a non-empty `summary.changed_count()` makes the
-//! command exit with code 2 (`Error::DriftDetected`) so CI pipelines can
-//! gate merges on a clean tree.
+//! Plan output goes to stdout (so `braze-sync diff > drift.txt` is
+//! clean); warnings go to stderr. With `--fail-on-drift`, any drift
+//! exits 2 so CI can gate on a clean tree.
 
 use crate::braze::error::BrazeApiError;
 use crate::braze::BrazeClient;
 use crate::config::ResolvedConfig;
 use crate::diff::catalog::diff_schema;
-use crate::diff::content_block::diff as diff_content_block;
-use crate::diff::{DiffSummary, ResourceDiff};
+use crate::diff::content_block::{diff as diff_content_block, ContentBlockDiff};
+use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::error::Error;
 use crate::format::OutputFormat;
 use crate::fs::{catalog_io, content_block_io};
 use crate::resource::{Catalog, ContentBlock, ResourceKind};
 use anyhow::Context as _;
 use clap::Args;
+use futures::stream::{StreamExt, TryStreamExt};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+/// Maximum concurrent in-flight Braze GET requests for fan-out fetches.
+/// The shared rate limiter still governs RPM; this just bounds peak
+/// concurrency so a workspace with hundreds of blocks doesn't open
+/// hundreds of sockets at once.
+const FETCH_CONCURRENCY: usize = 8;
+
 use super::{selected_kinds, warn_unimplemented};
 
-/// Name → Braze content_block_id index returned alongside the content
-/// block diff plan. Apply uses it to translate per-name diff entries
-/// into the `content_block_id` the update endpoint requires.
+/// Name → Braze `content_block_id`. Apply uses it to translate
+/// per-name diff entries into the id the update endpoint requires.
 pub(crate) type ContentBlockIdIndex = BTreeMap<String, String>;
 
 #[derive(Args, Debug)]
@@ -83,8 +82,6 @@ pub async fn run(
         }
     }
 
-    // Render formatted output to stdout. Formatters return strings ending
-    // with one newline, so a plain `print!` is enough.
     let formatted = format.formatter().format(&summary);
     print!("{formatted}");
 
@@ -98,37 +95,29 @@ pub async fn run(
     Ok(())
 }
 
-/// Compute the per-catalog-schema diff between local files and Braze.
-///
-/// `pub(crate)` so [`crate::cli::apply`] can reuse the exact same plan
-/// computation that the diff command displays — apply is "compute the
-/// plan and then execute it", so they MUST agree on what the plan is.
+/// Shared by `apply` so the printed plan and the executed plan cannot
+/// disagree.
 pub(crate) async fn compute_catalog_schema_diffs(
     client: &BrazeClient,
     catalogs_root: &Path,
     name_filter: Option<&str>,
 ) -> anyhow::Result<Vec<ResourceDiff>> {
-    // Local: load all on-disk schemas, then optionally restrict by name.
     let mut local = catalog_io::load_all_schemas(catalogs_root)?;
     if let Some(name) = name_filter {
         local.retain(|c| c.name == name);
     }
 
-    // Remote: when filtering, hit the cheaper get-by-name endpoint.
     let remote: Vec<Catalog> = match name_filter {
         Some(name) => match client.get_catalog(name).await {
             Ok(c) => vec![c],
-            // NotFound on the filtered get-by-name call means the remote
-            // simply doesn't have it; treat as "no remote" so the local
-            // shows up as Added (a normal diff entry, not an error).
+            // NotFound on a filtered fetch just means "no remote"; the
+            // local entry surfaces as Added rather than as an error.
             Err(BrazeApiError::NotFound { .. }) => Vec::new(),
             Err(e) => return Err(e.into()),
         },
         None => client.list_catalogs().await?,
     };
 
-    // Index by name and compute diffs over the union, in deterministic
-    // (sorted) order.
     let local_by_name: BTreeMap<&str, &Catalog> =
         local.iter().map(|c| (c.name.as_str(), c)).collect();
     let remote_by_name: BTreeMap<&str, &Catalog> =
@@ -153,14 +142,6 @@ pub(crate) async fn compute_catalog_schema_diffs(
 /// Compute the per-content-block diff plan plus a name → id index for
 /// the apply path. Returning both keeps the second half of `apply` from
 /// having to refetch `/content_blocks/list`.
-///
-/// API call shape (worst case `--name` not set):
-/// 1. one `GET /content_blocks/list`
-/// 2. for each name present in BOTH local and remote, one
-///    `GET /content_blocks/info?content_block_id=...` to fetch the
-///    body. Local-only names produce no API calls (we already have the
-///    body); remote-only names also produce no API calls (orphans only
-///    need their identity to report).
 pub(crate) async fn compute_content_block_plan(
     client: &BrazeClient,
     content_blocks_root: &Path,
@@ -176,54 +157,51 @@ pub(crate) async fn compute_content_block_plan(
         summaries.retain(|s| s.name == name);
     }
 
-    // Build the name → id index up front; apply uses it later.
     let id_index: ContentBlockIdIndex = summaries
-        .iter()
-        .map(|s| (s.name.clone(), s.content_block_id.clone()))
+        .into_iter()
+        .map(|s| (s.name, s.content_block_id))
         .collect();
 
     let local_by_name: BTreeMap<&str, &ContentBlock> =
         local.iter().map(|c| (c.name.as_str(), c)).collect();
-    let remote_names: BTreeSet<&str> = summaries.iter().map(|s| s.name.as_str()).collect();
 
-    // Only fetch /info for names that exist on BOTH sides — those are
-    // the only candidates for a body comparison. Local-only goes to
-    // Added (no fetch needed), remote-only goes to orphan (no body
-    // needed).
+    // Only names present on both sides need a /info fetch. Fan them out
+    // in parallel; the BrazeClient's rate limiter still governs RPM.
+    let shared_names: Vec<&str> = id_index
+        .keys()
+        .map(String::as_str)
+        .filter(|n| local_by_name.contains_key(n))
+        .collect();
+    let fetched: BTreeMap<String, ContentBlock> = futures::stream::iter(shared_names.iter().map(
+        |name| {
+            let id = id_index
+                .get(*name)
+                .expect("id_index built from the same summaries set");
+            async move {
+                client
+                    .get_content_block(id)
+                    .await
+                    .map(|cb| (name.to_string(), cb))
+            }
+        },
+    ))
+    .buffer_unordered(FETCH_CONCURRENCY)
+    .try_collect()
+    .await?;
+
     let mut all_names: BTreeSet<&str> = BTreeSet::new();
     all_names.extend(local_by_name.keys().copied());
-    all_names.extend(remote_names.iter().copied());
+    all_names.extend(id_index.keys().map(String::as_str));
 
     let mut diffs = Vec::new();
     for name in all_names {
         let local_cb = local_by_name.get(name).copied();
-        let remote_cb: Option<ContentBlock> = if remote_names.contains(name) && local_cb.is_some() {
-            let id = id_index
-                .get(name)
-                .expect("id_index built from the same summaries set");
-            Some(client.get_content_block(id).await?)
-        } else {
-            None
-        };
-        let remote_ref = remote_cb.as_ref();
-        // Three cases:
-        // 1. local + remote present → call diff with both
-        // 2. local only → call diff with local only (Added)
-        // 3. remote only → orphan; manufacture a stub remote with just
-        //    the name so the diff function can flag it
-        let diff_result = match (local_cb, remote_ref, remote_names.contains(name)) {
+        let remote_cb = fetched.get(name);
+        let remote_present = id_index.contains_key(name);
+        let diff_result = match (local_cb, remote_cb, remote_present) {
             (Some(l), Some(r), _) => diff_content_block(Some(l), Some(r)),
             (Some(l), None, _) => diff_content_block(Some(l), None),
-            (None, _, true) => {
-                let stub = ContentBlock {
-                    name: name.to_string(),
-                    description: None,
-                    content: String::new(),
-                    tags: vec![],
-                    state: crate::resource::ContentBlockState::Active,
-                };
-                diff_content_block(None, Some(&stub))
-            }
+            (None, _, true) => Some(orphan_diff(name)),
             (None, _, false) => None,
         };
         if let Some(d) = diff_result {
@@ -232,4 +210,13 @@ pub(crate) async fn compute_content_block_plan(
     }
 
     Ok((diffs, id_index))
+}
+
+fn orphan_diff(name: &str) -> ContentBlockDiff {
+    ContentBlockDiff {
+        name: name.to_string(),
+        op: DiffOp::Unchanged,
+        text_diff: None,
+        orphan: true,
+    }
 }

@@ -1,31 +1,14 @@
-//! Content Block diff. See IMPLEMENTATION.md §11.3 / §11.6.
-//!
-//! Two things make this differ from Catalog Schema:
-//!
-//! 1. **No DELETE endpoint.** A content block that exists in Braze but
-//!    not in Git is an *orphan*, not a `Removed`. The diff carries an
-//!    explicit `orphan: bool` and the apply path can rename via
-//!    `--archive-orphans` instead of pretending it can drop it.
-//! 2. **Body comparison via `similar`.** When both sides exist and the
-//!    bodies differ, we compute a [`TextDiffSummary`] (line additions /
-//!    deletions) so the formatter can show "+5 -3" without dumping the
-//!    full hunk.
+//! Content Block diff.
 //!
 //! ### Why `state` is excluded from the syncable comparison
 //!
-//! IMPLEMENTATION.md §6.3 puts a `state: Active|Draft` enum on the
-//! domain `ContentBlock`, but Braze's `/content_blocks/info` response
-//! does not actually carry a state field. The braze client defaults
-//! every fetched block to `Active`. If we compared whole-struct equality
-//! (`l == r`), a local file with `state: draft` would diff as Modified
-//! against any remote — and `apply` could not actually change the
-//! remote because there is no API for it. That is the exact "infinite
-//! drift" failure mode the §11.6 honest-orphan design is trying to
-//! prevent for the no-DELETE case. Excluding `state` from the syncable
-//! check keeps the local file free to carry that metadata for human
-//! readers without producing false-positive diffs. Confirming whether
-//! Braze ever exposes content block state is a Phase C E2E gate item
-//! (PHASE_A_NOTES.md §6).
+//! Braze's `/content_blocks/info` response does not carry a state field
+//! and the braze client defaults every fetched block to `Active`.
+//! Comparing whole-struct equality would make any local file with
+//! `state: draft` diff as Modified forever — the "infinite drift" mode
+//! the orphan design is meant to prevent for resources with no DELETE
+//! endpoint. Excluding `state` keeps the local file free to carry that
+//! metadata for human readers without producing false-positive diffs.
 
 use crate::diff::DiffOp;
 use crate::resource::ContentBlock;
@@ -36,7 +19,7 @@ pub struct ContentBlockDiff {
     pub name: String,
     pub op: DiffOp<ContentBlock>,
     pub text_diff: Option<TextDiffSummary>,
-    /// True when present in Braze but missing from Git. See §11.6.
+    /// True when present in Braze but missing from Git.
     pub orphan: bool,
 }
 
@@ -44,7 +27,6 @@ pub struct ContentBlockDiff {
 pub struct TextDiffSummary {
     pub additions: usize,
     pub deletions: usize,
-    pub unified_hunks: Vec<String>,
 }
 
 impl ContentBlockDiff {
@@ -57,10 +39,8 @@ impl ContentBlockDiff {
     }
 }
 
-/// Compute a per-name content block diff.
-///
-/// Returns `None` only when both sides are absent. The local side is
-/// the desired state and the remote side is what Braze currently has.
+/// Returns `None` only when both sides are absent. Local is desired
+/// state, remote is current Braze state.
 pub fn diff(
     local: Option<&ContentBlock>,
     remote: Option<&ContentBlock>,
@@ -73,9 +53,8 @@ pub fn diff(
             text_diff: None,
             orphan: false,
         }),
-        // local 不在 + remote 存在 → orphan (§11.6). The op stays
-        // Unchanged because there is no DELETE API to call; the orphan
-        // flag is what the apply path branches on.
+        // No DELETE API → op stays Unchanged; the orphan flag is what
+        // the apply path branches on.
         (None, Some(r)) => Some(ContentBlockDiff {
             name: r.name.clone(),
             op: DiffOp::Unchanged,
@@ -111,7 +90,7 @@ pub fn diff(
 }
 
 /// Equality for the fields braze-sync can actually push to Braze.
-/// Excludes `state` for the reason documented at the top of this file.
+/// Excludes `state` — see the module docs.
 fn syncable_eq(a: &ContentBlock, b: &ContentBlock) -> bool {
     a.name == b.name && a.description == b.description && a.content == b.content && a.tags == b.tags
 }
@@ -127,17 +106,9 @@ fn compute_text_diff(from: &str, to: &str) -> TextDiffSummary {
             ChangeTag::Equal => {}
         }
     }
-    let hunks = diff
-        .unified_diff()
-        .context_radius(3)
-        .to_string()
-        .lines()
-        .map(String::from)
-        .collect();
     TextDiffSummary {
         additions,
         deletions,
-        unified_hunks: hunks,
     }
 }
 
@@ -228,9 +199,6 @@ mod tests {
 
     #[test]
     fn state_difference_alone_is_not_drift() {
-        // The whole point of syncable_eq excluding state. Local says
-        // Draft, remote (defaulted) says Active — and we treat the pair
-        // as in-sync because braze-sync cannot actually push state.
         let mut l = cb("state", "body\n");
         let r = cb("state", "body\n");
         l.state = ContentBlockState::Draft;
@@ -241,10 +209,6 @@ mod tests {
 
     #[test]
     fn destructive_count_is_never_set_on_content_blocks() {
-        // Sanity: ContentBlockDiff has no destructive concept (no DELETE
-        // endpoint exists). The aggregate has_destructive in
-        // diff/mod.rs returns false unconditionally for ContentBlock,
-        // so we just confirm orphan + Modified both stay non-destructive.
         let r = cb("ghost", "x");
         let orphan = diff(None, Some(&r)).unwrap();
         assert!(!orphan.op.is_destructive());

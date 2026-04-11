@@ -1,26 +1,10 @@
 //! YAML frontmatter helper.
 //!
-//! Files of the shape
-//!
-//! ```text
-//! ---
-//! key: value
-//! other: 1
-//! ---
-//! body text...
-//! ```
-//!
-//! show up in two places: Content Block `.liquid` files (Phase B1) and,
-//! eventually, anywhere else where a free-text body needs structured
-//! metadata. The split is line-based per IMPLEMENTATION.md §9.4 — the
-//! whole point of YAML frontmatter is that humans can edit it.
-//!
-//! The parser is intentionally strict about the *fences*: the file must
-//! start with `---\n` (or `---\r\n`) and the YAML must end with another
-//! line that is exactly `---`. Any deviation produces a typed error so
-//! the validate command can report it cleanly. The body that follows
-//! the closing fence is returned verbatim, including its trailing
-//! newline (if any).
+//! Strict about the fences: the file must start with `---\n` (or
+//! `---\r\n`) and the YAML must end with a line that is exactly `---`.
+//! Anything else returns a typed error so the validate command can
+//! report it cleanly. The body after the closing fence is returned
+//! verbatim, trailing newline included.
 
 use crate::error::{Error, Result};
 use serde::{de::DeserializeOwned, Serialize};

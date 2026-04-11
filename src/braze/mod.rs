@@ -194,3 +194,13 @@ fn parse_retry_after(resp: &reqwest::Response) -> Option<Duration> {
         .ok()
         .map(Duration::from_secs)
 }
+
+#[cfg(test)]
+pub(crate) fn test_client(server: &wiremock::MockServer) -> BrazeClient {
+    BrazeClient::new(
+        Url::parse(&server.uri()).unwrap(),
+        SecretString::from("test-key".to_string()),
+        // Very high rpm so the limiter is effectively a no-op in tests.
+        10_000,
+    )
+}

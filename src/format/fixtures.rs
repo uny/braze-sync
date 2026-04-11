@@ -162,7 +162,6 @@ pub fn all_kinds_mixed() -> DiffSummary {
         text_diff: Some(TextDiffSummary {
             additions: 5,
             deletions: 3,
-            unified_hunks: vec![],
         }),
         orphan: false,
     };
@@ -175,7 +174,6 @@ pub fn all_kinds_mixed() -> DiffSummary {
         body_html_diff: Some(TextDiffSummary {
             additions: 20,
             deletions: 8,
-            unified_hunks: vec![],
         }),
         body_plaintext_diff: None,
         metadata_changed: false,
