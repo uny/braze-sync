@@ -165,8 +165,14 @@ pub async fn run(
                 let local_map = catalog_items_local.as_ref().ok_or_else(|| {
                     anyhow!("internal: catalog_items_local not populated before apply")
                 })?;
+                let local = local_map.get(&d.catalog_name).ok_or_else(|| {
+                    anyhow!(
+                        "internal: local items for catalog '{}' missing from items map",
+                        d.catalog_name
+                    )
+                })?;
                 applied +=
-                    apply_catalog_items(&client, d, local_map, parallel_batches).await?;
+                    apply_catalog_items(&client, d, local, parallel_batches).await?;
             }
             ResourceDiff::ContentBlock(d) => {
                 applied += apply_content_block(
@@ -366,7 +372,7 @@ const ITEMS_BATCH_SIZE: usize = 50;
 async fn apply_catalog_items(
     client: &BrazeClient,
     d: &CatalogItemsDiff,
-    local_map: &BTreeMap<String, CatalogItems>,
+    local: &CatalogItems,
     parallel_batches: u32,
 ) -> anyhow::Result<usize> {
     if !d.has_changes() {
@@ -385,20 +391,20 @@ async fn apply_catalog_items(
 
     let mut upsert_count: usize = 0;
     if !upsert_ids.is_empty() {
-        let local = local_map.get(catalog_name).ok_or_else(|| {
-            anyhow!(
-                "internal: local items for catalog '{}' missing from items map",
-                catalog_name
-            )
-        })?;
         let rows = local.rows.as_ref().ok_or_else(|| {
             anyhow!(
                 "internal: local items for catalog '{}' have no materialized rows",
                 catalog_name
             )
         })?;
+        // Only index the rows we actually need to upsert, not the entire catalog.
+        let needed: std::collections::HashSet<&str> =
+            upsert_ids.iter().copied().collect();
         let row_by_id: std::collections::HashMap<&str, &crate::resource::CatalogItemRow> =
-            rows.iter().map(|r| (r.id.as_str(), r)).collect();
+            rows.iter()
+                .filter(|r| needed.contains(r.id.as_str()))
+                .map(|r| (r.id.as_str(), r))
+                .collect();
 
         let total_items = upsert_ids.len();
 
@@ -450,7 +456,7 @@ async fn apply_catalog_items(
         pb.finish_and_clear();
     }
 
-    // Delete removed items (gated at top-level by --allow-destructive).
+    // No destructive check here — already gated by --allow-destructive before the apply loop.
     let mut delete_count: usize = 0;
     if !d.removed_ids.is_empty() {
         let batch_counts: Vec<usize> =

@@ -343,7 +343,7 @@ pub(crate) async fn compute_catalog_items_diffs(
 ) -> anyhow::Result<(Vec<ResourceDiff>, BTreeMap<String, CatalogItems>)> {
     let local_map: BTreeMap<String, CatalogItems> = match name_filter {
         Some(name) => {
-            let items_path = catalogs_root.join(name).join("items.csv");
+            let items_path = catalogs_root.join(name).join(catalog_io::ITEMS_FILE_NAME);
             if items_path.is_file() {
                 let ci = if materialize_rows {
                     catalog_io::load_items(&items_path)?

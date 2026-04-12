@@ -311,7 +311,7 @@ fn validate_catalog_items(
             continue;
         }
         let dir = entry.path();
-        let items_path = dir.join("items.csv");
+        let items_path = dir.join(catalog_io::ITEMS_FILE_NAME);
         if !items_path.is_file() {
             continue;
         }

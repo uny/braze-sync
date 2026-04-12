@@ -131,7 +131,20 @@ pub fn save_schema(catalogs_root: &Path, catalog: &Catalog) -> Result<()> {
 // Catalog Items CSV I/O
 // =====================================================================
 
-const ITEMS_FILE_NAME: &str = "items.csv";
+pub(crate) const ITEMS_FILE_NAME: &str = "items.csv";
+const ITEMS_ID_COLUMN: &str = "id";
+
+/// Extract the catalog name from the parent directory of an `items.csv` path.
+fn catalog_name_from_items_path(path: &Path) -> Result<String> {
+    path.parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| Error::InvalidFormat {
+            path: path.to_path_buf(),
+            message: "cannot determine catalog name from items.csv path".into(),
+        })
+        .map(String::from)
+}
 
 /// Parse a single CSV cell into a typed `serde_json::Value`.
 ///
@@ -189,15 +202,7 @@ pub fn load_item_hashes(path: &Path) -> Result<CatalogItems> {
 }
 
 fn load_items_inner(path: &Path, materialize_rows: bool) -> Result<CatalogItems> {
-    let catalog_name = path
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| Error::InvalidFormat {
-            path: path.to_path_buf(),
-            message: "cannot determine catalog name from items.csv path".into(),
-        })?
-        .to_string();
+    let catalog_name = catalog_name_from_items_path(path)?;
 
     let mut reader = csv::Reader::from_path(path).map_err(|e| Error::CsvParse {
         path: path.to_path_buf(),
@@ -212,7 +217,7 @@ fn load_items_inner(path: &Path, materialize_rows: bool) -> Result<CatalogItems>
 
     let id_col = header_vec
         .iter()
-        .position(|h| h == "id")
+        .position(|h| h == ITEMS_ID_COLUMN)
         .ok_or_else(|| Error::InvalidFormat {
             path: path.to_path_buf(),
             message: "items.csv is missing required 'id' column".into(),
@@ -282,15 +287,7 @@ fn load_items_inner(path: &Path, materialize_rows: bool) -> Result<CatalogItems>
 /// Use this for lightweight validation that only needs column names — avoids
 /// parsing and materializing all rows.
 pub fn read_item_csv_columns(path: &Path) -> Result<(String, Vec<String>)> {
-    let catalog_name = path
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| Error::InvalidFormat {
-            path: path.to_path_buf(),
-            message: "cannot determine catalog name from items.csv path".into(),
-        })?
-        .to_string();
+    let catalog_name = catalog_name_from_items_path(path)?;
 
     let mut reader = csv::Reader::from_path(path).map_err(|e| Error::CsvParse {
         path: path.to_path_buf(),
@@ -304,11 +301,11 @@ pub fn read_item_csv_columns(path: &Path) -> Result<(String, Vec<String>)> {
 
     let columns: Vec<String> = headers
         .iter()
-        .filter(|h| *h != "id")
+        .filter(|h| *h != ITEMS_ID_COLUMN)
         .map(String::from)
         .collect();
 
-    if !headers.iter().any(|h| h == "id") {
+    if !headers.iter().any(|h| h == ITEMS_ID_COLUMN) {
         return Err(Error::InvalidFormat {
             path: path.to_path_buf(),
             message: "items.csv is missing required 'id' column".into(),
@@ -333,7 +330,7 @@ pub fn save_items(catalogs_root: &Path, catalog_name: &str, rows: &[CatalogItemR
     }
 
     let mut header: Vec<&str> = Vec::with_capacity(1 + field_names.len());
-    header.push("id");
+    header.push(ITEMS_ID_COLUMN);
     header.extend(field_names.iter().copied());
 
     let path = catalogs_root.join(catalog_name).join(ITEMS_FILE_NAME);
