@@ -395,25 +395,24 @@ async fn apply_catalog_items(
         let row_by_id: std::collections::HashMap<&str, &crate::resource::CatalogItemRow> =
             rows.iter().map(|r| (r.id.as_str(), r)).collect();
 
-        // Collect references first, then clone once per batch to avoid double-cloning.
-        let mut upsert_refs: Vec<&crate::resource::CatalogItemRow> =
-            Vec::with_capacity(upsert_ids.len());
-        for id in &upsert_ids {
-            let row = row_by_id.get(id).ok_or_else(|| {
-                anyhow!(
-                    "internal: item '{}' in diff but missing from local rows for catalog '{}'",
-                    id,
-                    catalog_name
-                )
-            })?;
-            upsert_refs.push(row);
-        }
-
-        let total_items = upsert_refs.len();
-        let batches: Vec<Vec<crate::resource::CatalogItemRow>> = upsert_refs
+        let total_items = upsert_ids.len();
+        let batches: Vec<Vec<crate::resource::CatalogItemRow>> = upsert_ids
             .chunks(ITEMS_BATCH_SIZE)
-            .map(|c| c.iter().map(|r| (*r).clone()).collect())
-            .collect();
+            .map(|chunk| {
+                chunk
+                    .iter()
+                    .map(|id| {
+                        row_by_id.get(id).ok_or_else(|| {
+                            anyhow!(
+                                "internal: item '{}' in diff but missing from local rows for catalog '{}'",
+                                id,
+                                catalog_name
+                            )
+                        }).map(|r| (*r).clone())
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         let pb = indicatif::ProgressBar::new(total_items as u64);
         pb.set_style(

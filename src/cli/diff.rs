@@ -18,9 +18,7 @@ use crate::diff::{DiffSummary, ResourceDiff};
 use crate::error::Error;
 use crate::format::OutputFormat;
 use crate::fs::{catalog_io, content_block_io, email_template_io};
-use crate::resource::{
-    Catalog, CatalogItemRow, CatalogItems, ContentBlock, EmailTemplate, ResourceKind,
-};
+use crate::resource::{Catalog, CatalogItems, ContentBlock, EmailTemplate, ResourceKind};
 use anyhow::Context as _;
 use clap::Args;
 use futures::stream::{StreamExt, TryStreamExt};
@@ -359,14 +357,22 @@ pub(crate) async fn compute_catalog_items_diffs(
     all_names.extend(local_map.keys().cloned());
     all_names.extend(remote_catalog_names);
 
-    // Fan out remote item fetches in parallel (mirrors content_block/email_template patterns).
-    let fetched: BTreeMap<String, Option<Vec<CatalogItemRow>>> =
+    // Fan out remote item fetches in parallel. Hash rows inside the
+    // closure so full row data is dropped immediately after each fetch,
+    // rather than all catalogs' rows living in memory simultaneously.
+    let fetched: BTreeMap<String, Option<BTreeMap<String, String>>> =
         futures::stream::iter(all_names.iter().map(|name| {
             let client = client.clone();
             let name = name.clone();
             async move {
                 match client.list_catalog_items(&name).await {
-                    Ok(rows) => Ok((name, Some(rows))),
+                    Ok(rows) => {
+                        let hashes = rows
+                            .iter()
+                            .map(|r| (r.id.clone(), r.content_hash()))
+                            .collect();
+                        Ok((name, Some(hashes)))
+                    }
                     Err(BrazeApiError::NotFound { .. }) => Ok((name, None)),
                     Err(e) => Err(e),
                 }
@@ -383,20 +389,19 @@ pub(crate) async fn compute_catalog_items_diffs(
         let local = local_map.get(name);
 
         let remote = fetched.get(name).and_then(|opt| {
-            opt.as_ref().map(|rows| CatalogItems {
+            opt.as_ref().map(|hashes| CatalogItems {
                 catalog_name: name.clone(),
-                item_hashes: rows
-                    .iter()
-                    .map(|r| (r.id.clone(), r.content_hash()))
-                    .collect(),
+                item_hashes: hashes.clone(),
                 rows: None,
             })
         });
 
         let l = local.unwrap_or(&empty);
         let r = remote.as_ref().unwrap_or(&empty);
-        let d = diff_items(l, r);
-        diffs.push(ResourceDiff::CatalogItems(d));
+        let d = diff_items(name, l, r);
+        if d.has_changes() {
+            diffs.push(ResourceDiff::CatalogItems(d));
+        }
     }
 
     Ok((diffs, local_map))
