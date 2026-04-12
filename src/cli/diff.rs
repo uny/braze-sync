@@ -313,6 +313,21 @@ pub(crate) async fn compute_email_template_plan(
     Ok((diffs, id_index))
 }
 
+/// Resolve catalog names from a name filter: with `--name`, returns just
+/// that name; without, discovers all catalog names via `list_catalogs`.
+pub(crate) async fn resolve_catalog_names(
+    client: &BrazeClient,
+    name_filter: Option<&str>,
+) -> anyhow::Result<Vec<String>> {
+    match name_filter {
+        Some(name) => Ok(vec![name.to_string()]),
+        None => {
+            let catalogs = client.list_catalogs().await?;
+            Ok(catalogs.into_iter().map(|c| c.name).collect())
+        }
+    }
+}
+
 /// Compute catalog items diffs. Returns the diff results plus a map
 /// from catalog_name → local `CatalogItems` (with rows) so the apply
 /// path can read rows without reloading the CSV.
@@ -321,57 +336,66 @@ pub(crate) async fn compute_catalog_items_diffs(
     catalogs_root: &Path,
     name_filter: Option<&str>,
 ) -> anyhow::Result<(Vec<ResourceDiff>, BTreeMap<String, CatalogItems>)> {
-    let mut local_list = catalog_io::load_all_items(catalogs_root)?;
-    if let Some(name) = name_filter {
-        local_list.retain(|ci| ci.catalog_name == name);
-    }
-
-    let local_map: BTreeMap<String, CatalogItems> = local_list
-        .into_iter()
-        .map(|ci| (ci.catalog_name.clone(), ci))
-        .collect();
-
-    // Discover which catalogs exist remotely. If filtering by name, only
-    // fetch that one. Otherwise use list_catalogs to discover all names.
-    let remote_catalog_names: Vec<String> = match name_filter {
-        Some(name) => vec![name.to_string()],
-        None => {
-            let catalogs = client.list_catalogs().await?;
-            catalogs.into_iter().map(|c| c.name).collect()
+    let local_map: BTreeMap<String, CatalogItems> = match name_filter {
+        Some(name) => {
+            let items_path = catalogs_root.join(name).join("items.csv");
+            if items_path.is_file() {
+                let ci = catalog_io::load_items(&items_path)?;
+                BTreeMap::from([(ci.catalog_name.clone(), ci)])
+            } else {
+                BTreeMap::new()
+            }
         }
+        None => catalog_io::load_all_items(catalogs_root)?
+            .into_iter()
+            .map(|ci| (ci.catalog_name.clone(), ci))
+            .collect(),
     };
+
+    let remote_catalog_names = resolve_catalog_names(client, name_filter).await?;
 
     // Fetch remote items for each catalog that exists locally OR remotely.
     let mut all_names: BTreeSet<String> = BTreeSet::new();
     all_names.extend(local_map.keys().cloned());
     all_names.extend(remote_catalog_names);
 
+    // Fan out remote item fetches in parallel (mirrors content_block/email_template patterns).
+    let fetched: BTreeMap<String, Option<Vec<CatalogItemRow>>> =
+        futures::stream::iter(all_names.iter().map(|name| {
+            let client = client.clone();
+            let name = name.clone();
+            async move {
+                match client.list_catalog_items(&name).await {
+                    Ok(rows) => Ok((name, Some(rows))),
+                    Err(BrazeApiError::NotFound { .. }) => Ok((name, None)),
+                    Err(e) => Err(e),
+                }
+            }
+        }))
+        .buffer_unordered(FETCH_CONCURRENCY)
+        .try_collect()
+        .await?;
+
+    let empty = CatalogItems {
+        catalog_name: String::new(),
+        item_hashes: BTreeMap::new(),
+        rows: None,
+    };
+
     let mut diffs = Vec::new();
     for name in &all_names {
         let local = local_map.get(name);
-        let remote_rows: Option<Vec<CatalogItemRow>> = match client.list_catalog_items(name).await {
-            Ok(rows) => Some(rows),
-            Err(BrazeApiError::NotFound { .. }) => None,
-            Err(e) => return Err(e.into()),
-        };
 
-        let remote = remote_rows.map(|rows| {
-            let hashes = rows
-                .iter()
-                .map(|r| (r.id.clone(), r.content_hash()))
-                .collect();
-            CatalogItems {
+        let remote = fetched.get(name).and_then(|opt| {
+            opt.as_ref().map(|rows| CatalogItems {
                 catalog_name: name.clone(),
-                item_hashes: hashes,
-                rows: None, // rows not needed for diff — only hashes matter
-            }
+                item_hashes: rows
+                    .iter()
+                    .map(|r| (r.id.clone(), r.content_hash()))
+                    .collect(),
+                rows: None,
+            })
         });
-
-        let empty = CatalogItems {
-            catalog_name: name.clone(),
-            item_hashes: BTreeMap::new(),
-            rows: None,
-        };
 
         let l = local.unwrap_or(&empty);
         let r = remote.as_ref().unwrap_or(&empty);

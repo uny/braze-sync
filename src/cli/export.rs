@@ -10,6 +10,7 @@ use clap::Args;
 use futures::stream::{StreamExt, TryStreamExt};
 use std::path::Path;
 
+use super::diff::resolve_catalog_names;
 use super::{selected_kinds, FETCH_CONCURRENCY};
 
 #[derive(Args, Debug)]
@@ -193,13 +194,7 @@ async fn export_catalog_items(
     catalogs_root: &Path,
     name_filter: Option<&str>,
 ) -> anyhow::Result<usize> {
-    let catalog_names: Vec<String> = match name_filter {
-        Some(name) => vec![name.to_string()],
-        None => {
-            let catalogs = client.list_catalogs().await?;
-            catalogs.into_iter().map(|c| c.name).collect()
-        }
-    };
+    let catalog_names = resolve_catalog_names(client, name_filter).await?;
 
     let mut count = 0;
     for name in &catalog_names {

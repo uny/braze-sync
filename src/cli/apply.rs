@@ -394,7 +394,9 @@ async fn apply_catalog_items(
         let row_by_id: BTreeMap<&str, &crate::resource::CatalogItemRow> =
             rows.iter().map(|r| (r.id.as_str(), r)).collect();
 
-        let mut upsert_rows = Vec::with_capacity(upsert_ids.len());
+        // Collect references first, then clone once per batch to avoid double-cloning.
+        let mut upsert_refs: Vec<&crate::resource::CatalogItemRow> =
+            Vec::with_capacity(upsert_ids.len());
         for id in &upsert_ids {
             let row = row_by_id.get(id).ok_or_else(|| {
                 anyhow!(
@@ -403,14 +405,13 @@ async fn apply_catalog_items(
                     catalog_name
                 )
             })?;
-            upsert_rows.push((*row).clone());
+            upsert_refs.push(row);
         }
 
-        let total_items = upsert_rows.len();
-        // Split into owned chunks to avoid re-cloning each batch.
-        let batches: Vec<Vec<crate::resource::CatalogItemRow>> = upsert_rows
+        let total_items = upsert_refs.len();
+        let batches: Vec<Vec<crate::resource::CatalogItemRow>> = upsert_refs
             .chunks(ITEMS_BATCH_SIZE)
-            .map(|c| c.to_vec())
+            .map(|c| c.iter().map(|r| (*r).clone()).collect())
             .collect();
 
         let pb = indicatif::ProgressBar::new(total_items as u64);
