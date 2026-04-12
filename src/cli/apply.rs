@@ -376,7 +376,7 @@ async fn apply_catalog_items(
         .map(String::as_str)
         .collect();
 
-    let mut upsert_count = 0;
+    let mut upsert_count: usize = 0;
     if !upsert_ids.is_empty() {
         let local = local_map.and_then(|m| m.get(catalog_name)).ok_or_else(|| {
             anyhow!(
@@ -415,10 +415,9 @@ async fn apply_catalog_items(
                 .template("{spinner:.green} [{elapsed_precise}] {bar:40} {pos}/{len} items")
                 .unwrap(),
         );
-        pb.set_draw_target(indicatif::ProgressDrawTarget::stderr());
 
         let concurrency = (parallel_batches as usize).max(1);
-        futures::stream::iter(batches.into_iter().map(|batch| {
+        let batch_counts: Vec<usize> = futures::stream::iter(batches.into_iter().map(|batch| {
             let client = client.clone();
             let catalog_name = catalog_name.clone();
             let batch_len = batch.len();
@@ -441,10 +440,9 @@ async fn apply_catalog_items(
             }
         }))
         .buffer_unordered(concurrency)
-        .try_collect::<Vec<_>>()
-        .await?
-        .iter()
-        .for_each(|n| upsert_count += n);
+        .try_collect::<Vec<usize>>()
+        .await?;
+        upsert_count = batch_counts.into_iter().sum();
 
         pb.finish_and_clear();
     }

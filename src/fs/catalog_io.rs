@@ -277,9 +277,11 @@ pub fn save_items(catalogs_root: &Path, catalog_name: &str, rows: &[CatalogItemR
     header.push("id");
     header.extend(field_names.iter().copied());
 
+    let path = catalogs_root.join(catalog_name).join(ITEMS_FILE_NAME);
+
     let mut wtr = csv::Writer::from_writer(Vec::new());
     wtr.write_record(&header).map_err(|e| Error::CsvParse {
-        path: catalogs_root.join(catalog_name).join(ITEMS_FILE_NAME),
+        path: path.clone(),
         source: e,
     })?;
 
@@ -295,17 +297,16 @@ pub fn save_items(catalogs_root: &Path, catalog_name: &str, rows: &[CatalogItemR
             record.push(val);
         }
         wtr.write_record(&record).map_err(|e| Error::CsvParse {
-            path: catalogs_root.join(catalog_name).join(ITEMS_FILE_NAME),
+            path: path.clone(),
             source: e,
         })?;
     }
 
     let buf = wtr.into_inner().map_err(|e| Error::CsvParse {
-        path: catalogs_root.join(catalog_name).join(ITEMS_FILE_NAME),
+        path: path.clone(),
         source: e.into_error().into(),
     })?;
 
-    let path = catalogs_root.join(catalog_name).join(ITEMS_FILE_NAME);
     write_atomic(&path, &buf)?;
     Ok(())
 }

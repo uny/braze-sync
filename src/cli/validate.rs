@@ -53,7 +53,7 @@ pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> an
                 )?;
             }
             ResourceKind::CatalogItems => {
-                let catalogs_root = config_dir.join(&cfg.resources.catalog_items.path);
+                let catalogs_root = config_dir.join(&cfg.resources.catalog_schema.path);
                 validate_catalog_items(&catalogs_root, &mut issues)?;
             }
             ResourceKind::EmailTemplate => {

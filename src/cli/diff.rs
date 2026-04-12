@@ -356,30 +356,25 @@ pub(crate) async fn compute_catalog_items_diffs(
         };
 
         let remote = remote_rows.map(|rows| {
-            let mut hashes = BTreeMap::new();
-            for row in &rows {
-                hashes.insert(row.id.clone(), row.content_hash());
-            }
+            let hashes = rows
+                .iter()
+                .map(|r| (r.id.clone(), r.content_hash()))
+                .collect();
             CatalogItems {
                 catalog_name: name.clone(),
                 item_hashes: hashes,
-                rows: Some(rows),
+                rows: None, // rows not needed for diff — only hashes matter
             }
         });
 
-        let empty_local = CatalogItems {
+        let empty = CatalogItems {
             catalog_name: name.clone(),
             item_hashes: BTreeMap::new(),
-            rows: Some(vec![]),
-        };
-        let empty_remote = CatalogItems {
-            catalog_name: name.clone(),
-            item_hashes: BTreeMap::new(),
-            rows: Some(vec![]),
+            rows: None,
         };
 
-        let l = local.unwrap_or(&empty_local);
-        let r = remote.as_ref().unwrap_or(&empty_remote);
+        let l = local.unwrap_or(&empty);
+        let r = remote.as_ref().unwrap_or(&empty);
         let d = diff_items(l, r);
         diffs.push(ResourceDiff::CatalogItems(d));
     }
