@@ -111,7 +111,6 @@ pub struct ResourceConfig {
 pub struct CatalogItemsConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
-    pub path: PathBuf,
     #[serde(default = "default_parallel_batches")]
     pub parallel_batches: u32,
 }
@@ -134,7 +133,6 @@ fn default_catalog_schema() -> ResourceConfig {
 fn default_catalog_items() -> CatalogItemsConfig {
     CatalogItemsConfig {
         enabled: true,
-        path: PathBuf::from("catalogs/"),
         parallel_batches: 4,
     }
 }

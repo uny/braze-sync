@@ -239,13 +239,17 @@ pub fn load_items(path: &Path) -> Result<CatalogItems> {
             fields,
         };
 
-        if item_hashes.contains_key(&id) {
-            return Err(Error::InvalidFormat {
-                path: path.to_path_buf(),
-                message: format!("duplicate item id '{id}' in items.csv"),
-            });
+        match item_hashes.entry(id) {
+            std::collections::btree_map::Entry::Occupied(e) => {
+                return Err(Error::InvalidFormat {
+                    path: path.to_path_buf(),
+                    message: format!("duplicate item id '{}' in items.csv", e.key()),
+                });
+            }
+            std::collections::btree_map::Entry::Vacant(e) => {
+                e.insert(row.content_hash());
+            }
         }
-        item_hashes.insert(id, row.content_hash());
         rows.push(row);
     }
 

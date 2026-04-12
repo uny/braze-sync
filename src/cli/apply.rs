@@ -392,7 +392,7 @@ async fn apply_catalog_items(
                 catalog_name
             )
         })?;
-        let row_by_id: BTreeMap<&str, &crate::resource::CatalogItemRow> =
+        let row_by_id: std::collections::HashMap<&str, &crate::resource::CatalogItemRow> =
             rows.iter().map(|r| (r.id.as_str(), r)).collect();
 
         // Collect references first, then clone once per batch to avoid double-cloning.
