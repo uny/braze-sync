@@ -3,7 +3,7 @@
 use crate::braze::error::BrazeApiError;
 use crate::braze::BrazeClient;
 use crate::config::ResolvedConfig;
-use crate::fs::{catalog_io, content_block_io};
+use crate::fs::{catalog_io, content_block_io, email_template_io};
 use crate::resource::ResourceKind;
 use anyhow::Context as _;
 use clap::Args;
@@ -32,6 +32,7 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let catalogs_root = config_dir.join(&resolved.resources.catalog_schema.path);
     let content_blocks_root = config_dir.join(&resolved.resources.content_block.path);
+    let email_templates_root = config_dir.join(&resolved.resources.email_template.path);
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
@@ -50,6 +51,14 @@ pub async fn run(
                     .await
                     .context("exporting content_block")?;
                 eprintln!("✓ content_block: exported {n} resource(s)");
+                total_written += n;
+            }
+            ResourceKind::EmailTemplate => {
+                let n =
+                    export_email_templates(&client, &email_templates_root, args.name.as_deref())
+                        .await
+                        .context("exporting email_template")?;
+                eprintln!("✓ email_template: exported {n} resource(s)");
                 total_written += n;
             }
             other => {
@@ -127,4 +136,44 @@ async fn export_content_blocks(
         content_block_io::save_content_block(content_blocks_root, cb)?;
     }
     Ok(blocks.len())
+}
+
+/// Same list-then-fetch pattern as content blocks.
+async fn export_email_templates(
+    client: &BrazeClient,
+    email_templates_root: &Path,
+    name_filter: Option<&str>,
+) -> anyhow::Result<usize> {
+    let summaries = client.list_email_templates().await?;
+    let targets: Vec<_> = match name_filter {
+        Some(name) => summaries.into_iter().filter(|s| s.name == name).collect(),
+        None => summaries,
+    };
+
+    if targets.is_empty() {
+        if let Some(name) = name_filter {
+            eprintln!("⚠ email_template: '{name}' not found in Braze");
+        }
+        return Ok(0);
+    }
+
+    let templates: Vec<crate::resource::EmailTemplate> =
+        futures::stream::iter(targets.iter().map(|s| {
+            let name = s.name.as_str();
+            let id = s.email_template_id.as_str();
+            async move {
+                client
+                    .get_email_template(id)
+                    .await
+                    .with_context(|| format!("fetching email template '{name}'"))
+            }
+        }))
+        .buffer_unordered(FETCH_CONCURRENCY)
+        .try_collect()
+        .await?;
+
+    for et in &templates {
+        email_template_io::save_email_template(email_templates_root, et)?;
+    }
+    Ok(templates.len())
 }

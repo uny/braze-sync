@@ -11,6 +11,7 @@
 
 pub mod catalog_io;
 pub mod content_block_io;
+pub mod email_template_io;
 pub mod frontmatter;
 
 use crate::error::{Error, Result};

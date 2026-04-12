@@ -9,7 +9,9 @@
 mod common;
 
 use assert_cmd::Command;
-use common::{write_config, write_local_content_block, write_local_schema};
+use common::{
+    write_config, write_local_content_block, write_local_email_template, write_local_schema,
+};
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -385,4 +387,119 @@ async fn diff_with_json_format_emits_valid_v1_json() {
     assert_eq!(v["diffs"][0]["kind"], "catalog_schema");
     assert_eq!(v["diffs"][0]["name"], "stable");
     assert_eq!(v["diffs"][0]["op"], "unchanged");
+}
+
+// =====================================================================
+// Email Template (v0.3.0)
+// =====================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diff_email_template_added_when_remote_missing() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"templates": []})))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_email_template(tmp.path(), "fresh", "Welcome", "<p>Hi</p>", "Hi");
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["diff", "--resource", "email_template"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Email Template: fresh"), "stdout: {stdout}");
+    assert!(stdout.contains("+ new email template"), "stdout: {stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diff_email_template_orphan_when_local_missing() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "templates": [
+                {"email_template_id": "id-old", "template_name": "old_campaign"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    // No local email templates written
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["diff", "--resource", "email_template"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("orphaned"), "stdout: {stdout}");
+    assert!(stdout.contains("1 changed"), "stdout: {stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diff_email_template_no_drift_when_identical() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "templates": [{"email_template_id": "id-w", "template_name": "welcome"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "template_name": "welcome",
+            "subject": "Hi",
+            "body": "<p>Hi</p>",
+            "plaintext_body": "Hi",
+            "tags": [],
+            "message": "success"
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_email_template(tmp.path(), "welcome", "Hi", "<p>Hi</p>", "Hi");
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["diff", "--resource", "email_template"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("no drift"), "stdout: {stdout}");
+    assert!(stdout.contains("0 changed"), "stdout: {stdout}");
 }

@@ -15,7 +15,9 @@
 mod common;
 
 use assert_cmd::Command;
-use common::{write_config, write_local_content_block, write_local_schema};
+use common::{
+    write_config, write_local_content_block, write_local_email_template, write_local_schema,
+};
 use serde_json::json;
 use wiremock::matchers::{body_json, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -680,6 +682,190 @@ async fn content_block_archive_orphans_skips_already_archived_blocks() {
                 "apply",
                 "--resource",
                 "content_block",
+                "--confirm",
+                "--archive-orphans",
+            ])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
+
+// =====================================================================
+// Email Template (v0.3.0)
+// =====================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn email_template_dry_run_makes_no_write_calls() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"templates": []})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/templates/email/create"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_email_template(tmp.path(), "fresh", "Welcome", "<p>Hi</p>", "Hi");
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "email_template"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn email_template_confirm_create_posts_to_create_endpoint() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"templates": []})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/templates/email/create"))
+        .and(body_json(json!({
+            "template_name": "fresh",
+            "subject": "Welcome",
+            "body": "<p>Hi</p>",
+            "plaintext_body": "Hi",
+            "tags": []
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "email_template_id": "new-id"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_email_template(tmp.path(), "fresh", "Welcome", "<p>Hi</p>", "Hi");
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "email_template", "--confirm"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn email_template_confirm_update_posts_to_update_endpoint() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "templates": [{"email_template_id": "id-w", "template_name": "welcome"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/info"))
+        .and(query_param("email_template_id", "id-w"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "template_name": "welcome",
+            "subject": "Old subject",
+            "body": "<p>Old</p>",
+            "plaintext_body": "Old",
+            "tags": [],
+            "message": "success"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/templates/email/update"))
+        .and(body_json(json!({
+            "email_template_id": "id-w",
+            "template_name": "welcome",
+            "subject": "New subject",
+            "body": "<p>New</p>",
+            "plaintext_body": "New",
+            "tags": []
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_email_template(tmp.path(), "welcome", "New subject", "<p>New</p>", "New");
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "email_template", "--confirm"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn email_template_archive_orphans_renames_via_update() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "templates": [{"email_template_id": "id-old", "template_name": "old_promo"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/info"))
+        .and(query_param("email_template_id", "id-old"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "template_name": "old_promo",
+            "subject": "Old",
+            "body": "<p>Old</p>",
+            "plaintext_body": "Old",
+            "tags": [],
+            "message": "success"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/templates/email/update"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args([
+                "apply",
+                "--resource",
+                "email_template",
                 "--confirm",
                 "--archive-orphans",
             ])

@@ -84,3 +84,19 @@ pub fn write_content_block_raw(dir: &Path, name: &str, content: &str) {
     fs::create_dir_all(&cb_dir).unwrap();
     fs::write(cb_dir.join(format!("{name}.liquid")), content).unwrap();
 }
+
+/// Write a local email template directory under `<dir>/email_templates/<name>/`.
+pub fn write_local_email_template(
+    dir: &Path,
+    name: &str,
+    subject: &str,
+    body_html: &str,
+    body_txt: &str,
+) {
+    let et_dir = dir.join("email_templates").join(name);
+    fs::create_dir_all(&et_dir).unwrap();
+    let yaml = format!("name: {name}\nsubject: {subject}\n");
+    fs::write(et_dir.join("template.yaml"), yaml).unwrap();
+    fs::write(et_dir.join("body.html"), body_html).unwrap();
+    fs::write(et_dir.join("body.txt"), body_txt).unwrap();
+}

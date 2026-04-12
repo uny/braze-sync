@@ -3,6 +3,13 @@
 //! `body_plaintext` is always present (`String`, not `Option<String>`); the
 //! empty string is the legitimate value for HTML-only templates. This is a
 //! deliberate decision recorded in §17.
+//!
+//! API verification (2026-04-12):
+//! - `from_address`, `from_display_name`, `reply_to` do NOT exist in Braze API
+//! - `description` is returned by /info but NOT settable via create/update (read-only)
+//! - `should_inline_css` is supported by create/update/info
+//! - Braze field name mapping: `template_name`→`name`, `body`→`body_html`,
+//!   `plaintext_body`→`body_plaintext`
 
 use serde::{Deserialize, Serialize};
 
@@ -15,14 +22,15 @@ pub struct EmailTemplate {
     /// Plaintext fallback. Empty string allowed; field always present.
     #[serde(default)]
     pub body_plaintext: String,
+    /// Returned by Braze /info but not settable via create/update.
+    /// Excluded from syncable_eq (same pattern as ContentBlock `state`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from_address: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from_display_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reply_to: Option<String>,
+    pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preheader: Option<String>,
+    /// CSS inline processing toggle. Supported by create/update/info.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub should_inline_css: Option<bool>,
     #[serde(default)]
     pub tags: Vec<String>,
 }
@@ -38,10 +46,9 @@ mod tests {
             subject: "Welcome".into(),
             body_html: "<p>hi</p>".into(),
             body_plaintext: "hi".into(),
-            from_address: Some("noreply@example.com".into()),
-            from_display_name: Some("Example".into()),
-            reply_to: None,
+            description: Some("Welcome email".into()),
             preheader: Some("Get started".into()),
+            should_inline_css: Some(true),
             tags: vec!["onboarding".into()],
         };
         let yaml = serde_norway::to_string(&t).unwrap();
@@ -56,10 +63,9 @@ mod tests {
             subject: "x".into(),
             body_html: "<p>x</p>".into(),
             body_plaintext: String::new(),
-            from_address: None,
-            from_display_name: None,
-            reply_to: None,
+            description: None,
             preheader: None,
+            should_inline_css: None,
             tags: vec![],
         };
         let yaml = serde_norway::to_string(&t).unwrap();
