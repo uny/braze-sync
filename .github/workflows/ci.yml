@@ -44,6 +44,14 @@ jobs:
 
   audit:
     runs-on: ubuntu-latest
+    # `rustsec/audit-check` posts findings via the GitHub Checks API, which
+    # requires `checks: write`. Without this the job fails with
+    # "Resource not accessible by integration" even when the advisory scan
+    # itself succeeds. `contents: read` is kept explicit so the default
+    # permission set does not widen unexpectedly.
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
