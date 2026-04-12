@@ -187,8 +187,8 @@ async fn export_email_templates(
 }
 
 /// Export catalog items. Discovers catalogs via `list_catalogs` (to get
-/// names), then fetches items per catalog. With `--name`, fetches items
-/// for that single catalog only.
+/// names), then fetches items per catalog in parallel. With `--name`,
+/// fetches items for that single catalog only.
 async fn export_catalog_items(
     client: &BrazeClient,
     catalogs_root: &Path,
@@ -196,18 +196,28 @@ async fn export_catalog_items(
 ) -> anyhow::Result<usize> {
     let catalog_names = resolve_catalog_names(client, name_filter).await?;
 
-    let mut count = 0;
-    for name in &catalog_names {
-        let items = match client.list_catalog_items(name).await {
-            Ok(items) => items,
-            Err(BrazeApiError::NotFound { .. }) => {
-                eprintln!("⚠ catalog_items: catalog '{name}' not found in Braze");
-                continue;
+    let results: Vec<(String, Vec<_>)> = futures::stream::iter(catalog_names.into_iter().map(
+        |name| {
+            let client = client.clone();
+            async move {
+                match client.list_catalog_items(&name).await {
+                    Ok(items) => Ok(Some((name, items))),
+                    Err(BrazeApiError::NotFound { .. }) => {
+                        eprintln!("⚠ catalog_items: catalog '{name}' not found in Braze");
+                        Ok(None)
+                    }
+                    Err(e) => Err(e),
+                }
             }
-            Err(e) => return Err(e.into()),
-        };
-        catalog_io::save_items(catalogs_root, name, &items)?;
-        count += 1;
+        },
+    ))
+    .buffer_unordered(FETCH_CONCURRENCY)
+    .try_filter_map(|opt| futures::future::ok(opt))
+    .try_collect()
+    .await?;
+
+    for (name, items) in &results {
+        catalog_io::save_items(catalogs_root, name, items)?;
     }
-    Ok(count)
+    Ok(results.len())
 }

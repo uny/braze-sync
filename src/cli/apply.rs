@@ -369,6 +369,7 @@ async fn apply_catalog_items(
     }
 
     let catalog_name = &d.catalog_name;
+    let concurrency = (parallel_batches as usize).max(1);
 
     let upsert_ids: Vec<&str> = d
         .added_ids
@@ -421,7 +422,6 @@ async fn apply_catalog_items(
                 .unwrap(),
         );
 
-        let concurrency = (parallel_batches as usize).max(1);
         let batch_counts: Vec<usize> = futures::stream::iter(batches.into_iter().map(|batch| {
             let client = client.clone();
             let catalog_name = catalog_name.clone();
@@ -452,21 +452,34 @@ async fn apply_catalog_items(
     }
 
     // Delete removed items (gated at top-level by --allow-destructive).
-    let mut delete_count = 0;
+    let mut delete_count: usize = 0;
     if !d.removed_ids.is_empty() {
         let batches: Vec<&[String]> = d.removed_ids.chunks(ITEMS_BATCH_SIZE).collect();
-        for batch in batches {
-            tracing::info!(
-                catalog = %catalog_name,
-                batch_size = batch.len(),
-                "deleting catalog items batch"
-            );
-            client
-                .delete_catalog_items(catalog_name, batch)
-                .await
-                .with_context(|| format!("deleting items batch for catalog '{catalog_name}'"))?;
-            delete_count += batch.len();
-        }
+        let batch_counts: Vec<usize> =
+            futures::stream::iter(batches.into_iter().map(|batch| {
+                let client = client.clone();
+                let catalog_name = catalog_name.clone();
+                let batch_len = batch.len();
+                let batch_ids: Vec<String> = batch.to_vec();
+                async move {
+                    tracing::info!(
+                        catalog = %catalog_name,
+                        batch_size = batch_len,
+                        "deleting catalog items batch"
+                    );
+                    client
+                        .delete_catalog_items(&catalog_name, &batch_ids)
+                        .await
+                        .with_context(|| {
+                            format!("deleting items batch for catalog '{catalog_name}'")
+                        })?;
+                    Ok::<usize, anyhow::Error>(batch_len)
+                }
+            }))
+            .buffer_unordered(concurrency)
+            .try_collect::<Vec<usize>>()
+            .await?;
+        delete_count = batch_counts.into_iter().sum();
     }
 
     Ok(upsert_count + delete_count)

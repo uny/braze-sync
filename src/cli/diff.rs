@@ -376,11 +376,7 @@ pub(crate) async fn compute_catalog_items_diffs(
         .try_collect()
         .await?;
 
-    let empty = CatalogItems {
-        catalog_name: String::new(),
-        item_hashes: BTreeMap::new(),
-        rows: None,
-    };
+    let empty = CatalogItems::default();
 
     let mut diffs = Vec::new();
     for name in &all_names {

@@ -67,7 +67,7 @@ impl Catalog {
 /// Catalog Items are streamed: we keep an item-id → content-hash index in
 /// memory (cheap, ~64 bytes/row) and only materialize the full rows when an
 /// `apply` actually needs to write them. See IMPLEMENTATION.md §6.2 / §11.2.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct CatalogItems {
     pub catalog_name: String,
     /// item id → blake3 content hash of the normalized non-id field map.
