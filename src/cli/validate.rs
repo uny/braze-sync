@@ -331,38 +331,46 @@ fn validate_catalog_items(
         // Cross-check CSV header columns against sibling schema.yaml, if present.
         let schema_path = dir.join("schema.yaml");
         if schema_path.is_file() {
-            if let Ok(schema) = catalog_io::read_schema_file(&schema_path) {
-                let schema_field_names: std::collections::BTreeSet<&str> =
-                    schema.fields.iter().map(|f| f.name.as_str()).collect();
-                // CSV field names = columns other than "id". All rows share the
-                // same columns (from the CSV header), so the first row suffices.
-                if let Some(rows) = &items.rows {
-                    let csv_field_names: std::collections::BTreeSet<&str> = rows
-                        .first()
-                        .map(|r| r.fields.keys().map(String::as_str).collect())
-                        .unwrap_or_default();
+            let schema = match catalog_io::read_schema_file(&schema_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    issues.push(ValidationIssue {
+                        path: schema_path.clone(),
+                        message: format!("cannot parse schema.yaml: {e}"),
+                    });
+                    continue;
+                }
+            };
+            let schema_field_names: std::collections::BTreeSet<&str> =
+                schema.fields.iter().map(|f| f.name.as_str()).collect();
+            // CSV field names = columns other than "id". All rows share the
+            // same columns (from the CSV header), so the first row suffices.
+            if let Some(rows) = &items.rows {
+                let csv_field_names: std::collections::BTreeSet<&str> = rows
+                    .first()
+                    .map(|r| r.fields.keys().map(String::as_str).collect())
+                    .unwrap_or_default();
 
-                    for col in &csv_field_names {
-                        if !schema_field_names.contains(col) {
-                            issues.push(ValidationIssue {
-                                path: items_path.clone(),
-                                message: format!(
-                                    "CSV column '{}' is not in schema for catalog '{}'",
-                                    col, items.catalog_name
-                                ),
-                            });
-                        }
+                for col in &csv_field_names {
+                    if !schema_field_names.contains(col) {
+                        issues.push(ValidationIssue {
+                            path: items_path.clone(),
+                            message: format!(
+                                "CSV column '{}' is not in schema for catalog '{}'",
+                                col, items.catalog_name
+                            ),
+                        });
                     }
-                    for field in &schema_field_names {
-                        if !csv_field_names.contains(field) {
-                            issues.push(ValidationIssue {
-                                path: items_path.clone(),
-                                message: format!(
-                                    "schema field '{}' is missing from CSV for catalog '{}'",
-                                    field, items.catalog_name
-                                ),
-                            });
-                        }
+                }
+                for field in &schema_field_names {
+                    if !csv_field_names.contains(field) {
+                        issues.push(ValidationIssue {
+                            path: items_path.clone(),
+                            message: format!(
+                                "schema field '{}' is missing from CSV for catalog '{}'",
+                                field, items.catalog_name
+                            ),
+                        });
                     }
                 }
             }

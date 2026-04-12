@@ -458,13 +458,16 @@ async fn apply_catalog_items(
     // Delete removed items (gated at top-level by --allow-destructive).
     let mut delete_count: usize = 0;
     if !d.removed_ids.is_empty() {
-        let batches: Vec<&[String]> = d.removed_ids.chunks(ITEMS_BATCH_SIZE).collect();
+        let batches: Vec<Vec<String>> = d
+            .removed_ids
+            .chunks(ITEMS_BATCH_SIZE)
+            .map(|c| c.to_vec())
+            .collect();
         let batch_counts: Vec<usize> =
             futures::stream::iter(batches.into_iter().map(|batch| {
                 let client = client.clone();
                 let catalog_name = catalog_name.clone();
                 let batch_len = batch.len();
-                let batch_ids: Vec<String> = batch.to_vec();
                 async move {
                     tracing::info!(
                         catalog = %catalog_name,
@@ -472,7 +475,7 @@ async fn apply_catalog_items(
                         "deleting catalog items batch"
                     );
                     client
-                        .delete_catalog_items(&catalog_name, &batch_ids)
+                        .delete_catalog_items(&catalog_name, &batch)
                         .await
                         .with_context(|| {
                             format!("deleting items batch for catalog '{catalog_name}'")
