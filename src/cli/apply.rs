@@ -401,23 +401,6 @@ async fn apply_catalog_items(
             rows.iter().map(|r| (r.id.as_str(), r)).collect();
 
         let total_items = upsert_ids.len();
-        let batches: Vec<Vec<crate::resource::CatalogItemRow>> = upsert_ids
-            .chunks(ITEMS_BATCH_SIZE)
-            .map(|chunk| {
-                chunk
-                    .iter()
-                    .map(|id| {
-                        row_by_id.get(id).ok_or_else(|| {
-                            anyhow!(
-                                "internal: item '{}' in diff but missing from local rows for catalog '{}'",
-                                id,
-                                catalog_name
-                            )
-                        }).map(|r| (*r).clone())
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .collect::<Result<Vec<_>, _>>()?;
 
         let pb = indicatif::ProgressBar::new(total_items as u64);
         pb.set_style(
@@ -426,30 +409,42 @@ async fn apply_catalog_items(
                 .unwrap(),
         );
 
-        let batch_counts: Vec<usize> = futures::stream::iter(batches.into_iter().map(|batch| {
-            let client = client.clone();
-            let catalog_name = catalog_name.clone();
-            let batch_len = batch.len();
-            let pb = pb.clone();
-            async move {
-                tracing::info!(
-                    catalog = %catalog_name,
-                    batch_size = batch_len,
-                    "upserting catalog items batch"
-                );
-                client
-                    .upsert_catalog_items(&catalog_name, &batch)
-                    .await
-                    .with_context(|| {
-                        format!("upserting items batch for catalog '{catalog_name}'")
-                    })?;
-                pb.inc(batch_len as u64);
-                Ok::<usize, anyhow::Error>(batch_len)
-            }
-        }))
-        .buffer_unordered(concurrency)
-        .try_collect::<Vec<usize>>()
-        .await?;
+        // Build batches lazily inside the stream so only `concurrency`
+        // batches of cloned rows live in memory at a time.
+        let batch_counts: Vec<usize> =
+            futures::stream::iter(upsert_ids.chunks(ITEMS_BATCH_SIZE).map(|chunk| {
+                let batch: Vec<crate::resource::CatalogItemRow> = chunk
+                    .iter()
+                    .map(|&id| {
+                        (*row_by_id
+                            .get(id)
+                            .expect("item in diff but missing from local rows"))
+                        .clone()
+                    })
+                    .collect();
+                let client = client.clone();
+                let catalog_name = catalog_name.clone();
+                let batch_len = batch.len();
+                let pb = pb.clone();
+                async move {
+                    tracing::info!(
+                        catalog = %catalog_name,
+                        batch_size = batch_len,
+                        "upserting catalog items batch"
+                    );
+                    client
+                        .upsert_catalog_items(&catalog_name, &batch)
+                        .await
+                        .with_context(|| {
+                            format!("upserting items batch for catalog '{catalog_name}'")
+                        })?;
+                    pb.inc(batch_len as u64);
+                    Ok::<usize, anyhow::Error>(batch_len)
+                }
+            }))
+            .buffer_unordered(concurrency)
+            .try_collect::<Vec<usize>>()
+            .await?;
         upsert_count = batch_counts.into_iter().sum();
 
         pb.finish_and_clear();
@@ -458,13 +453,9 @@ async fn apply_catalog_items(
     // Delete removed items (gated at top-level by --allow-destructive).
     let mut delete_count: usize = 0;
     if !d.removed_ids.is_empty() {
-        let batches: Vec<Vec<String>> = d
-            .removed_ids
-            .chunks(ITEMS_BATCH_SIZE)
-            .map(|c| c.to_vec())
-            .collect();
         let batch_counts: Vec<usize> =
-            futures::stream::iter(batches.into_iter().map(|batch| {
+            futures::stream::iter(d.removed_ids.chunks(ITEMS_BATCH_SIZE).map(|chunk| {
+                let batch = chunk.to_vec();
                 let client = client.clone();
                 let catalog_name = catalog_name.clone();
                 let batch_len = batch.len();

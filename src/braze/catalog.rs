@@ -112,7 +112,7 @@ impl BrazeClient {
     }
 
     // =================================================================
-    // Catalog Items endpoints (Phase B3)
+    // Catalog Items endpoints
     // =================================================================
 
     /// `GET /catalogs/{name}/items` — list all items, paging through

@@ -277,6 +277,47 @@ fn load_items_inner(path: &Path, materialize_rows: bool) -> Result<CatalogItems>
     })
 }
 
+/// Read only the CSV header columns (excluding "id") from an `items.csv`.
+///
+/// Use this for lightweight validation that only needs column names — avoids
+/// parsing and materializing all rows.
+pub fn read_item_csv_columns(path: &Path) -> Result<(String, Vec<String>)> {
+    let catalog_name = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| Error::InvalidFormat {
+            path: path.to_path_buf(),
+            message: "cannot determine catalog name from items.csv path".into(),
+        })?
+        .to_string();
+
+    let mut reader = csv::Reader::from_path(path).map_err(|e| Error::CsvParse {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+
+    let headers = reader.headers().map_err(|e| Error::CsvParse {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+
+    let columns: Vec<String> = headers
+        .iter()
+        .filter(|h| *h != "id")
+        .map(String::from)
+        .collect();
+
+    if !headers.iter().any(|h| h == "id") {
+        return Err(Error::InvalidFormat {
+            path: path.to_path_buf(),
+            message: "items.csv is missing required 'id' column".into(),
+        });
+    }
+
+    Ok((catalog_name, columns))
+}
+
 /// Write `rows` to `<catalogs_root>/<catalog_name>/items.csv`.
 ///
 /// Header column order: `id` first, then remaining field names sorted
