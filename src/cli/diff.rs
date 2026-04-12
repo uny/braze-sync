@@ -382,23 +382,21 @@ pub(crate) async fn compute_catalog_items_diffs(
         .try_collect()
         .await?;
 
-    let empty = CatalogItems::default();
+    let empty_hashes = BTreeMap::new();
 
     let mut diffs = Vec::new();
     for name in &all_names {
-        let local = local_map.get(name);
+        let local_hashes = local_map
+            .get(name)
+            .map(|ci| &ci.item_hashes)
+            .unwrap_or(&empty_hashes);
 
-        let remote = fetched.get(name).and_then(|opt| {
-            opt.as_ref().map(|hashes| CatalogItems {
-                catalog_name: name.clone(),
-                item_hashes: hashes.clone(),
-                rows: None,
-            })
-        });
+        let remote_hashes = fetched
+            .get(name)
+            .and_then(|opt| opt.as_ref())
+            .unwrap_or(&empty_hashes);
 
-        let l = local.unwrap_or(&empty);
-        let r = remote.as_ref().unwrap_or(&empty);
-        let d = diff_items(name, l, r);
+        let d = diff_items(name, local_hashes, remote_hashes);
         if d.has_changes() {
             diffs.push(ResourceDiff::CatalogItems(d));
         }
