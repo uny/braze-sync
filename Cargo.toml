@@ -1,6 +1,6 @@
 [package]
 name = "braze-sync"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.86"
 license = "MIT"
@@ -79,6 +79,9 @@ url = { version = "2", features = ["serde"] }
 # patterns from IMPLEMENTATION.md §10.
 regex-lite = "0.1"
 secrecy = "0.10"
+
+# Progress bar for batch catalog items apply
+indicatif = "0.17"
 
 [dev-dependencies]
 insta = { version = "1", features = ["yaml", "json"] }

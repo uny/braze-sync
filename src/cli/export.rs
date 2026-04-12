@@ -10,7 +10,7 @@ use clap::Args;
 use futures::stream::{StreamExt, TryStreamExt};
 use std::path::Path;
 
-use super::{selected_kinds, warn_unimplemented, FETCH_CONCURRENCY};
+use super::{selected_kinds, FETCH_CONCURRENCY};
 
 #[derive(Args, Debug)]
 pub struct ExportArgs {
@@ -46,6 +46,13 @@ pub async fn run(
                 eprintln!("✓ catalog_schema: exported {n} resource(s)");
                 total_written += n;
             }
+            ResourceKind::CatalogItems => {
+                let n = export_catalog_items(&client, &catalogs_root, args.name.as_deref())
+                    .await
+                    .context("exporting catalog_items")?;
+                eprintln!("✓ catalog_items: exported {n} catalog(s)");
+                total_written += n;
+            }
             ResourceKind::ContentBlock => {
                 let n = export_content_blocks(&client, &content_blocks_root, args.name.as_deref())
                     .await
@@ -61,8 +68,8 @@ pub async fn run(
                 eprintln!("✓ email_template: exported {n} resource(s)");
                 total_written += n;
             }
-            other => {
-                warn_unimplemented(other);
+            ResourceKind::CustomAttribute => {
+                tracing::debug!("custom_attribute export not yet implemented");
             }
         }
     }
@@ -176,4 +183,36 @@ async fn export_email_templates(
         email_template_io::save_email_template(email_templates_root, et)?;
     }
     Ok(templates.len())
+}
+
+/// Export catalog items. Discovers catalogs via `list_catalogs` (to get
+/// names), then fetches items per catalog. With `--name`, fetches items
+/// for that single catalog only.
+async fn export_catalog_items(
+    client: &BrazeClient,
+    catalogs_root: &Path,
+    name_filter: Option<&str>,
+) -> anyhow::Result<usize> {
+    let catalog_names: Vec<String> = match name_filter {
+        Some(name) => vec![name.to_string()],
+        None => {
+            let catalogs = client.list_catalogs().await?;
+            catalogs.into_iter().map(|c| c.name).collect()
+        }
+    };
+
+    let mut count = 0;
+    for name in &catalog_names {
+        let items = match client.list_catalog_items(name).await {
+            Ok(items) => items,
+            Err(BrazeApiError::NotFound { .. }) => {
+                eprintln!("⚠ catalog_items: catalog '{name}' not found in Braze");
+                continue;
+            }
+            Err(e) => return Err(e.into()),
+        };
+        catalog_io::save_items(catalogs_root, name, &items)?;
+        count += 1;
+    }
+    Ok(count)
 }

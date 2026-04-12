@@ -7,7 +7,7 @@
 use crate::braze::error::BrazeApiError;
 use crate::braze::BrazeClient;
 use crate::config::ResolvedConfig;
-use crate::diff::catalog::diff_schema;
+use crate::diff::catalog::{diff_items, diff_schema};
 use crate::diff::content_block::{
     diff as diff_content_block, ContentBlockDiff, ContentBlockIdIndex,
 };
@@ -18,14 +18,16 @@ use crate::diff::{DiffSummary, ResourceDiff};
 use crate::error::Error;
 use crate::format::OutputFormat;
 use crate::fs::{catalog_io, content_block_io, email_template_io};
-use crate::resource::{Catalog, ContentBlock, EmailTemplate, ResourceKind};
+use crate::resource::{
+    Catalog, CatalogItemRow, CatalogItems, ContentBlock, EmailTemplate, ResourceKind,
+};
 use anyhow::Context as _;
 use clap::Args;
 use futures::stream::{StreamExt, TryStreamExt};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use super::{selected_kinds, warn_unimplemented, FETCH_CONCURRENCY};
+use super::{selected_kinds, FETCH_CONCURRENCY};
 
 #[derive(Args, Debug)]
 pub struct DiffArgs {
@@ -72,6 +74,13 @@ pub async fn run(
                         .context("computing content_block diff")?;
                 summary.diffs.extend(diffs);
             }
+            ResourceKind::CatalogItems => {
+                let (diffs, _map) =
+                    compute_catalog_items_diffs(&client, &catalogs_root, args.name.as_deref())
+                        .await
+                        .context("computing catalog_items diff")?;
+                summary.diffs.extend(diffs);
+            }
             ResourceKind::EmailTemplate => {
                 let (diffs, _idx) = compute_email_template_plan(
                     &client,
@@ -82,8 +91,8 @@ pub async fn run(
                 .context("computing email_template diff")?;
                 summary.diffs.extend(diffs);
             }
-            other => {
-                warn_unimplemented(other);
+            ResourceKind::CustomAttribute => {
+                tracing::debug!("custom_attribute diff not yet implemented");
             }
         }
     }
@@ -302,4 +311,73 @@ pub(crate) async fn compute_email_template_plan(
     }
 
     Ok((diffs, id_index))
+}
+
+/// Compute catalog items diffs. Returns the diff results plus a map
+/// from catalog_name → local `CatalogItems` (with rows) so the apply
+/// path can read rows without reloading the CSV.
+pub(crate) async fn compute_catalog_items_diffs(
+    client: &BrazeClient,
+    catalogs_root: &Path,
+    name_filter: Option<&str>,
+) -> anyhow::Result<(Vec<ResourceDiff>, BTreeMap<String, CatalogItems>)> {
+    let mut local_list = catalog_io::load_all_items(catalogs_root)?;
+    if let Some(name) = name_filter {
+        local_list.retain(|ci| ci.catalog_name == name);
+    }
+
+    let local_map: BTreeMap<String, CatalogItems> = local_list
+        .into_iter()
+        .map(|ci| (ci.catalog_name.clone(), ci))
+        .collect();
+
+    // Discover which catalogs exist remotely. If filtering by name, only
+    // fetch that one. Otherwise use list_catalogs to discover all names.
+    let remote_catalog_names: Vec<String> = match name_filter {
+        Some(name) => vec![name.to_string()],
+        None => {
+            let catalogs = client.list_catalogs().await?;
+            catalogs.into_iter().map(|c| c.name).collect()
+        }
+    };
+
+    // Fetch remote items for each catalog that exists locally OR remotely.
+    let mut all_names: BTreeSet<String> = BTreeSet::new();
+    all_names.extend(local_map.keys().cloned());
+    all_names.extend(remote_catalog_names);
+
+    let mut diffs = Vec::new();
+    for name in &all_names {
+        let local = local_map.get(name);
+        let remote_rows: Option<Vec<CatalogItemRow>> = match client.list_catalog_items(name).await {
+            Ok(rows) => Some(rows),
+            Err(BrazeApiError::NotFound { .. }) => None,
+            Err(e) => return Err(e.into()),
+        };
+
+        let remote = remote_rows.map(|rows| {
+            let hashes = rows
+                .iter()
+                .map(|r| (r.id.clone(), r.content_hash()))
+                .collect();
+            CatalogItems {
+                catalog_name: name.clone(),
+                item_hashes: hashes,
+                rows: None, // rows not needed for diff — only hashes matter
+            }
+        });
+
+        let empty = CatalogItems {
+            catalog_name: name.clone(),
+            item_hashes: BTreeMap::new(),
+            rows: None,
+        };
+
+        let l = local.unwrap_or(&empty);
+        let r = remote.as_ref().unwrap_or(&empty);
+        let d = diff_items(l, r);
+        diffs.push(ResourceDiff::CatalogItems(d));
+    }
+
+    Ok((diffs, local_map))
 }

@@ -1,4 +1,4 @@
-//! Catalog Schema file I/O.
+//! Catalog Schema and Catalog Items file I/O.
 //!
 //! Layout (IMPLEMENTATION.md §9.1):
 //!
@@ -6,17 +6,16 @@
 //! <catalogs_root>/
 //! ├── cardiology/
 //! │   ├── schema.yaml
-//! │   └── items.csv          (Phase B3 — not handled here)
+//! │   └── items.csv
 //! └── dermatology/
 //!     ├── schema.yaml
 //!     └── items.csv
 //! ```
-//!
-//! v0.1.0 implements schema only. Items I/O is not yet handled here.
 
 use crate::error::{Error, Result};
 use crate::fs::{validate_resource_name, write_atomic};
-use crate::resource::Catalog;
+use crate::resource::{Catalog, CatalogItemRow, CatalogItems};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// Header prepended to every `schema.yaml` written by braze-sync. Editable
@@ -126,6 +125,229 @@ pub fn save_schema(catalogs_root: &Path, catalog: &Catalog) -> Result<()> {
 
     write_atomic(&path, content.as_bytes())?;
     Ok(())
+}
+
+// =====================================================================
+// Catalog Items CSV I/O
+// =====================================================================
+
+const ITEMS_FILE_NAME: &str = "items.csv";
+
+/// Parse a single CSV cell into a typed `serde_json::Value`.
+///
+/// Attempts, in order: JSON number, JSON boolean, then falls back to
+/// string. This gives hash consistency with Braze API responses, which
+/// return typed JSON values rather than strings for numeric/bool fields.
+fn parse_csv_cell(s: &str) -> serde_json::Value {
+    // Try integer first, then float.
+    if let Ok(n) = s.parse::<i64>() {
+        return serde_json::Value::Number(n.into());
+    }
+    if let Ok(n) = s.parse::<f64>() {
+        if let Some(n) = serde_json::Number::from_f64(n) {
+            return serde_json::Value::Number(n);
+        }
+    }
+    // Try boolean.
+    match s {
+        "true" => return serde_json::Value::Bool(true),
+        "false" => return serde_json::Value::Bool(false),
+        _ => {}
+    }
+    serde_json::Value::String(s.to_string())
+}
+
+/// Serialize a `serde_json::Value` to a CSV-friendly string.
+fn value_to_csv_cell(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Null => String::new(),
+        // Arrays and objects are serialized as JSON strings in CSV.
+        other => serde_json::to_string(other).unwrap_or_default(),
+    }
+}
+
+/// Load a single `items.csv` from the given path. Builds a hash index
+/// for diff and materializes all rows for apply.
+///
+/// The `catalog_name` is extracted from the parent directory name.
+///
+/// Rejects:
+/// - Missing `id` column in the CSV header
+/// - Duplicate `id` values across rows
+pub fn load_items(path: &Path) -> Result<CatalogItems> {
+    let catalog_name = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| Error::InvalidFormat {
+            path: path.to_path_buf(),
+            message: "cannot determine catalog name from items.csv path".into(),
+        })?
+        .to_string();
+
+    let mut reader = csv::Reader::from_path(path).map_err(|e| Error::CsvParse {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+
+    let headers = reader.headers().map_err(|e| Error::CsvParse {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+    let header_vec: Vec<String> = headers.iter().map(String::from).collect();
+
+    let id_col = header_vec
+        .iter()
+        .position(|h| h == "id")
+        .ok_or_else(|| Error::InvalidFormat {
+            path: path.to_path_buf(),
+            message: "items.csv is missing required 'id' column".into(),
+        })?;
+
+    let mut rows = Vec::new();
+    let mut item_hashes = BTreeMap::new();
+
+    for result in reader.records() {
+        let record = result.map_err(|e| Error::CsvParse {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+
+        let id = record.get(id_col).unwrap_or("").to_string();
+        if id.is_empty() {
+            return Err(Error::InvalidFormat {
+                path: path.to_path_buf(),
+                message: "items.csv contains a row with an empty 'id'".into(),
+            });
+        }
+
+        let mut fields = serde_json::Map::new();
+        for (i, val) in record.iter().enumerate() {
+            if i == id_col {
+                continue;
+            }
+            if let Some(col_name) = header_vec.get(i) {
+                fields.insert(col_name.clone(), parse_csv_cell(val));
+            }
+        }
+
+        let row = CatalogItemRow {
+            id: id.clone(),
+            fields,
+        };
+
+        if item_hashes.contains_key(&id) {
+            return Err(Error::InvalidFormat {
+                path: path.to_path_buf(),
+                message: format!("duplicate item id '{id}' in items.csv"),
+            });
+        }
+        item_hashes.insert(id, row.content_hash());
+        rows.push(row);
+    }
+
+    Ok(CatalogItems {
+        catalog_name,
+        item_hashes,
+        rows: Some(rows),
+    })
+}
+
+/// Write `rows` to `<catalogs_root>/<catalog_name>/items.csv`.
+///
+/// Header column order: `id` first, then remaining field names sorted
+/// alphabetically for deterministic output and diff stability.
+pub fn save_items(catalogs_root: &Path, catalog_name: &str, rows: &[CatalogItemRow]) -> Result<()> {
+    validate_resource_name("catalog", catalog_name)?;
+
+    // Collect all field names across all rows (some rows might have
+    // different subsets if the schema evolved, though normally uniform).
+    let mut field_names: BTreeSet<&str> = BTreeSet::new();
+    for row in rows {
+        for key in row.fields.keys() {
+            field_names.insert(key.as_str());
+        }
+    }
+
+    // Build header: id first, then sorted field names.
+    let mut header: Vec<&str> = Vec::with_capacity(1 + field_names.len());
+    header.push("id");
+    header.extend(field_names.iter().copied());
+
+    let path = catalogs_root.join(catalog_name).join(ITEMS_FILE_NAME);
+
+    let mut wtr = csv::Writer::from_writer(Vec::new());
+    wtr.write_record(&header).map_err(|e| Error::CsvParse {
+        path: path.clone(),
+        source: e,
+    })?;
+
+    for row in rows {
+        let mut record: Vec<String> = Vec::with_capacity(header.len());
+        record.push(row.id.clone());
+        for &col in &header[1..] {
+            let val = row
+                .fields
+                .get(col)
+                .map(value_to_csv_cell)
+                .unwrap_or_default();
+            record.push(val);
+        }
+        wtr.write_record(&record).map_err(|e| Error::CsvParse {
+            path: path.clone(),
+            source: e,
+        })?;
+    }
+
+    let buf = wtr.into_inner().map_err(|e| Error::CsvParse {
+        path: path.clone(),
+        source: e.into_error().into(),
+    })?;
+
+    write_atomic(&path, &buf)?;
+    Ok(())
+}
+
+/// Load every `items.csv` under `catalogs_root` into a `Vec<CatalogItems>`,
+/// sorted by catalog name.
+///
+/// Mirrors [`load_all_schemas`]: missing root → empty vec, subdirectories
+/// without `items.csv` are silently skipped.
+pub fn load_all_items(catalogs_root: &Path) -> Result<Vec<CatalogItems>> {
+    let read_dir = match std::fs::read_dir(catalogs_root) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            if catalogs_root.is_file() {
+                return Err(Error::InvalidFormat {
+                    path: catalogs_root.to_path_buf(),
+                    message: "expected a directory for the catalogs root".into(),
+                });
+            }
+            return Err(e.into());
+        }
+    };
+
+    let mut items_list = Vec::new();
+    for entry in read_dir {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let dir = entry.path();
+        let items_path = dir.join(ITEMS_FILE_NAME);
+        if !items_path.is_file() {
+            continue;
+        }
+        let items = load_items(&items_path)?;
+        items_list.push(items);
+    }
+
+    items_list.sort_by(|a, b| a.catalog_name.cmp(&b.catalog_name));
+    Ok(items_list)
 }
 
 #[cfg(test)]
@@ -403,5 +625,197 @@ fields:
         let loaded = load_all_schemas(dir.path()).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].fields.len(), 2);
+    }
+
+    // =================================================================
+    // Catalog Items CSV I/O tests
+    // =================================================================
+
+    fn make_row(id: &str, fields: &[(&str, serde_json::Value)]) -> CatalogItemRow {
+        let mut map = serde_json::Map::new();
+        for (k, v) in fields {
+            map.insert((*k).to_string(), v.clone());
+        }
+        CatalogItemRow {
+            id: id.into(),
+            fields: map,
+        }
+    }
+
+    fn write_items_csv(dir: &std::path::Path, catalog_name: &str, csv_text: &str) {
+        let cat_dir = dir.join(catalog_name);
+        std::fs::create_dir_all(&cat_dir).unwrap();
+        std::fs::write(cat_dir.join("items.csv"), csv_text).unwrap();
+    }
+
+    #[test]
+    fn items_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let rows = vec![
+            make_row(
+                "af001",
+                &[
+                    ("name", serde_json::json!("atrial")),
+                    ("order", serde_json::json!(1)),
+                ],
+            ),
+            make_row(
+                "af002",
+                &[
+                    ("name", serde_json::json!("ventricular")),
+                    ("order", serde_json::json!(2)),
+                ],
+            ),
+        ];
+        save_items(dir.path(), "cardiology", &rows).unwrap();
+        let loaded = load_items(&dir.path().join("cardiology/items.csv")).unwrap();
+        assert_eq!(loaded.catalog_name, "cardiology");
+        assert_eq!(loaded.rows.as_ref().unwrap().len(), 2);
+        assert_eq!(loaded.item_hashes.len(), 2);
+        // Verify round-trip equality of content hashes.
+        for row in loaded.rows.as_ref().unwrap() {
+            assert_eq!(
+                loaded.item_hashes[&row.id],
+                row.content_hash(),
+                "hash mismatch for id={}",
+                row.id,
+            );
+        }
+    }
+
+    #[test]
+    fn items_round_trip_preserves_types() {
+        let dir = tempfile::tempdir().unwrap();
+        let rows = vec![make_row(
+            "x",
+            &[
+                ("num", serde_json::json!(42)),
+                ("flag", serde_json::json!(true)),
+                ("text", serde_json::json!("hello")),
+            ],
+        )];
+        save_items(dir.path(), "typed", &rows).unwrap();
+        let loaded = load_items(&dir.path().join("typed/items.csv")).unwrap();
+        let r = &loaded.rows.as_ref().unwrap()[0];
+        assert_eq!(r.fields["num"], serde_json::json!(42));
+        assert_eq!(r.fields["flag"], serde_json::json!(true));
+        assert_eq!(r.fields["text"], serde_json::json!("hello"));
+    }
+
+    #[test]
+    fn items_missing_id_column_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        write_items_csv(dir.path(), "bad", "name,order\nfoo,1\n");
+        let err = load_items(&dir.path().join("bad/items.csv")).unwrap_err();
+        assert!(matches!(err, Error::InvalidFormat { .. }));
+    }
+
+    #[test]
+    fn items_duplicate_id_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        write_items_csv(dir.path(), "dup", "id,name\na,foo\na,bar\n");
+        let err = load_items(&dir.path().join("dup/items.csv")).unwrap_err();
+        match err {
+            Error::InvalidFormat { message, .. } => {
+                assert!(message.contains("duplicate"), "msg: {message}");
+            }
+            other => panic!("expected InvalidFormat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn items_empty_id_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        write_items_csv(dir.path(), "empty", "id,name\n,foo\n");
+        let err = load_items(&dir.path().join("empty/items.csv")).unwrap_err();
+        assert!(matches!(err, Error::InvalidFormat { .. }));
+    }
+
+    #[test]
+    fn items_header_only_csv_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        save_items(dir.path(), "empty_cat", &[]).unwrap();
+        let loaded = load_items(&dir.path().join("empty_cat/items.csv")).unwrap();
+        assert_eq!(loaded.catalog_name, "empty_cat");
+        assert!(loaded.rows.as_ref().unwrap().is_empty());
+        assert!(loaded.item_hashes.is_empty());
+    }
+
+    #[test]
+    fn items_field_order_in_csv_is_deterministic() {
+        let dir = tempfile::tempdir().unwrap();
+        let rows = vec![make_row(
+            "x",
+            &[
+                ("z_last", serde_json::json!("z")),
+                ("a_first", serde_json::json!("a")),
+                ("m_mid", serde_json::json!("m")),
+            ],
+        )];
+        save_items(dir.path(), "ordered", &rows).unwrap();
+        let csv_text = std::fs::read_to_string(dir.path().join("ordered/items.csv")).unwrap();
+        let header_line = csv_text.lines().next().unwrap();
+        assert_eq!(header_line, "id,a_first,m_mid,z_last");
+    }
+
+    #[test]
+    fn items_special_chars_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let rows = vec![make_row(
+            "x",
+            &[("val", serde_json::json!("has, commas \"and\" quotes"))],
+        )];
+        save_items(dir.path(), "special", &rows).unwrap();
+        let loaded = load_items(&dir.path().join("special/items.csv")).unwrap();
+        let r = &loaded.rows.as_ref().unwrap()[0];
+        assert_eq!(
+            r.fields["val"],
+            serde_json::json!("has, commas \"and\" quotes")
+        );
+    }
+
+    #[test]
+    fn load_all_items_missing_root_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("nope");
+        let loaded = load_all_items(&missing).unwrap();
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn load_all_items_skips_dirs_without_items_csv() {
+        let dir = tempfile::tempdir().unwrap();
+        // Dir with only schema.yaml
+        let cat_dir = dir.path().join("schema_only");
+        std::fs::create_dir_all(&cat_dir).unwrap();
+        std::fs::write(
+            cat_dir.join("schema.yaml"),
+            "name: schema_only\nfields: []\n",
+        )
+        .unwrap();
+        // Dir with items.csv
+        write_items_csv(dir.path(), "with_items", "id,name\na,foo\n");
+
+        let loaded = load_all_items(dir.path()).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].catalog_name, "with_items");
+    }
+
+    #[test]
+    fn load_all_items_sorts_by_catalog_name() {
+        let dir = tempfile::tempdir().unwrap();
+        write_items_csv(dir.path(), "zebra", "id\nz1\n");
+        write_items_csv(dir.path(), "apple", "id\na1\n");
+        let loaded = load_all_items(dir.path()).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].catalog_name, "apple");
+        assert_eq!(loaded[1].catalog_name, "zebra");
+    }
+
+    #[test]
+    fn items_save_rejects_path_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = save_items(dir.path(), "../evil", &[]).unwrap_err();
+        assert!(matches!(err, Error::InvalidFormat { .. }));
     }
 }
