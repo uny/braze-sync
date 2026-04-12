@@ -174,9 +174,9 @@ impl BrazeClient {
         catalog_name: &str,
         item_ids: &[String],
     ) -> Result<(), BrazeApiError> {
-        let items: Vec<DeleteItemId> = item_ids
+        let items: Vec<DeleteItemId<'_>> = item_ids
             .iter()
-            .map(|id| DeleteItemId { id: id.clone() })
+            .map(|id| DeleteItemId { id: id.as_str() })
             .collect();
         let body = DeleteItemsRequest { items };
         let req = self
@@ -218,13 +218,13 @@ struct UpsertItemsRequest<'a> {
 }
 
 #[derive(Serialize)]
-struct DeleteItemsRequest {
-    items: Vec<DeleteItemId>,
+struct DeleteItemsRequest<'a> {
+    items: Vec<DeleteItemId<'a>>,
 }
 
 #[derive(Serialize)]
-struct DeleteItemId {
-    id: String,
+struct DeleteItemId<'a> {
+    id: &'a str,
 }
 
 #[cfg(test)]

@@ -263,8 +263,6 @@ pub fn load_items(path: &Path) -> Result<CatalogItems> {
 pub fn save_items(catalogs_root: &Path, catalog_name: &str, rows: &[CatalogItemRow]) -> Result<()> {
     validate_resource_name("catalog", catalog_name)?;
 
-    // Collect all field names across all rows (some rows might have
-    // different subsets if the schema evolved, though normally uniform).
     let mut field_names: BTreeSet<&str> = BTreeSet::new();
     for row in rows {
         for key in row.fields.keys() {
@@ -272,7 +270,6 @@ pub fn save_items(catalogs_root: &Path, catalog_name: &str, rows: &[CatalogItemR
         }
     }
 
-    // Build header: id first, then sorted field names.
     let mut header: Vec<&str> = Vec::with_capacity(1 + field_names.len());
     header.push("id");
     header.extend(field_names.iter().copied());

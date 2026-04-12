@@ -157,9 +157,11 @@ pub async fn run(
                 applied += apply_catalog_schema(&client, d).await?;
             }
             ResourceDiff::CatalogItems(d) => {
+                let local_map = catalog_items_local.as_ref().ok_or_else(|| {
+                    anyhow!("internal: catalog_items_local not populated before apply")
+                })?;
                 applied +=
-                    apply_catalog_items(&client, d, catalog_items_local.as_ref(), parallel_batches)
-                        .await?;
+                    apply_catalog_items(&client, d, local_map, parallel_batches).await?;
             }
             ResourceDiff::ContentBlock(d) => {
                 applied += apply_content_block(
@@ -359,7 +361,7 @@ const ITEMS_BATCH_SIZE: usize = 50;
 async fn apply_catalog_items(
     client: &BrazeClient,
     d: &CatalogItemsDiff,
-    local_map: Option<&BTreeMap<String, CatalogItems>>,
+    local_map: &BTreeMap<String, CatalogItems>,
     parallel_batches: u32,
 ) -> anyhow::Result<usize> {
     if !d.has_changes() {
@@ -368,7 +370,6 @@ async fn apply_catalog_items(
 
     let catalog_name = &d.catalog_name;
 
-    // Collect rows to upsert (added + modified).
     let upsert_ids: Vec<&str> = d
         .added_ids
         .iter()
@@ -378,7 +379,7 @@ async fn apply_catalog_items(
 
     let mut upsert_count: usize = 0;
     if !upsert_ids.is_empty() {
-        let local = local_map.and_then(|m| m.get(catalog_name)).ok_or_else(|| {
+        let local = local_map.get(catalog_name).ok_or_else(|| {
             anyhow!(
                 "internal: local items for catalog '{}' missing from items map",
                 catalog_name
@@ -405,9 +406,12 @@ async fn apply_catalog_items(
             upsert_rows.push((*row).clone());
         }
 
-        let batches: Vec<&[crate::resource::CatalogItemRow]> =
-            upsert_rows.chunks(ITEMS_BATCH_SIZE).collect();
         let total_items = upsert_rows.len();
+        // Split into owned chunks to avoid re-cloning each batch.
+        let batches: Vec<Vec<crate::resource::CatalogItemRow>> = upsert_rows
+            .chunks(ITEMS_BATCH_SIZE)
+            .map(|c| c.to_vec())
+            .collect();
 
         let pb = indicatif::ProgressBar::new(total_items as u64);
         pb.set_style(
@@ -421,7 +425,6 @@ async fn apply_catalog_items(
             let client = client.clone();
             let catalog_name = catalog_name.clone();
             let batch_len = batch.len();
-            let batch_owned: Vec<crate::resource::CatalogItemRow> = batch.to_vec();
             let pb = pb.clone();
             async move {
                 tracing::info!(
@@ -430,7 +433,7 @@ async fn apply_catalog_items(
                     "upserting catalog items batch"
                 );
                 client
-                    .upsert_catalog_items(&catalog_name, &batch_owned)
+                    .upsert_catalog_items(&catalog_name, &batch)
                     .await
                     .with_context(|| {
                         format!("upserting items batch for catalog '{catalog_name}'")
