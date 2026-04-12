@@ -13,7 +13,7 @@
 //! - Pagination: `limit` (default 100, max 1000) + `offset`
 
 use crate::braze::error::BrazeApiError;
-use crate::braze::BrazeClient;
+use crate::braze::{classify_info_message, BrazeClient, InfoMessageClass};
 use crate::resource::EmailTemplate;
 use serde::{Deserialize, Serialize};
 
@@ -82,14 +82,14 @@ impl BrazeClient {
             .get(&["templates", "email", "info"])
             .query(&[("email_template_id", id)]);
         let wire: EmailTemplateInfoResponse = self.send_json(req).await?;
-        match crate::braze::classify_info_message(wire.message.as_deref(), "no email template") {
-            crate::braze::InfoMessageClass::Success => {}
-            crate::braze::InfoMessageClass::NotFound => {
+        match classify_info_message(wire.message.as_deref(), "no email template") {
+            InfoMessageClass::Success => {}
+            InfoMessageClass::NotFound => {
                 return Err(BrazeApiError::NotFound {
                     resource: format!("email_template id '{id}'"),
                 });
             }
-            crate::braze::InfoMessageClass::Unexpected(message) => {
+            InfoMessageClass::Unexpected(message) => {
                 return Err(BrazeApiError::UnexpectedApiMessage {
                     endpoint: "/templates/email/info",
                     message,

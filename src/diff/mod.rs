@@ -37,6 +37,12 @@ pub(crate) fn compute_text_diff(from: &str, to: &str) -> TextDiffSummary {
     }
 }
 
+/// Treats `None` and `Some("")` as equal — Braze may omit a field or
+/// return an empty string interchangeably.
+pub(crate) fn opt_str_eq(a: &Option<String>, b: &Option<String>) -> bool {
+    a.as_deref().unwrap_or("") == b.as_deref().unwrap_or("")
+}
+
 /// Multiset equality: same elements after sort, ignoring order.
 pub(crate) fn tags_eq_unordered(a: &[String], b: &[String]) -> bool {
     if a.len() != b.len() {

@@ -8,7 +8,7 @@
 //! as Modified forever — the same "infinite drift" mode the Content Block
 //! `state` exclusion prevents. See PHASE_B1_NOTES.md §3 / §6.
 
-use crate::diff::{compute_text_diff, tags_eq_unordered, DiffOp, TextDiffSummary};
+use crate::diff::{compute_text_diff, opt_str_eq, tags_eq_unordered, DiffOp, TextDiffSummary};
 use crate::resource::EmailTemplate;
 use std::collections::BTreeMap;
 
@@ -126,7 +126,7 @@ fn syncable_eq(a: &EmailTemplate, b: &EmailTemplate) -> bool {
         && a.subject == b.subject
         && a.body_html == b.body_html
         && a.body_plaintext == b.body_plaintext
-        && preheader_eq(&a.preheader, &b.preheader)
+        && opt_str_eq(&a.preheader, &b.preheader)
         && a.should_inline_css == b.should_inline_css
         && tags_eq_unordered(&a.tags, &b.tags)
     // description excluded (read-only, like ContentBlock state)
@@ -135,17 +135,11 @@ fn syncable_eq(a: &EmailTemplate, b: &EmailTemplate) -> bool {
 /// Metadata equality (everything except subject, body_html, body_plaintext,
 /// and description). Used to set the `metadata_changed` flag.
 fn metadata_eq(a: &EmailTemplate, b: &EmailTemplate) -> bool {
-    preheader_eq(&a.preheader, &b.preheader)
+    opt_str_eq(&a.preheader, &b.preheader)
         && a.should_inline_css == b.should_inline_css
         && tags_eq_unordered(&a.tags, &b.tags)
 }
 
-/// `None` and `Some("")` both mean "no preheader" for the purposes of
-/// diffing. Same pattern as Content Block `desc_eq` — Braze may omit
-/// the field or return empty string.
-fn preheader_eq(a: &Option<String>, b: &Option<String>) -> bool {
-    a.as_deref().unwrap_or("") == b.as_deref().unwrap_or("")
-}
 
 #[cfg(test)]
 mod tests {

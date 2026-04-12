@@ -6,7 +6,7 @@
 //! remote-only blocks are surfaced as orphans rather than `Removed` diffs.
 
 use crate::braze::error::BrazeApiError;
-use crate::braze::BrazeClient;
+use crate::braze::{classify_info_message, BrazeClient, InfoMessageClass};
 use crate::resource::{ContentBlock, ContentBlockState};
 use serde::{Deserialize, Serialize};
 
@@ -94,14 +94,14 @@ impl BrazeClient {
             .get(&["content_blocks", "info"])
             .query(&[("content_block_id", id)]);
         let wire: ContentBlockInfoResponse = self.send_json(req).await?;
-        match crate::braze::classify_info_message(wire.message.as_deref(), "no content block") {
-            crate::braze::InfoMessageClass::Success => {}
-            crate::braze::InfoMessageClass::NotFound => {
+        match classify_info_message(wire.message.as_deref(), "no content block") {
+            InfoMessageClass::Success => {}
+            InfoMessageClass::NotFound => {
                 return Err(BrazeApiError::NotFound {
                     resource: format!("content_block id '{id}'"),
                 });
             }
-            crate::braze::InfoMessageClass::Unexpected(message) => {
+            InfoMessageClass::Unexpected(message) => {
                 return Err(BrazeApiError::UnexpectedApiMessage {
                     endpoint: "/content_blocks/info",
                     message,
