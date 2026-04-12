@@ -10,9 +10,8 @@
 //! endpoint. Excluding `state` keeps the local file free to carry that
 //! metadata for human readers without producing false-positive diffs.
 
-use crate::diff::DiffOp;
+use crate::diff::{compute_text_diff, tags_eq_unordered, DiffOp, TextDiffSummary};
 use crate::resource::ContentBlock;
-use similar::{ChangeTag, TextDiff};
 use std::collections::BTreeMap;
 
 /// Name → Braze `content_block_id`. Built during diff, consumed by
@@ -27,12 +26,6 @@ pub struct ContentBlockDiff {
     pub text_diff: Option<TextDiffSummary>,
     /// True when present in Braze but missing from Git.
     pub orphan: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct TextDiffSummary {
-    pub additions: usize,
-    pub deletions: usize,
 }
 
 impl ContentBlockDiff {
@@ -128,38 +121,6 @@ fn syncable_eq(a: &ContentBlock, b: &ContentBlock) -> bool {
 /// disk byte-for-byte).
 fn desc_eq(a: &Option<String>, b: &Option<String>) -> bool {
     a.as_deref().unwrap_or("") == b.as_deref().unwrap_or("")
-}
-
-/// Multiset equality: same length + same elements after sort. Keeps
-/// duplicate-awareness (unlike a set) so `["a","a"]` vs `["a"]` still
-/// surfaces as a real change on the off chance Braze ever returns
-/// duplicated tags.
-fn tags_eq_unordered(a: &[String], b: &[String]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut a: Vec<&str> = a.iter().map(String::as_str).collect();
-    let mut b: Vec<&str> = b.iter().map(String::as_str).collect();
-    a.sort_unstable();
-    b.sort_unstable();
-    a == b
-}
-
-fn compute_text_diff(from: &str, to: &str) -> TextDiffSummary {
-    let diff = TextDiff::from_lines(from, to);
-    let mut additions = 0;
-    let mut deletions = 0;
-    for change in diff.iter_all_changes() {
-        match change.tag() {
-            ChangeTag::Insert => additions += 1,
-            ChangeTag::Delete => deletions += 1,
-            ChangeTag::Equal => {}
-        }
-    }
-    TextDiffSummary {
-        additions,
-        deletions,
-    }
 }
 
 #[cfg(test)]

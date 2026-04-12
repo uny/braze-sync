@@ -12,7 +12,8 @@
 //! the boundary in [`From`] impls.
 
 use crate::diff::catalog::{CatalogItemsDiff, CatalogSchemaDiff};
-use crate::diff::content_block::{ContentBlockDiff, TextDiffSummary};
+use crate::diff::content_block::ContentBlockDiff;
+use crate::diff::TextDiffSummary;
 use crate::diff::custom_attribute::{CustomAttributeDiff, CustomAttributeOp};
 use crate::diff::email_template::EmailTemplateDiff;
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};

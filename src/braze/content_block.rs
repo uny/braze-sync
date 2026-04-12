@@ -94,14 +94,14 @@ impl BrazeClient {
             .get(&["content_blocks", "info"])
             .query(&[("content_block_id", id)]);
         let wire: ContentBlockInfoResponse = self.send_json(req).await?;
-        match wire.classify_message() {
-            InfoMessageClass::Success => {}
-            InfoMessageClass::NotFound => {
+        match crate::braze::classify_info_message(wire.message.as_deref(), "no content block") {
+            crate::braze::InfoMessageClass::Success => {}
+            crate::braze::InfoMessageClass::NotFound => {
                 return Err(BrazeApiError::NotFound {
                     resource: format!("content_block id '{id}'"),
                 });
             }
-            InfoMessageClass::Unexpected(message) => {
+            crate::braze::InfoMessageClass::Unexpected(message) => {
                 return Err(BrazeApiError::UnexpectedApiMessage {
                     endpoint: "/content_blocks/info",
                     message,
@@ -194,41 +194,6 @@ struct ContentBlockInfoResponse {
     tags: Vec<String>,
     #[serde(default)]
     message: Option<String>,
-}
-
-/// Outcome of classifying the `message` field on a `/content_blocks/info`
-/// response. `NotFound` preserves the call-site branching contract; the
-/// `Unexpected` arm exists so an unknown message does not get silently
-/// folded into `NotFound` — see the doc comment on `get_content_block`.
-enum InfoMessageClass {
-    Success,
-    NotFound,
-    Unexpected(String),
-}
-
-impl ContentBlockInfoResponse {
-    fn classify_message(&self) -> InfoMessageClass {
-        let Some(raw) = self.message.as_deref() else {
-            return InfoMessageClass::Success;
-        };
-        let trimmed = raw.trim();
-        if trimmed.eq_ignore_ascii_case("success") {
-            return InfoMessageClass::Success;
-        }
-        let lower = trimmed.to_ascii_lowercase();
-        // Match the known not-found phrasings conservatively. Anything
-        // we don't recognise must NOT be treated as NotFound — that is
-        // the whole point of this classifier over the previous boolean
-        // check.
-        if lower.contains("not found")
-            || lower.contains("no content block")
-            || lower.contains("does not exist")
-        {
-            InfoMessageClass::NotFound
-        } else {
-            InfoMessageClass::Unexpected(raw.to_string())
-        }
-    }
 }
 
 /// Wire body shared by `/content_blocks/create` and `.../update`. Both

@@ -82,14 +82,14 @@ impl BrazeClient {
             .get(&["templates", "email", "info"])
             .query(&[("email_template_id", id)]);
         let wire: EmailTemplateInfoResponse = self.send_json(req).await?;
-        match wire.classify_message() {
-            InfoMessageClass::Success => {}
-            InfoMessageClass::NotFound => {
+        match crate::braze::classify_info_message(wire.message.as_deref(), "no email template") {
+            crate::braze::InfoMessageClass::Success => {}
+            crate::braze::InfoMessageClass::NotFound => {
                 return Err(BrazeApiError::NotFound {
                     resource: format!("email_template id '{id}'"),
                 });
             }
-            InfoMessageClass::Unexpected(message) => {
+            crate::braze::InfoMessageClass::Unexpected(message) => {
                 return Err(BrazeApiError::UnexpectedApiMessage {
                     endpoint: "/templates/email/info",
                     message,
@@ -186,33 +186,6 @@ struct EmailTemplateInfoResponse {
     tags: Option<Vec<String>>,
     #[serde(default)]
     message: Option<String>,
-}
-
-enum InfoMessageClass {
-    Success,
-    NotFound,
-    Unexpected(String),
-}
-
-impl EmailTemplateInfoResponse {
-    fn classify_message(&self) -> InfoMessageClass {
-        let Some(raw) = self.message.as_deref() else {
-            return InfoMessageClass::Success;
-        };
-        let trimmed = raw.trim();
-        if trimmed.eq_ignore_ascii_case("success") {
-            return InfoMessageClass::Success;
-        }
-        let lower = trimmed.to_ascii_lowercase();
-        if lower.contains("not found")
-            || lower.contains("no email template")
-            || lower.contains("does not exist")
-        {
-            InfoMessageClass::NotFound
-        } else {
-            InfoMessageClass::Unexpected(raw.to_string())
-        }
-    }
 }
 
 /// Wire body shared by create and update. `description` is intentionally

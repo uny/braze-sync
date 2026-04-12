@@ -8,10 +8,8 @@
 //! as Modified forever — the same "infinite drift" mode the Content Block
 //! `state` exclusion prevents. See PHASE_B1_NOTES.md §3 / §6.
 
-use crate::diff::content_block::TextDiffSummary;
-use crate::diff::DiffOp;
+use crate::diff::{compute_text_diff, tags_eq_unordered, DiffOp, TextDiffSummary};
 use crate::resource::EmailTemplate;
-use similar::{ChangeTag, TextDiff};
 use std::collections::BTreeMap;
 
 /// Name → Braze `email_template_id`. Built during diff, consumed by
@@ -147,35 +145,6 @@ fn metadata_eq(a: &EmailTemplate, b: &EmailTemplate) -> bool {
 /// the field or return empty string.
 fn preheader_eq(a: &Option<String>, b: &Option<String>) -> bool {
     a.as_deref().unwrap_or("") == b.as_deref().unwrap_or("")
-}
-
-/// Multiset equality: same length + same elements after sort.
-fn tags_eq_unordered(a: &[String], b: &[String]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut a: Vec<&str> = a.iter().map(String::as_str).collect();
-    let mut b: Vec<&str> = b.iter().map(String::as_str).collect();
-    a.sort_unstable();
-    b.sort_unstable();
-    a == b
-}
-
-fn compute_text_diff(from: &str, to: &str) -> TextDiffSummary {
-    let diff = TextDiff::from_lines(from, to);
-    let mut additions = 0;
-    let mut deletions = 0;
-    for change in diff.iter_all_changes() {
-        match change.tag() {
-            ChangeTag::Insert => additions += 1,
-            ChangeTag::Delete => deletions += 1,
-            ChangeTag::Equal => {}
-        }
-    }
-    TextDiffSummary {
-        additions,
-        deletions,
-    }
 }
 
 #[cfg(test)]
