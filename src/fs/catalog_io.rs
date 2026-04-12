@@ -94,7 +94,7 @@ pub fn load_all_schemas(catalogs_root: &Path) -> Result<Vec<Catalog>> {
 /// ignored, in line with IMPLEMENTATION.md §2.5.
 pub fn read_schema_file(path: &Path) -> Result<Catalog> {
     let bytes = std::fs::read_to_string(path)?;
-    let cat: Catalog = serde_yml::from_str(&bytes).map_err(|source| Error::YamlParse {
+    let cat: Catalog = serde_norway::from_str(&bytes).map_err(|source| Error::YamlParse {
         path: path.to_path_buf(),
         source,
     })?;
@@ -115,7 +115,7 @@ pub fn save_schema(catalogs_root: &Path, catalog: &Catalog) -> Result<()> {
     let path = dir.join(SCHEMA_FILE_NAME);
 
     let normalized = catalog.normalized();
-    let yaml = serde_yml::to_string(&normalized).map_err(|e| Error::InvalidFormat {
+    let yaml = serde_norway::to_string(&normalized).map_err(|e| Error::InvalidFormat {
         path: path.clone(),
         message: format!("yaml serialization failed: {e}"),
     })?;

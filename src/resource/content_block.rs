@@ -38,14 +38,14 @@ mod tests {
             tags: vec!["pr".into()],
             state: ContentBlockState::Active,
         };
-        let yaml = serde_yml::to_string(&cb).unwrap();
-        let parsed: ContentBlock = serde_yml::from_str(&yaml).unwrap();
+        let yaml = serde_norway::to_string(&cb).unwrap();
+        let parsed: ContentBlock = serde_norway::from_str(&yaml).unwrap();
         assert_eq!(cb, parsed);
     }
 
     #[test]
     fn state_serializes_snake_case() {
-        let s = serde_yml::to_string(&ContentBlockState::Draft).unwrap();
+        let s = serde_norway::to_string(&ContentBlockState::Draft).unwrap();
         assert_eq!(s.trim(), "draft");
     }
 }
