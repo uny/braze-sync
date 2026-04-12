@@ -11,7 +11,7 @@ mod common;
 use assert_cmd::Command;
 use common::{
     write_config_for_validate as write_config, write_content_block_raw, write_local_content_block,
-    write_schema_raw,
+    write_local_email_template, write_schema_raw,
 };
 
 #[test]
@@ -235,4 +235,59 @@ fn validate_reports_content_block_naming_pattern_violation() {
         stderr.contains("content_block_name_pattern"),
         "stderr: {stderr}"
     );
+}
+
+// =====================================================================
+// Email Template (v0.3.0)
+// =====================================================================
+
+#[test]
+fn validate_passes_for_well_formed_email_template() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = write_config(dir.path(), None, None);
+    write_local_email_template(dir.path(), "welcome", "Hello", "<p>Hi</p>", "Hi");
+
+    Command::cargo_bin("braze-sync")
+        .unwrap()
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["validate", "--resource", "email_template"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn validate_reports_email_template_name_dir_mismatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = write_config(dir.path(), None, None);
+    let et_dir = dir.path().join("email_templates").join("on_disk");
+    std::fs::create_dir_all(&et_dir).unwrap();
+    std::fs::write(et_dir.join("template.yaml"), "name: in_yaml\nsubject: x\n").unwrap();
+    std::fs::write(et_dir.join("body.html"), "").unwrap();
+    std::fs::write(et_dir.join("body.txt"), "").unwrap();
+
+    let output = Command::cargo_bin("braze-sync")
+        .unwrap()
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["validate", "--resource", "email_template"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("on_disk"), "stderr: {stderr}");
+    assert!(stderr.contains("in_yaml"), "stderr: {stderr}");
+}
+
+#[test]
+fn validate_email_template_does_not_require_braze_api_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = write_config(dir.path(), None, None);
+    write_local_email_template(dir.path(), "no_key", "Hello", "<p>x</p>", "x");
+
+    Command::cargo_bin("braze-sync")
+        .unwrap()
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["validate", "--resource", "email_template"])
+        .assert()
+        .success();
 }

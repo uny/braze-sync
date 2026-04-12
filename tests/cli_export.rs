@@ -312,3 +312,64 @@ async fn export_content_block_with_name_filter_only_fetches_matching_info() {
         .join("content_blocks/shared_header.liquid")
         .exists());
 }
+
+// =====================================================================
+// Email Template (v0.3.0)
+// =====================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_email_templates_writes_directory_layout() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "templates": [
+                {"email_template_id": "id-welcome", "template_name": "welcome"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "template_name": "welcome",
+            "subject": "Welcome to our service",
+            "body": "<p>Hello</p>",
+            "plaintext_body": "Hello",
+            "description": "Welcome email",
+            "preheader": "Get started",
+            "tags": ["onboarding"],
+            "message": "success"
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    let tmp_path = tmp.path().to_path_buf();
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["export", "--resource", "email_template"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    let et_dir = tmp_path.join("email_templates/welcome");
+    assert!(et_dir.join("template.yaml").exists());
+    assert!(et_dir.join("body.html").exists());
+    assert!(et_dir.join("body.txt").exists());
+
+    let yaml = fs::read_to_string(et_dir.join("template.yaml")).unwrap();
+    assert!(yaml.contains("name: welcome"));
+    assert!(yaml.contains("subject: Welcome to our service"));
+    let html = fs::read_to_string(et_dir.join("body.html")).unwrap();
+    assert_eq!(html, "<p>Hello</p>");
+    let txt = fs::read_to_string(et_dir.join("body.txt")).unwrap();
+    assert_eq!(txt, "Hello");
+}

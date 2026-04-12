@@ -10,9 +10,8 @@
 //! endpoint. Excluding `state` keeps the local file free to carry that
 //! metadata for human readers without producing false-positive diffs.
 
-use crate::diff::DiffOp;
+use crate::diff::{compute_text_diff, opt_str_eq, tags_eq_unordered, DiffOp, TextDiffSummary};
 use crate::resource::ContentBlock;
-use similar::{ChangeTag, TextDiff};
 use std::collections::BTreeMap;
 
 /// Name → Braze `content_block_id`. Built during diff, consumed by
@@ -27,12 +26,6 @@ pub struct ContentBlockDiff {
     pub text_diff: Option<TextDiffSummary>,
     /// True when present in Braze but missing from Git.
     pub orphan: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct TextDiffSummary {
-    pub additions: usize,
-    pub deletions: usize,
 }
 
 impl ContentBlockDiff {
@@ -109,57 +102,9 @@ pub fn diff(
 /// failure mode the `state` exclusion exists to prevent.
 fn syncable_eq(a: &ContentBlock, b: &ContentBlock) -> bool {
     a.name == b.name
-        && desc_eq(&a.description, &b.description)
+        && opt_str_eq(&a.description, &b.description)
         && a.content == b.content
         && tags_eq_unordered(&a.tags, &b.tags)
-}
-
-/// `None` and `Some("")` both mean "no description" for the purposes
-/// of diffing. Braze's `/info` omits the field entirely when a block
-/// has no description, so it always deserializes as `None`; a local
-/// file that carries `description: ""` (either because an operator
-/// typed an empty value or because YAML round-tripped a missing key
-/// that way) would otherwise diff as Modified forever, push the empty
-/// string on apply, come back as `None` again on the next fetch, and
-/// loop — the same infinite-drift failure mode as the `state`
-/// exclusion. Treating the two as equal here is the narrowest fix
-/// that preserves file fidelity (we deliberately do NOT normalize on
-/// load, so an intentional `description: ""` still round-trips to
-/// disk byte-for-byte).
-fn desc_eq(a: &Option<String>, b: &Option<String>) -> bool {
-    a.as_deref().unwrap_or("") == b.as_deref().unwrap_or("")
-}
-
-/// Multiset equality: same length + same elements after sort. Keeps
-/// duplicate-awareness (unlike a set) so `["a","a"]` vs `["a"]` still
-/// surfaces as a real change on the off chance Braze ever returns
-/// duplicated tags.
-fn tags_eq_unordered(a: &[String], b: &[String]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut a: Vec<&str> = a.iter().map(String::as_str).collect();
-    let mut b: Vec<&str> = b.iter().map(String::as_str).collect();
-    a.sort_unstable();
-    b.sort_unstable();
-    a == b
-}
-
-fn compute_text_diff(from: &str, to: &str) -> TextDiffSummary {
-    let diff = TextDiff::from_lines(from, to);
-    let mut additions = 0;
-    let mut deletions = 0;
-    for change in diff.iter_all_changes() {
-        match change.tag() {
-            ChangeTag::Insert => additions += 1,
-            ChangeTag::Delete => deletions += 1,
-            ChangeTag::Equal => {}
-        }
-    }
-    TextDiffSummary {
-        additions,
-        deletions,
-    }
 }
 
 #[cfg(test)]
@@ -286,7 +231,7 @@ mod tests {
 
     #[test]
     fn empty_local_description_equals_missing_remote_description() {
-        // Regression guard for the `desc_eq` fix. A local file with
+        // Regression guard for the `opt_str_eq` fix. A local file with
         // `description: ""` must diff equal against a remote /info
         // response that omits the field entirely (which deserializes
         // as `None`). Otherwise apply would push the empty string,
@@ -318,7 +263,7 @@ mod tests {
 
     #[test]
     fn real_description_difference_is_still_modified() {
-        // `desc_eq` must NOT collapse genuinely distinct descriptions.
+        // `opt_str_eq` must NOT collapse genuinely distinct descriptions.
         // Guards against a fix that accidentally unwrap-or-empties
         // both sides into the same non-empty string (which `==` would
         // otherwise catch, but belt and braces).

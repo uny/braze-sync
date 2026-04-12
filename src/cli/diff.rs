@@ -11,11 +11,14 @@ use crate::diff::catalog::diff_schema;
 use crate::diff::content_block::{
     diff as diff_content_block, ContentBlockDiff, ContentBlockIdIndex,
 };
+use crate::diff::email_template::{
+    diff as diff_email_template, EmailTemplateDiff, EmailTemplateIdIndex,
+};
 use crate::diff::{DiffSummary, ResourceDiff};
 use crate::error::Error;
 use crate::format::OutputFormat;
-use crate::fs::{catalog_io, content_block_io};
-use crate::resource::{Catalog, ContentBlock, ResourceKind};
+use crate::fs::{catalog_io, content_block_io, email_template_io};
+use crate::resource::{Catalog, ContentBlock, EmailTemplate, ResourceKind};
 use anyhow::Context as _;
 use clap::Args;
 use futures::stream::{StreamExt, TryStreamExt};
@@ -48,6 +51,7 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let catalogs_root = config_dir.join(&resolved.resources.catalog_schema.path);
     let content_blocks_root = config_dir.join(&resolved.resources.content_block.path);
+    let email_templates_root = config_dir.join(&resolved.resources.email_template.path);
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
@@ -66,6 +70,16 @@ pub async fn run(
                     compute_content_block_plan(&client, &content_blocks_root, args.name.as_deref())
                         .await
                         .context("computing content_block diff")?;
+                summary.diffs.extend(diffs);
+            }
+            ResourceKind::EmailTemplate => {
+                let (diffs, _idx) = compute_email_template_plan(
+                    &client,
+                    &email_templates_root,
+                    args.name.as_deref(),
+                )
+                .await
+                .context("computing email_template diff")?;
                 summary.diffs.extend(diffs);
             }
             other => {
@@ -209,6 +223,81 @@ pub(crate) async fn compute_content_block_plan(
         };
         if let Some(d) = diff_result {
             diffs.push(ResourceDiff::ContentBlock(d));
+        }
+    }
+
+    Ok((diffs, id_index))
+}
+
+/// Same pattern as `compute_content_block_plan` — list first, fan-out
+/// /info fetches for shared names, then diff.
+pub(crate) async fn compute_email_template_plan(
+    client: &BrazeClient,
+    email_templates_root: &Path,
+    name_filter: Option<&str>,
+) -> anyhow::Result<(Vec<ResourceDiff>, EmailTemplateIdIndex)> {
+    let mut local = email_template_io::load_all_email_templates(email_templates_root)?;
+    if let Some(name) = name_filter {
+        local.retain(|t| t.name == name);
+    }
+
+    let mut summaries = client.list_email_templates().await?;
+    if let Some(name) = name_filter {
+        summaries.retain(|s| s.name == name);
+    }
+
+    let id_index: EmailTemplateIdIndex = summaries
+        .into_iter()
+        .map(|s| (s.name, s.email_template_id))
+        .collect();
+
+    let local_by_name: BTreeMap<&str, &EmailTemplate> =
+        local.iter().map(|t| (t.name.as_str(), t)).collect();
+
+    let shared_names: Vec<&str> = id_index
+        .keys()
+        .map(String::as_str)
+        .filter(|n| local_by_name.contains_key(n))
+        .collect();
+    let fetched: BTreeMap<String, EmailTemplate> =
+        futures::stream::iter(shared_names.iter().map(|name| {
+            let id = id_index
+                .get(*name)
+                .expect("id_index built from the same summaries set");
+            async move {
+                client
+                    .get_email_template(id)
+                    .await
+                    .map(|et| (name.to_string(), et))
+                    .with_context(|| format!("fetching email template '{name}'"))
+            }
+        }))
+        .buffer_unordered(FETCH_CONCURRENCY)
+        .try_collect()
+        .await?;
+
+    let mut all_names: BTreeSet<&str> = BTreeSet::new();
+    all_names.extend(local_by_name.keys().copied());
+    all_names.extend(id_index.keys().map(String::as_str));
+
+    let mut diffs = Vec::new();
+    for name in all_names {
+        let local_et = local_by_name.get(name).copied();
+        let remote_et = fetched.get(name);
+        let remote_present = id_index.contains_key(name);
+        let diff_result = match (local_et, remote_et, remote_present) {
+            (Some(l), Some(r), true) => diff_email_template(Some(l), Some(r)),
+            (Some(l), None, false) => diff_email_template(Some(l), None),
+            (None, None, true) => Some(EmailTemplateDiff::orphan(name)),
+            _ => unreachable!(
+                "email_template diff invariant violated for '{name}': \
+                 local={} remote={} remote_present={remote_present}",
+                local_et.is_some(),
+                remote_et.is_some(),
+            ),
+        };
+        if let Some(d) = diff_result {
+            diffs.push(ResourceDiff::EmailTemplate(d));
         }
     }
 

@@ -7,7 +7,7 @@
 
 use crate::config::ConfigFile;
 use crate::error::Error;
-use crate::fs::{catalog_io, content_block_io};
+use crate::fs::{catalog_io, content_block_io, email_template_io};
 use crate::resource::ResourceKind;
 use anyhow::anyhow;
 use clap::Args;
@@ -51,6 +51,10 @@ pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> an
                     cfg.naming.content_block_name_pattern.as_deref(),
                     &mut issues,
                 )?;
+            }
+            ResourceKind::EmailTemplate => {
+                let email_templates_root = config_dir.join(&cfg.resources.email_template.path);
+                validate_email_templates(&email_templates_root, &mut issues)?;
             }
             other => warn_unimplemented(other),
         }
@@ -222,6 +226,68 @@ fn validate_content_blocks(
                     ),
                 });
             }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_email_templates(
+    email_templates_root: &Path,
+    issues: &mut Vec<ValidationIssue>,
+) -> anyhow::Result<()> {
+    let read_dir = match std::fs::read_dir(email_templates_root) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) if email_templates_root.is_file() => {
+            issues.push(ValidationIssue {
+                path: email_templates_root.to_path_buf(),
+                message: "expected directory for the email_templates root".into(),
+            });
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    for entry in read_dir {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_dir() {
+            tracing::debug!(path = %path.display(), "skipping non-directory entry");
+            continue;
+        }
+        let template_yaml_path = path.join("template.yaml");
+        if !template_yaml_path.is_file() {
+            continue;
+        }
+        let dir_name = entry.file_name().to_string_lossy().into_owned();
+
+        let et = match email_template_io::read_email_template_dir(&path) {
+            Ok(et) => et,
+            Err(e) => {
+                issues.push(ValidationIssue {
+                    path: template_yaml_path.clone(),
+                    message: format!("parse error: {e}"),
+                });
+                continue;
+            }
+        };
+
+        if et.name != dir_name {
+            issues.push(ValidationIssue {
+                path: template_yaml_path.clone(),
+                message: format!(
+                    "email template name '{}' does not match its directory '{}'",
+                    et.name, dir_name
+                ),
+            });
+        }
+
+        if et.subject.is_empty() {
+            issues.push(ValidationIssue {
+                path: template_yaml_path.clone(),
+                message: format!("email template '{}' has an empty subject", et.name),
+            });
         }
     }
 

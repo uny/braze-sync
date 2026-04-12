@@ -6,12 +6,54 @@
 //! match arms to be updated by the compiler.
 
 use crate::resource::ResourceKind;
+use similar::{ChangeTag, TextDiff};
 
 pub mod catalog;
 pub mod content_block;
 pub mod custom_attribute;
 pub mod email_template;
 pub mod orphan;
+
+#[derive(Debug, Clone)]
+pub struct TextDiffSummary {
+    pub additions: usize,
+    pub deletions: usize,
+}
+
+pub(crate) fn compute_text_diff(from: &str, to: &str) -> TextDiffSummary {
+    let diff = TextDiff::from_lines(from, to);
+    let mut additions = 0;
+    let mut deletions = 0;
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            ChangeTag::Insert => additions += 1,
+            ChangeTag::Delete => deletions += 1,
+            ChangeTag::Equal => {}
+        }
+    }
+    TextDiffSummary {
+        additions,
+        deletions,
+    }
+}
+
+/// Treats `None` and `Some("")` as equal — Braze may omit a field or
+/// return an empty string interchangeably.
+pub(crate) fn opt_str_eq(a: &Option<String>, b: &Option<String>) -> bool {
+    a.as_deref().unwrap_or("") == b.as_deref().unwrap_or("")
+}
+
+/// Multiset equality: same elements after sort, ignoring order.
+pub(crate) fn tags_eq_unordered(a: &[String], b: &[String]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut a: Vec<&str> = a.iter().map(String::as_str).collect();
+    let mut b: Vec<&str> = b.iter().map(String::as_str).collect();
+    a.sort_unstable();
+    b.sort_unstable();
+    a == b
+}
 
 /// A diff operation on a single entity. Polymorphic over the entity type so
 /// the same vocabulary applies to whole resources, individual fields, etc.

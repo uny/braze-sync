@@ -13,6 +13,7 @@
 
 pub mod catalog;
 pub mod content_block;
+pub mod email_template;
 pub mod error;
 pub mod rate_limit;
 
@@ -193,6 +194,44 @@ fn parse_retry_after(resp: &reqwest::Response) -> Option<Duration> {
         .parse::<u64>()
         .ok()
         .map(Duration::from_secs)
+}
+
+/// Outcome of classifying the `message` field on a Braze `/info`
+/// response. Shared by content_block and email_template — the only
+/// difference is the resource-specific "not found" phrase.
+pub(crate) enum InfoMessageClass {
+    Success,
+    NotFound,
+    Unexpected(String),
+}
+
+/// Classify the `message` field returned by Braze `/info` endpoints.
+/// `resource_phrase` is a resource-specific not-found indicator
+/// (e.g. `"no content block"`, `"no email template"`).
+pub(crate) fn classify_info_message(
+    message: Option<&str>,
+    resource_phrase: &str,
+) -> InfoMessageClass {
+    debug_assert!(
+        resource_phrase == resource_phrase.to_ascii_lowercase(),
+        "resource_phrase must be lowercase (compared against lowercased message)"
+    );
+    let Some(raw) = message else {
+        return InfoMessageClass::Success;
+    };
+    let trimmed = raw.trim();
+    if trimmed.eq_ignore_ascii_case("success") {
+        return InfoMessageClass::Success;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("not found")
+        || lower.contains(resource_phrase)
+        || lower.contains("does not exist")
+    {
+        InfoMessageClass::NotFound
+    } else {
+        InfoMessageClass::Unexpected(raw.to_string())
+    }
 }
 
 #[cfg(test)]

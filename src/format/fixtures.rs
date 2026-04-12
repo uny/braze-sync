@@ -4,9 +4,10 @@
 //! corresponding TableFormatter / JsonFormatter snapshot is reproducible.
 
 use crate::diff::catalog::{diff_schema, CatalogItemsDiff};
-use crate::diff::content_block::{diff as diff_content_block, ContentBlockDiff, TextDiffSummary};
+use crate::diff::content_block::{diff as diff_content_block, ContentBlockDiff};
 use crate::diff::custom_attribute::{CustomAttributeDiff, CustomAttributeOp};
 use crate::diff::email_template::EmailTemplateDiff;
+use crate::diff::TextDiffSummary;
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::resource::{Catalog, CatalogField, CatalogFieldType, ContentBlock, ContentBlockState};
 

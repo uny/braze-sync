@@ -13,6 +13,7 @@ use crate::braze::BrazeClient;
 use crate::config::ResolvedConfig;
 use crate::diff::catalog::CatalogSchemaDiff;
 use crate::diff::content_block::{ContentBlockDiff, ContentBlockIdIndex};
+use crate::diff::email_template::{EmailTemplateDiff, EmailTemplateIdIndex};
 use crate::diff::orphan;
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::error::Error;
@@ -22,7 +23,9 @@ use anyhow::{anyhow, Context as _};
 use clap::Args;
 use std::path::Path;
 
-use super::diff::{compute_catalog_schema_diffs, compute_content_block_plan};
+use super::diff::{
+    compute_catalog_schema_diffs, compute_content_block_plan, compute_email_template_plan,
+};
 use super::{selected_kinds, warn_unimplemented};
 
 #[derive(Args, Debug)]
@@ -62,11 +65,13 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let catalogs_root = config_dir.join(&resolved.resources.catalog_schema.path);
     let content_blocks_root = config_dir.join(&resolved.resources.content_block.path);
+    let email_templates_root = config_dir.join(&resolved.resources.email_template.path);
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
     let mut summary = DiffSummary::default();
     let mut content_block_id_index: Option<ContentBlockIdIndex> = None;
+    let mut email_template_id_index: Option<EmailTemplateIdIndex> = None;
     for kind in kinds {
         match kind {
             ResourceKind::CatalogSchema => {
@@ -83,6 +88,17 @@ pub async fn run(
                         .context("computing content_block plan")?;
                 summary.diffs.extend(diffs);
                 content_block_id_index = Some(idx);
+            }
+            ResourceKind::EmailTemplate => {
+                let (diffs, idx) = compute_email_template_plan(
+                    &client,
+                    &email_templates_root,
+                    args.name.as_deref(),
+                )
+                .await
+                .context("computing email_template plan")?;
+                summary.diffs.extend(diffs);
+                email_template_id_index = Some(idx);
             }
             other => warn_unimplemented(other),
         }
@@ -130,6 +146,16 @@ pub async fn run(
                     &client,
                     d,
                     content_block_id_index.as_ref(),
+                    args.archive_orphans,
+                    today,
+                )
+                .await?;
+            }
+            ResourceDiff::EmailTemplate(d) => {
+                applied += apply_email_template(
+                    &client,
+                    d,
+                    email_template_id_index.as_ref(),
                     args.archive_orphans,
                     today,
                 )
@@ -305,4 +331,69 @@ async fn apply_catalog_schema(
         }
     }
     Ok(count)
+}
+
+async fn apply_email_template(
+    client: &BrazeClient,
+    d: &EmailTemplateDiff,
+    id_index: Option<&EmailTemplateIdIndex>,
+    archive_orphans: bool,
+    today: chrono::NaiveDate,
+) -> anyhow::Result<usize> {
+    if d.orphan {
+        if !archive_orphans {
+            return Ok(0);
+        }
+        let id_index = id_index.ok_or_else(|| {
+            anyhow!("internal: email_template id index missing for orphan apply path")
+        })?;
+        let id = id_index.get(&d.name).ok_or_else(|| {
+            anyhow!(
+                "internal: orphan '{}' missing from id index — list/diff drift",
+                d.name
+            )
+        })?;
+        let archived = orphan::archive_name(today, &d.name);
+        if archived == d.name {
+            return Ok(0);
+        }
+        let mut et = client
+            .get_email_template(id)
+            .await
+            .with_context(|| format!("fetching email template '{}' for archive rename", d.name))?;
+        et.name = archived;
+        tracing::info!(
+            email_template = %d.name,
+            new_name = %et.name,
+            "archiving orphan email template"
+        );
+        client.update_email_template(id, &et).await?;
+        return Ok(1);
+    }
+
+    match &d.op {
+        DiffOp::Added(et) => {
+            tracing::info!(email_template = %et.name, "creating email template");
+            let _ = client.create_email_template(et).await?;
+            Ok(1)
+        }
+        DiffOp::Modified { to, .. } => {
+            let id_index = id_index.ok_or_else(|| {
+                anyhow!("internal: email_template id index missing for modified apply path")
+            })?;
+            let id = id_index.get(&to.name).ok_or_else(|| {
+                anyhow!(
+                    "internal: modified email template '{}' missing from id index",
+                    to.name
+                )
+            })?;
+            tracing::info!(email_template = %to.name, "updating email template");
+            client.update_email_template(id, to).await?;
+            Ok(1)
+        }
+        DiffOp::Removed(_) => {
+            unreachable!("diff layer routes email template removals through orphan")
+        }
+        DiffOp::Unchanged => Ok(0),
+    }
 }
