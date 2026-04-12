@@ -107,7 +107,6 @@ fn syncable_eq(a: &ContentBlock, b: &ContentBlock) -> bool {
         && tags_eq_unordered(&a.tags, &b.tags)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

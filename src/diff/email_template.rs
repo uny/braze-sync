@@ -140,7 +140,6 @@ fn metadata_eq(a: &EmailTemplate, b: &EmailTemplate) -> bool {
         && tags_eq_unordered(&a.tags, &b.tags)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

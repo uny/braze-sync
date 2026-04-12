@@ -116,7 +116,7 @@ impl BrazeClient {
             template_name: &et.name,
             subject: &et.subject,
             body: &et.body_html,
-            plaintext_body: Some(&et.body_plaintext),
+            plaintext_body: &et.body_plaintext,
             preheader: et.preheader.as_deref(),
             should_inline_css: et.should_inline_css,
             tags: &et.tags,
@@ -138,7 +138,7 @@ impl BrazeClient {
             template_name: &et.name,
             subject: &et.subject,
             body: &et.body_html,
-            plaintext_body: Some(&et.body_plaintext),
+            plaintext_body: &et.body_plaintext,
             preheader: et.preheader.as_deref(),
             should_inline_css: et.should_inline_css,
             tags: &et.tags,
@@ -197,8 +197,7 @@ struct EmailTemplateWriteBody<'a> {
     template_name: &'a str,
     subject: &'a str,
     body: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    plaintext_body: Option<&'a str>,
+    plaintext_body: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     preheader: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]

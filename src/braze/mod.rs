@@ -212,6 +212,10 @@ pub(crate) fn classify_info_message(
     message: Option<&str>,
     resource_phrase: &str,
 ) -> InfoMessageClass {
+    debug_assert!(
+        resource_phrase == resource_phrase.to_ascii_lowercase(),
+        "resource_phrase must be lowercase (compared against lowercased message)"
+    );
     let Some(raw) = message else {
         return InfoMessageClass::Success;
     };
