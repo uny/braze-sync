@@ -85,6 +85,13 @@ pub fn write_content_block_raw(dir: &Path, name: &str, content: &str) {
     fs::write(cb_dir.join(format!("{name}.liquid")), content).unwrap();
 }
 
+/// Write a local catalog items CSV to `<dir>/catalogs/<catalog_name>/items.csv`.
+pub fn write_local_items(dir: &Path, catalog_name: &str, csv_content: &str) {
+    let cat_dir = dir.join("catalogs").join(catalog_name);
+    fs::create_dir_all(&cat_dir).unwrap();
+    fs::write(cat_dir.join("items.csv"), csv_content).unwrap();
+}
+
 /// Write a local email template directory under `<dir>/email_templates/<name>/`.
 pub fn write_local_email_template(
     dir: &Path,

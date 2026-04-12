@@ -211,11 +211,6 @@ pub(crate) fn selected_kinds(
     }
 }
 
-/// Warn on stderr about a resource kind not yet implemented.
-pub(crate) fn warn_unimplemented(kind: ResourceKind) {
-    eprintln!("⚠ {}: not yet implemented in this binary", kind.as_str());
-}
-
 fn init_tracing(verbose: bool, no_color: bool) {
     let default_level = if verbose { "debug" } else { "warn" };
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()

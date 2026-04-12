@@ -11,22 +11,25 @@
 
 use crate::braze::BrazeClient;
 use crate::config::ResolvedConfig;
-use crate::diff::catalog::CatalogSchemaDiff;
+use crate::diff::catalog::{CatalogItemsDiff, CatalogSchemaDiff};
 use crate::diff::content_block::{ContentBlockDiff, ContentBlockIdIndex};
 use crate::diff::email_template::{EmailTemplateDiff, EmailTemplateIdIndex};
 use crate::diff::orphan;
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::error::Error;
 use crate::format::OutputFormat;
-use crate::resource::ResourceKind;
+use crate::resource::{CatalogItems, ResourceKind};
 use anyhow::{anyhow, Context as _};
 use clap::Args;
+use futures::stream::{StreamExt, TryStreamExt};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use super::diff::{
-    compute_catalog_schema_diffs, compute_content_block_plan, compute_email_template_plan,
+    compute_catalog_items_diffs, compute_catalog_schema_diffs, compute_content_block_plan,
+    compute_email_template_plan,
 };
-use super::{selected_kinds, warn_unimplemented};
+use super::selected_kinds;
 
 #[derive(Args, Debug)]
 pub struct ApplyArgs {
@@ -72,6 +75,7 @@ pub async fn run(
     let mut summary = DiffSummary::default();
     let mut content_block_id_index: Option<ContentBlockIdIndex> = None;
     let mut email_template_id_index: Option<EmailTemplateIdIndex> = None;
+    let mut catalog_items_local: Option<BTreeMap<String, CatalogItems>> = None;
     for kind in kinds {
         match kind {
             ResourceKind::CatalogSchema => {
@@ -80,6 +84,14 @@ pub async fn run(
                         .await
                         .context("computing catalog_schema plan")?;
                 summary.diffs.extend(diffs);
+            }
+            ResourceKind::CatalogItems => {
+                let (diffs, local_map) =
+                    compute_catalog_items_diffs(&client, &catalogs_root, args.name.as_deref())
+                        .await
+                        .context("computing catalog_items plan")?;
+                summary.diffs.extend(diffs);
+                catalog_items_local = Some(local_map);
             }
             ResourceKind::ContentBlock => {
                 let (diffs, idx) =
@@ -100,7 +112,9 @@ pub async fn run(
                 summary.diffs.extend(diffs);
                 email_template_id_index = Some(idx);
             }
-            other => warn_unimplemented(other),
+            ResourceKind::CustomAttribute => {
+                tracing::debug!("custom_attribute apply not yet implemented");
+            }
         }
     }
 
@@ -135,11 +149,17 @@ pub async fn run(
     // matters more than matching the operator's local calendar.
     let today = chrono::Utc::now().date_naive();
 
+    let parallel_batches = resolved.resources.catalog_items.parallel_batches;
     let mut applied = 0;
     for diff in &summary.diffs {
         match diff {
             ResourceDiff::CatalogSchema(d) => {
                 applied += apply_catalog_schema(&client, d).await?;
+            }
+            ResourceDiff::CatalogItems(d) => {
+                applied +=
+                    apply_catalog_items(&client, d, catalog_items_local.as_ref(), parallel_batches)
+                        .await?;
             }
             ResourceDiff::ContentBlock(d) => {
                 applied += apply_content_block(
@@ -161,7 +181,7 @@ pub async fn run(
                 )
                 .await?;
             }
-            _ => {}
+            ResourceDiff::CustomAttribute(_) => {}
         }
     }
 
@@ -331,6 +351,123 @@ async fn apply_catalog_schema(
         }
     }
     Ok(count)
+}
+
+/// Batch size for catalog items upsert/delete (Braze limit).
+const ITEMS_BATCH_SIZE: usize = 50;
+
+async fn apply_catalog_items(
+    client: &BrazeClient,
+    d: &CatalogItemsDiff,
+    local_map: Option<&BTreeMap<String, CatalogItems>>,
+    parallel_batches: u32,
+) -> anyhow::Result<usize> {
+    if !d.has_changes() {
+        return Ok(0);
+    }
+
+    let catalog_name = &d.catalog_name;
+
+    // Collect rows to upsert (added + modified).
+    let upsert_ids: Vec<&str> = d
+        .added_ids
+        .iter()
+        .chain(d.modified_ids.iter())
+        .map(String::as_str)
+        .collect();
+
+    let mut upsert_count = 0;
+    if !upsert_ids.is_empty() {
+        let local = local_map.and_then(|m| m.get(catalog_name)).ok_or_else(|| {
+            anyhow!(
+                "internal: local items for catalog '{}' missing from items map",
+                catalog_name
+            )
+        })?;
+        let rows = local.rows.as_ref().ok_or_else(|| {
+            anyhow!(
+                "internal: local items for catalog '{}' have no materialized rows",
+                catalog_name
+            )
+        })?;
+        let row_by_id: BTreeMap<&str, &crate::resource::CatalogItemRow> =
+            rows.iter().map(|r| (r.id.as_str(), r)).collect();
+
+        let mut upsert_rows = Vec::with_capacity(upsert_ids.len());
+        for id in &upsert_ids {
+            let row = row_by_id.get(id).ok_or_else(|| {
+                anyhow!(
+                    "internal: item '{}' in diff but missing from local rows for catalog '{}'",
+                    id,
+                    catalog_name
+                )
+            })?;
+            upsert_rows.push((*row).clone());
+        }
+
+        let batches: Vec<&[crate::resource::CatalogItemRow]> =
+            upsert_rows.chunks(ITEMS_BATCH_SIZE).collect();
+        let total_items = upsert_rows.len();
+
+        let pb = indicatif::ProgressBar::new(total_items as u64);
+        pb.set_style(
+            indicatif::ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] {bar:40} {pos}/{len} items")
+                .unwrap(),
+        );
+        pb.set_draw_target(indicatif::ProgressDrawTarget::stderr());
+
+        let concurrency = (parallel_batches as usize).max(1);
+        futures::stream::iter(batches.into_iter().map(|batch| {
+            let client = client.clone();
+            let catalog_name = catalog_name.clone();
+            let batch_len = batch.len();
+            let batch_owned: Vec<crate::resource::CatalogItemRow> = batch.to_vec();
+            let pb = pb.clone();
+            async move {
+                tracing::info!(
+                    catalog = %catalog_name,
+                    batch_size = batch_len,
+                    "upserting catalog items batch"
+                );
+                client
+                    .upsert_catalog_items(&catalog_name, &batch_owned)
+                    .await
+                    .with_context(|| {
+                        format!("upserting items batch for catalog '{catalog_name}'")
+                    })?;
+                pb.inc(batch_len as u64);
+                Ok::<usize, anyhow::Error>(batch_len)
+            }
+        }))
+        .buffer_unordered(concurrency)
+        .try_collect::<Vec<_>>()
+        .await?
+        .iter()
+        .for_each(|n| upsert_count += n);
+
+        pb.finish_and_clear();
+    }
+
+    // Delete removed items (gated at top-level by --allow-destructive).
+    let mut delete_count = 0;
+    if !d.removed_ids.is_empty() {
+        let batches: Vec<&[String]> = d.removed_ids.chunks(ITEMS_BATCH_SIZE).collect();
+        for batch in batches {
+            tracing::info!(
+                catalog = %catalog_name,
+                batch_size = batch.len(),
+                "deleting catalog items batch"
+            );
+            client
+                .delete_catalog_items(catalog_name, batch)
+                .await
+                .with_context(|| format!("deleting items batch for catalog '{catalog_name}'"))?;
+            delete_count += batch.len();
+        }
+    }
+
+    Ok(upsert_count + delete_count)
 }
 
 async fn apply_email_template(

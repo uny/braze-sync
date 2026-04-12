@@ -10,7 +10,8 @@ mod common;
 
 use assert_cmd::Command;
 use common::{
-    write_config, write_local_content_block, write_local_email_template, write_local_schema,
+    write_config, write_local_content_block, write_local_email_template, write_local_items,
+    write_local_schema,
 };
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param};
@@ -502,4 +503,48 @@ async fn diff_email_template_no_drift_when_identical() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("no drift"), "stdout: {stdout}");
     assert!(stdout.contains("0 changed"), "stdout: {stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diff_catalog_items_detects_added_item() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/catalogs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "catalogs": [
+                {"name": "cardiology", "fields": [{"name": "id", "type": "string"}]}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/catalogs/cardiology/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [],
+            "message": "success"
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_items(tmp.path(), "cardiology", "id,name\naf001,atrial\n");
+    let config_str = config_path.to_str().unwrap().to_string();
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", &config_str])
+            .args(["diff", "--resource", "catalog_items"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("1 added"), "stdout: {stdout}");
+    assert!(stdout.contains("1 changed"), "stdout: {stdout}");
 }

@@ -16,7 +16,8 @@ mod common;
 
 use assert_cmd::Command;
 use common::{
-    write_config, write_local_content_block, write_local_email_template, write_local_schema,
+    write_config, write_local_content_block, write_local_email_template, write_local_items,
+    write_local_schema,
 };
 use serde_json::json;
 use wiremock::matchers::{body_json, method, path, query_param};
@@ -874,4 +875,107 @@ async fn email_template_archive_orphans_renames_via_update() {
     })
     .await
     .unwrap();
+}
+
+// =================================================================
+// Catalog Items apply tests
+// =================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_catalog_items_upserts_added_items() {
+    let server = MockServer::start().await;
+    // list_catalogs for discovery
+    Mock::given(method("GET"))
+        .and(path("/catalogs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "catalogs": [
+                {"name": "cardiology", "fields": [{"name": "id", "type": "string"}]}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    // Remote has no items
+    Mock::given(method("GET"))
+        .and(path("/catalogs/cardiology/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [],
+            "message": "success"
+        })))
+        .mount(&server)
+        .await;
+    // Expect an upsert POST
+    let upsert_mock = Mock::given(method("POST"))
+        .and(path("/catalogs/cardiology/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
+        .expect(1)
+        .mount_as_scoped(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_items(tmp.path(), "cardiology", "id,name\naf001,atrial\n");
+    let config_str = config_path.to_str().unwrap().to_string();
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", &config_str])
+            .args(["apply", "--resource", "catalog_items", "--confirm"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    // The scoped mock asserts expect(1) on drop.
+    drop(upsert_mock);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_catalog_items_dry_run_does_not_upsert() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/catalogs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "catalogs": [
+                {"name": "cardiology", "fields": [{"name": "id", "type": "string"}]}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/catalogs/cardiology/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [],
+            "message": "success"
+        })))
+        .mount(&server)
+        .await;
+    // Expect zero upsert POSTs (dry-run)
+    let upsert_mock = Mock::given(method("POST"))
+        .and(path("/catalogs/cardiology/items"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount_as_scoped(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_items(tmp.path(), "cardiology", "id,name\naf001,atrial\n");
+    let config_str = config_path.to_str().unwrap().to_string();
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", &config_str])
+            .args(["apply", "--resource", "catalog_items"]) // no --confirm
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    drop(upsert_mock);
 }
