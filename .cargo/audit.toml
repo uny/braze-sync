@@ -1,0 +1,16 @@
+# `cargo audit` configuration. Consumed by `rustsec/audit-check` in CI
+# (and by `cargo audit` locally). Keep the ignore list small and
+# justify every entry — ignores silently mask future real findings.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2026-0097: `rand` is unsound when a custom `log` logger
+    # calls `rand::rng()` from inside its log hook, while `ThreadRng`
+    # is attempting to reseed. We do not install any `log` logger
+    # (we use `tracing`) and never call `rand::rng()` from logging
+    # code paths, so this advisory does not apply to this binary.
+    # The advisory fires on rand 0.8.5 and 0.9.2, both pulled in
+    # transitively (governor / wiremock dev-dep). Re-check once those
+    # crates upgrade to rand >= 0.9.3 and drop this entry.
+    "RUSTSEC-2026-0097",
+]

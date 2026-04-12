@@ -71,15 +71,15 @@ mod tests {
                 },
             ],
         };
-        let yaml = serde_yml::to_string(&r).unwrap();
-        let parsed: CustomAttributeRegistry = serde_yml::from_str(&yaml).unwrap();
+        let yaml = serde_norway::to_string(&r).unwrap();
+        let parsed: CustomAttributeRegistry = serde_norway::from_str(&yaml).unwrap();
         assert_eq!(r, parsed);
     }
 
     #[test]
     fn deprecated_defaults_to_false() {
         let yaml = "name: foo\ntype: string\n";
-        let attr: CustomAttribute = serde_yml::from_str(yaml).unwrap();
+        let attr: CustomAttribute = serde_norway::from_str(yaml).unwrap();
         assert!(!attr.deprecated);
     }
 

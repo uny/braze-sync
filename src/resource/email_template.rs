@@ -44,8 +44,8 @@ mod tests {
             preheader: Some("Get started".into()),
             tags: vec!["onboarding".into()],
         };
-        let yaml = serde_yml::to_string(&t).unwrap();
-        let parsed: EmailTemplate = serde_yml::from_str(&yaml).unwrap();
+        let yaml = serde_norway::to_string(&t).unwrap();
+        let parsed: EmailTemplate = serde_norway::from_str(&yaml).unwrap();
         assert_eq!(t, parsed);
     }
 
@@ -62,8 +62,8 @@ mod tests {
             preheader: None,
             tags: vec![],
         };
-        let yaml = serde_yml::to_string(&t).unwrap();
-        let parsed: EmailTemplate = serde_yml::from_str(&yaml).unwrap();
+        let yaml = serde_norway::to_string(&t).unwrap();
+        let parsed: EmailTemplate = serde_norway::from_str(&yaml).unwrap();
         assert_eq!(parsed.body_plaintext, "");
     }
 }

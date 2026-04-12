@@ -115,14 +115,14 @@ mod tests {
                 },
             ],
         };
-        let yaml = serde_yml::to_string(&cat).unwrap();
-        let parsed: Catalog = serde_yml::from_str(&yaml).unwrap();
+        let yaml = serde_norway::to_string(&cat).unwrap();
+        let parsed: Catalog = serde_norway::from_str(&yaml).unwrap();
         assert_eq!(cat, parsed);
     }
 
     #[test]
     fn catalog_field_type_serializes_snake_case() {
-        let yaml = serde_yml::to_string(&CatalogFieldType::Boolean).unwrap();
+        let yaml = serde_norway::to_string(&CatalogFieldType::Boolean).unwrap();
         assert_eq!(yaml.trim(), "boolean");
     }
 
@@ -132,7 +132,7 @@ mod tests {
         // know about, the catalog should still parse — the unknown type
         // round-trips as "unknown" rather than crashing the entire export.
         let yaml = "name: future\nfields:\n  - name: x\n    type: hyperlink\n";
-        let cat: Catalog = serde_yml::from_str(yaml).unwrap();
+        let cat: Catalog = serde_norway::from_str(yaml).unwrap();
         assert_eq!(cat.fields[0].field_type, CatalogFieldType::Unknown);
         assert_eq!(cat.fields[0].field_type.as_str(), "unknown");
     }
@@ -151,7 +151,7 @@ fields:
   - name: score
     type: number
 ";
-        let cat: Catalog = serde_yml::from_str(yaml).unwrap();
+        let cat: Catalog = serde_norway::from_str(yaml).unwrap();
         assert_eq!(cat.fields.len(), 3);
         assert_eq!(cat.fields[0].field_type, CatalogFieldType::String);
         assert_eq!(cat.fields[1].field_type, CatalogFieldType::Unknown);
@@ -165,7 +165,7 @@ fields:
             description: None,
             fields: vec![],
         };
-        let yaml = serde_yml::to_string(&cat).unwrap();
+        let yaml = serde_norway::to_string(&cat).unwrap();
         assert!(!yaml.contains("description"));
     }
 

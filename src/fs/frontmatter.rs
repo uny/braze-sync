@@ -33,7 +33,7 @@ where
         message: "missing closing `---` frontmatter fence".into(),
     })?;
 
-    let parsed: T = serde_yml::from_str(yaml).map_err(|source| Error::YamlParse {
+    let parsed: T = serde_norway::from_str(yaml).map_err(|source| Error::YamlParse {
         path: path.to_path_buf(),
         source,
     })?;
@@ -44,7 +44,7 @@ where
 /// inverse of [`parse`]. Always emits LF line endings and ensures the
 /// frontmatter section ends with a newline before the closing fence.
 pub fn render<T: Serialize>(path: &Path, frontmatter: &T, body: &str) -> Result<String> {
-    let yaml = serde_yml::to_string(frontmatter).map_err(|e| Error::InvalidFormat {
+    let yaml = serde_norway::to_string(frontmatter).map_err(|e| Error::InvalidFormat {
         path: path.to_path_buf(),
         message: format!("frontmatter serialization failed: {e}"),
     })?;

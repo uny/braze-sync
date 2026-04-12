@@ -46,10 +46,11 @@ impl ConfigFile {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let bytes = std::fs::read_to_string(path)?;
-        let cfg: ConfigFile = serde_yml::from_str(&bytes).map_err(|source| Error::YamlParse {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        let cfg: ConfigFile =
+            serde_norway::from_str(&bytes).map_err(|source| Error::YamlParse {
+                path: path.to_path_buf(),
+                source,
+            })?;
         cfg.validate_static()?;
         Ok(cfg)
     }

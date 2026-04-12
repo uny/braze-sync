@@ -27,7 +27,7 @@ pub enum Error {
     YamlParse {
         path: PathBuf,
         #[source]
-        source: serde_yml::Error,
+        source: serde_norway::Error,
     },
 
     #[error("CSV parse error in {path}: {source}")]
