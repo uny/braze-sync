@@ -22,7 +22,7 @@ use crate::resource::{Catalog, CatalogItems, ContentBlock, EmailTemplate, Resour
 use anyhow::Context as _;
 use clap::Args;
 use futures::stream::{StreamExt, TryStreamExt};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 use super::{selected_kinds, FETCH_CONCURRENCY};
@@ -74,9 +74,14 @@ pub async fn run(
             }
             ResourceKind::CatalogItems => {
                 let (diffs, _map) =
-                    compute_catalog_items_diffs(&client, &catalogs_root, args.name.as_deref())
-                        .await
-                        .context("computing catalog_items diff")?;
+                    compute_catalog_items_diffs(
+                        &client,
+                        &catalogs_root,
+                        args.name.as_deref(),
+                        false,
+                    )
+                    .await
+                    .context("computing catalog_items diff")?;
                 summary.diffs.extend(diffs);
             }
             ResourceKind::EmailTemplate => {
@@ -327,27 +332,40 @@ pub(crate) async fn resolve_catalog_names(
 }
 
 /// Compute catalog items diffs. Returns the diff results plus a map
-/// from catalog_name → local `CatalogItems` (with rows) so the apply
-/// path can read rows without reloading the CSV.
+/// from catalog_name → local `CatalogItems` so the apply path can read
+/// rows without reloading the CSV. Pass `materialize_rows = false` on
+/// diff-only paths to avoid keeping all row data in memory.
 pub(crate) async fn compute_catalog_items_diffs(
     client: &BrazeClient,
     catalogs_root: &Path,
     name_filter: Option<&str>,
+    materialize_rows: bool,
 ) -> anyhow::Result<(Vec<ResourceDiff>, BTreeMap<String, CatalogItems>)> {
     let local_map: BTreeMap<String, CatalogItems> = match name_filter {
         Some(name) => {
             let items_path = catalogs_root.join(name).join("items.csv");
             if items_path.is_file() {
-                let ci = catalog_io::load_items(&items_path)?;
+                let ci = if materialize_rows {
+                    catalog_io::load_items(&items_path)?
+                } else {
+                    catalog_io::load_item_hashes(&items_path)?
+                };
                 BTreeMap::from([(ci.catalog_name.clone(), ci)])
             } else {
                 BTreeMap::new()
             }
         }
-        None => catalog_io::load_all_items(catalogs_root)?
-            .into_iter()
-            .map(|ci| (ci.catalog_name.clone(), ci))
-            .collect(),
+        None => {
+            let items = if materialize_rows {
+                catalog_io::load_all_items(catalogs_root)?
+            } else {
+                catalog_io::load_all_item_hashes(catalogs_root)?
+            };
+            items
+                .into_iter()
+                .map(|ci| (ci.catalog_name.clone(), ci))
+                .collect()
+        }
     };
 
     let remote_catalog_names = resolve_catalog_names(client, name_filter).await?;
@@ -360,7 +378,7 @@ pub(crate) async fn compute_catalog_items_diffs(
     // Fan out remote item fetches in parallel. Hash rows inside the
     // closure so full row data is dropped immediately after each fetch,
     // rather than all catalogs' rows living in memory simultaneously.
-    let fetched: BTreeMap<String, Option<BTreeMap<String, String>>> =
+    let fetched: HashMap<String, Option<HashMap<String, String>>> =
         futures::stream::iter(all_names.iter().map(|name| {
             let client = client.clone();
             let name = name.clone();
@@ -382,7 +400,7 @@ pub(crate) async fn compute_catalog_items_diffs(
         .try_collect()
         .await?;
 
-    let empty_hashes = BTreeMap::new();
+    let empty_hashes = HashMap::new();
 
     let mut diffs = Vec::new();
     for name in &all_names {

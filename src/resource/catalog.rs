@@ -1,7 +1,7 @@
 //! Catalog Schema and Catalog Items domain types. See IMPLEMENTATION.md §6.2.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Catalog {
@@ -71,7 +71,7 @@ impl Catalog {
 pub struct CatalogItems {
     pub catalog_name: String,
     /// item id → blake3 content hash of the normalized non-id field map.
-    pub item_hashes: BTreeMap<String, String>,
+    pub item_hashes: HashMap<String, String>,
     /// Materialized rows. `None` until a streaming reader populates them.
     pub rows: Option<Vec<CatalogItemRow>>,
 }

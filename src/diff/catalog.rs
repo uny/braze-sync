@@ -2,7 +2,7 @@
 
 use crate::diff::DiffOp;
 use crate::resource::{Catalog, CatalogField};
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct CatalogSchemaDiff {
@@ -122,8 +122,8 @@ impl CatalogItemsDiff {
 /// Output id lists are sorted for deterministic display and test assertions.
 pub fn diff_items(
     catalog_name: &str,
-    local_hashes: &BTreeMap<String, String>,
-    remote_hashes: &BTreeMap<String, String>,
+    local_hashes: &HashMap<String, String>,
+    remote_hashes: &HashMap<String, String>,
 ) -> CatalogItemsDiff {
     let mut added = Vec::new();
     let mut modified = Vec::new();
@@ -335,7 +335,7 @@ mod tests {
     // diff_items tests
     // =============================================================
 
-    fn hashes(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    fn hashes(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
             .iter()
             .map(|(id, h)| (id.to_string(), h.to_string()))

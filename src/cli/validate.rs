@@ -80,22 +80,35 @@ pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> an
     Err(Error::Config(format!("{} validation issue(s) found", issues.len())).into())
 }
 
+/// Try to open a resource root directory. Returns `None` (and pushes an
+/// issue) when the path is missing or is a file — callers should return
+/// `Ok(())` in that case.
+fn open_resource_dir(
+    root: &Path,
+    kind_label: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> anyhow::Result<Option<std::fs::ReadDir>> {
+    match std::fs::read_dir(root) {
+        Ok(rd) => Ok(Some(rd)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) if root.is_file() => {
+            issues.push(ValidationIssue {
+                path: root.to_path_buf(),
+                message: format!("expected directory for {kind_label} root"),
+            });
+            Ok(None)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
 fn validate_catalog_schemas(
     catalogs_root: &Path,
     name_pattern: Option<&str>,
     issues: &mut Vec<ValidationIssue>,
 ) -> anyhow::Result<()> {
-    let read_dir = match std::fs::read_dir(catalogs_root) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(_) if catalogs_root.is_file() => {
-            issues.push(ValidationIssue {
-                path: catalogs_root.to_path_buf(),
-                message: "expected directory for catalogs root".into(),
-            });
-            return Ok(());
-        }
-        Err(e) => return Err(e.into()),
+    let Some(read_dir) = open_resource_dir(catalogs_root, "catalogs", issues)? else {
+        return Ok(());
     };
 
     let pattern: Option<(String, Regex)> = match name_pattern {
@@ -164,17 +177,8 @@ fn validate_content_blocks(
     name_pattern: Option<&str>,
     issues: &mut Vec<ValidationIssue>,
 ) -> anyhow::Result<()> {
-    let read_dir = match std::fs::read_dir(content_blocks_root) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(_) if content_blocks_root.is_file() => {
-            issues.push(ValidationIssue {
-                path: content_blocks_root.to_path_buf(),
-                message: "expected directory for the content_blocks root".into(),
-            });
-            return Ok(());
-        }
-        Err(e) => return Err(e.into()),
+    let Some(read_dir) = open_resource_dir(content_blocks_root, "content_blocks", issues)? else {
+        return Ok(());
     };
 
     let pattern: Option<(String, Regex)> = match name_pattern {
@@ -243,17 +247,9 @@ fn validate_email_templates(
     email_templates_root: &Path,
     issues: &mut Vec<ValidationIssue>,
 ) -> anyhow::Result<()> {
-    let read_dir = match std::fs::read_dir(email_templates_root) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(_) if email_templates_root.is_file() => {
-            issues.push(ValidationIssue {
-                path: email_templates_root.to_path_buf(),
-                message: "expected directory for the email_templates root".into(),
-            });
-            return Ok(());
-        }
-        Err(e) => return Err(e.into()),
+    let Some(read_dir) = open_resource_dir(email_templates_root, "email_templates", issues)?
+    else {
+        return Ok(());
     };
 
     for entry in read_dir {
@@ -305,17 +301,8 @@ fn validate_catalog_items(
     catalogs_root: &Path,
     issues: &mut Vec<ValidationIssue>,
 ) -> anyhow::Result<()> {
-    let read_dir = match std::fs::read_dir(catalogs_root) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(_) if catalogs_root.is_file() => {
-            issues.push(ValidationIssue {
-                path: catalogs_root.to_path_buf(),
-                message: "expected directory for catalogs root".into(),
-            });
-            return Ok(());
-        }
-        Err(e) => return Err(e.into()),
+    let Some(read_dir) = open_resource_dir(catalogs_root, "catalogs", issues)? else {
+        return Ok(());
     };
 
     for entry in read_dir {

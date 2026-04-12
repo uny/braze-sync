@@ -87,9 +87,14 @@ pub async fn run(
             }
             ResourceKind::CatalogItems => {
                 let (diffs, local_map) =
-                    compute_catalog_items_diffs(&client, &catalogs_root, args.name.as_deref())
-                        .await
-                        .context("computing catalog_items plan")?;
+                    compute_catalog_items_diffs(
+                        &client,
+                        &catalogs_root,
+                        args.name.as_deref(),
+                        true,
+                    )
+                    .await
+                    .context("computing catalog_items plan")?;
                 summary.diffs.extend(diffs);
                 catalog_items_local = Some(local_map);
             }

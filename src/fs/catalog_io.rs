@@ -15,7 +15,7 @@
 use crate::error::{Error, Result};
 use crate::fs::{validate_resource_name, write_atomic};
 use crate::resource::{Catalog, CatalogItemRow, CatalogItems};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 /// Header prepended to every `schema.yaml` written by braze-sync. Editable
@@ -178,6 +178,17 @@ fn value_to_csv_cell(v: &serde_json::Value) -> String {
 /// - Missing `id` column in the CSV header
 /// - Duplicate `id` values across rows
 pub fn load_items(path: &Path) -> Result<CatalogItems> {
+    load_items_inner(path, true)
+}
+
+/// Like [`load_items`] but only builds the hash index (`rows` is `None`).
+/// Use on diff-only paths where full row data is not needed — avoids
+/// keeping 100k+ `CatalogItemRow` structs in memory.
+pub fn load_item_hashes(path: &Path) -> Result<CatalogItems> {
+    load_items_inner(path, false)
+}
+
+fn load_items_inner(path: &Path, materialize_rows: bool) -> Result<CatalogItems> {
     let catalog_name = path
         .parent()
         .and_then(|p| p.file_name())
@@ -207,8 +218,12 @@ pub fn load_items(path: &Path) -> Result<CatalogItems> {
             message: "items.csv is missing required 'id' column".into(),
         })?;
 
-    let mut rows = Vec::new();
-    let mut item_hashes = BTreeMap::new();
+    let mut rows = if materialize_rows {
+        Some(Vec::new())
+    } else {
+        None
+    };
+    let mut item_hashes = HashMap::new();
 
     for result in reader.records() {
         let record = result.map_err(|e| Error::CsvParse {
@@ -240,23 +255,25 @@ pub fn load_items(path: &Path) -> Result<CatalogItems> {
         };
 
         match item_hashes.entry(id) {
-            std::collections::btree_map::Entry::Occupied(e) => {
+            std::collections::hash_map::Entry::Occupied(e) => {
                 return Err(Error::InvalidFormat {
                     path: path.to_path_buf(),
                     message: format!("duplicate item id '{}' in items.csv", e.key()),
                 });
             }
-            std::collections::btree_map::Entry::Vacant(e) => {
+            std::collections::hash_map::Entry::Vacant(e) => {
                 e.insert(row.content_hash());
             }
         }
-        rows.push(row);
+        if let Some(ref mut v) = rows {
+            v.push(row);
+        }
     }
 
     Ok(CatalogItems {
         catalog_name,
         item_hashes,
-        rows: Some(rows),
+        rows,
     })
 }
 
@@ -318,6 +335,15 @@ pub fn save_items(catalogs_root: &Path, catalog_name: &str, rows: &[CatalogItemR
 /// Mirrors [`load_all_schemas`]: missing root → empty vec, subdirectories
 /// without `items.csv` are silently skipped.
 pub fn load_all_items(catalogs_root: &Path) -> Result<Vec<CatalogItems>> {
+    load_all_items_inner(catalogs_root, true)
+}
+
+/// Like [`load_all_items`] but only builds hash indices (rows are `None`).
+pub fn load_all_item_hashes(catalogs_root: &Path) -> Result<Vec<CatalogItems>> {
+    load_all_items_inner(catalogs_root, false)
+}
+
+fn load_all_items_inner(catalogs_root: &Path, materialize_rows: bool) -> Result<Vec<CatalogItems>> {
     let read_dir = match std::fs::read_dir(catalogs_root) {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -343,7 +369,7 @@ pub fn load_all_items(catalogs_root: &Path) -> Result<Vec<CatalogItems>> {
         if !items_path.is_file() {
             continue;
         }
-        let items = load_items(&items_path)?;
+        let items = load_items_inner(&items_path, materialize_rows)?;
         items_list.push(items);
     }
 

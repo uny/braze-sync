@@ -196,28 +196,27 @@ async fn export_catalog_items(
 ) -> anyhow::Result<usize> {
     let catalog_names = resolve_catalog_names(client, name_filter).await?;
 
-    let results: Vec<(String, Vec<_>)> = futures::stream::iter(catalog_names.into_iter().map(
-        |name| {
-            let client = client.clone();
-            async move {
-                match client.list_catalog_items(&name).await {
-                    Ok(items) => Ok(Some((name, items))),
-                    Err(BrazeApiError::NotFound { .. }) => {
-                        eprintln!("⚠ catalog_items: catalog '{name}' not found in Braze");
-                        Ok(None)
-                    }
-                    Err(e) => Err(e),
+    let mut stream = futures::stream::iter(catalog_names.into_iter().map(|name| {
+        let client = client.clone();
+        async move {
+            match client.list_catalog_items(&name).await {
+                Ok(items) => Ok(Some((name, items))),
+                Err(BrazeApiError::NotFound { .. }) => {
+                    eprintln!("⚠ catalog_items: catalog '{name}' not found in Braze");
+                    Ok(None)
                 }
+                Err(e) => Err(e),
             }
-        },
-    ))
-    .buffer_unordered(FETCH_CONCURRENCY)
-    .try_filter_map(|opt| futures::future::ok(opt))
-    .try_collect()
-    .await?;
+        }
+    }))
+    .buffer_unordered(FETCH_CONCURRENCY);
 
-    for (name, items) in &results {
-        catalog_io::save_items(catalogs_root, name, items)?;
+    let mut count = 0;
+    while let Some(result) = stream.next().await {
+        if let Some((name, items)) = result? {
+            catalog_io::save_items(catalogs_root, &name, &items)?;
+            count += 1;
+        }
     }
-    Ok(results.len())
+    Ok(count)
 }

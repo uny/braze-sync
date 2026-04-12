@@ -123,7 +123,7 @@ impl BrazeClient {
         &self,
         catalog_name: &str,
     ) -> Result<Vec<CatalogItemRow>, BrazeApiError> {
-        let mut all_items = Vec::new();
+        let mut all_items = Vec::with_capacity(1000);
         let mut cursor: Option<String> = None;
 
         loop {
