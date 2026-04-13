@@ -397,17 +397,15 @@ async fn apply_catalog_items(
                 catalog_name
             )
         })?;
-        let needed: std::collections::HashSet<&str> =
+        let upsert_set: std::collections::HashSet<&str> =
             upsert_ids.iter().copied().collect();
         let row_by_id: std::collections::HashMap<&str, &crate::resource::CatalogItemRow> =
             rows.iter()
-                .filter(|r| needed.contains(r.id.as_str()))
+                .filter(|r| upsert_set.contains(r.id.as_str()))
                 .map(|r| (r.id.as_str(), r))
                 .collect();
 
-        let total_items = upsert_ids.len();
-
-        let pb = indicatif::ProgressBar::new(total_items as u64);
+        let pb = indicatif::ProgressBar::new(upsert_ids.len() as u64);
         pb.set_style(
             indicatif::ProgressStyle::default_bar()
                 .template("{spinner:.green} [{elapsed_precise}] {bar:40} {pos}/{len} items")

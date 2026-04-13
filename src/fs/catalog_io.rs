@@ -133,6 +133,7 @@ pub fn save_schema(catalogs_root: &Path, catalog: &Catalog) -> Result<()> {
 
 pub(crate) const ITEMS_FILE_NAME: &str = "items.csv";
 const ITEMS_ID_COLUMN: &str = "id";
+const MISSING_ID_COLUMN_MSG: &str = "items.csv is missing required 'id' column";
 
 /// Extract the catalog name from the parent directory of an `items.csv` path.
 fn catalog_name_from_items_path(path: &Path) -> Result<String> {
@@ -220,7 +221,7 @@ fn load_items_inner(path: &Path, materialize_rows: bool) -> Result<CatalogItems>
         .position(|h| h == ITEMS_ID_COLUMN)
         .ok_or_else(|| Error::InvalidFormat {
             path: path.to_path_buf(),
-            message: "items.csv is missing required 'id' column".into(),
+            message: MISSING_ID_COLUMN_MSG.into(),
         })?;
 
     let mut rows = if materialize_rows {
@@ -254,10 +255,10 @@ fn load_items_inner(path: &Path, materialize_rows: bool) -> Result<CatalogItems>
             }
         }
 
-        let row = CatalogItemRow {
-            id: id.clone(),
-            fields,
-        };
+        // Compute the content hash from fields before potentially moving them
+        // into a CatalogItemRow. This avoids an unnecessary id clone + row
+        // construction on the hash-only (diff) path.
+        let hash = CatalogItemRow::hash_fields(&fields);
 
         match item_hashes.entry(id) {
             std::collections::hash_map::Entry::Occupied(e) => {
@@ -267,11 +268,14 @@ fn load_items_inner(path: &Path, materialize_rows: bool) -> Result<CatalogItems>
                 });
             }
             std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert(row.content_hash());
+                if let Some(ref mut v) = rows {
+                    v.push(CatalogItemRow {
+                        id: e.key().clone(),
+                        fields,
+                    });
+                }
+                e.insert(hash);
             }
-        }
-        if let Some(ref mut v) = rows {
-            v.push(row);
         }
     }
 
@@ -299,18 +303,18 @@ pub fn read_item_csv_columns(path: &Path) -> Result<(String, Vec<String>)> {
         source: e,
     })?;
 
+    if !headers.iter().any(|h| h == ITEMS_ID_COLUMN) {
+        return Err(Error::InvalidFormat {
+            path: path.to_path_buf(),
+            message: MISSING_ID_COLUMN_MSG.into(),
+        });
+    }
+
     let columns: Vec<String> = headers
         .iter()
         .filter(|h| *h != ITEMS_ID_COLUMN)
         .map(String::from)
         .collect();
-
-    if !headers.iter().any(|h| h == ITEMS_ID_COLUMN) {
-        return Err(Error::InvalidFormat {
-            path: path.to_path_buf(),
-            message: "items.csv is missing required 'id' column".into(),
-        });
-    }
 
     Ok((catalog_name, columns))
 }
