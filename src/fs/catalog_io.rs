@@ -14,7 +14,7 @@
 
 use crate::error::{Error, Result};
 use crate::fs::{try_read_resource_dir, validate_resource_name, write_atomic};
-use crate::resource::{Catalog, CatalogItemRow, CatalogItems};
+use crate::resource::{Catalog, CatalogFieldType, CatalogItemRow, CatalogItems};
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
@@ -131,13 +131,62 @@ fn catalog_name_from_items_path(path: &Path) -> Result<String> {
         .map(String::from)
 }
 
-/// Parse a single CSV cell into a typed `serde_json::Value`.
+/// Try to load field types from a sibling `schema.yaml` next to an
+/// `items.csv`. Returns `None` when the schema is missing or malformed
+/// — callers fall back to heuristic type inference in that case.
+fn load_sibling_field_types(items_path: &Path) -> Option<HashMap<String, CatalogFieldType>> {
+    let schema_path = items_path.parent()?.join(SCHEMA_FILE_NAME);
+    let catalog = read_schema_file(&schema_path).ok()?;
+    Some(
+        catalog
+            .fields
+            .into_iter()
+            .map(|f| (f.name, f.field_type))
+            .collect(),
+    )
+}
+
+/// Parse a CSV cell using the schema field type when available.
+///
+/// When `field_type` is `Some`, the schema drives the conversion:
+/// - `String` / `Time` → always `Value::String` (prevents "007" → 7)
+/// - `Number` → try number parse, fall back to string
+/// - `Boolean` → try "true"/"false", fall back to string
+/// - anything else → heuristic fallback
+///
+/// When `field_type` is `None`, falls back to [`parse_csv_cell`] which
+/// guesses the type from the cell content.
+fn parse_csv_cell_typed(s: &str, field_type: Option<CatalogFieldType>) -> serde_json::Value {
+    match field_type {
+        Some(CatalogFieldType::String | CatalogFieldType::Time) => {
+            serde_json::Value::String(s.to_string())
+        }
+        Some(CatalogFieldType::Boolean) => match s {
+            "true" => serde_json::Value::Bool(true),
+            "false" => serde_json::Value::Bool(false),
+            _ => serde_json::Value::String(s.to_string()),
+        },
+        Some(CatalogFieldType::Number) => {
+            if let Ok(n) = s.parse::<i64>() {
+                return serde_json::Value::Number(n.into());
+            }
+            if let Ok(n) = s.parse::<f64>() {
+                if let Some(n) = serde_json::Number::from_f64(n) {
+                    return serde_json::Value::Number(n);
+                }
+            }
+            serde_json::Value::String(s.to_string())
+        }
+        _ => parse_csv_cell(s),
+    }
+}
+
+/// Heuristic CSV cell parser used when no schema type is available.
 ///
 /// Attempts, in order: JSON number, JSON boolean, then falls back to
-/// string. This gives hash consistency with Braze API responses, which
-/// return typed JSON values rather than strings for numeric/bool fields.
+/// string. This gives hash consistency with Braze API responses for
+/// fields whose schema type is unknown.
 fn parse_csv_cell(s: &str) -> serde_json::Value {
-    // Try integer first, then float.
     if let Ok(n) = s.parse::<i64>() {
         return serde_json::Value::Number(n.into());
     }
@@ -146,7 +195,6 @@ fn parse_csv_cell(s: &str) -> serde_json::Value {
             return serde_json::Value::Number(n);
         }
     }
-    // Try boolean.
     match s {
         "true" => return serde_json::Value::Bool(true),
         "false" => return serde_json::Value::Bool(false),
@@ -188,6 +236,11 @@ pub fn load_item_hashes(path: &Path) -> Result<CatalogItems> {
 
 fn load_items_inner(path: &Path, materialize_rows: bool) -> Result<CatalogItems> {
     let catalog_name = catalog_name_from_items_path(path)?;
+
+    // Load sibling schema.yaml for type-aware CSV parsing. When present,
+    // string-typed fields are never coerced to number/boolean, preventing
+    // phantom drift from values like "007" or "true".
+    let field_types = load_sibling_field_types(path);
 
     let mut reader = csv::Reader::from_path(path).map_err(|e| Error::CsvParse {
         path: path.to_path_buf(),
@@ -247,7 +300,11 @@ fn load_items_inner(path: &Path, materialize_rows: bool) -> Result<CatalogItems>
                     continue;
                 }
                 if let Some(col_name) = header_vec.get(i) {
-                    fields.insert(col_name.clone(), parse_csv_cell(val));
+                    let ft = field_types
+                        .as_ref()
+                        .and_then(|ft| ft.get(col_name.as_str()))
+                        .copied();
+                    fields.insert(col_name.clone(), parse_csv_cell_typed(val, ft));
                 }
             }
             let h = CatalogItemRow::hash_fields(&fields);
@@ -272,7 +329,11 @@ fn load_items_inner(path: &Path, materialize_rows: bool) -> Result<CatalogItems>
                     .expect("string serialization is infallible");
                 json_buf.push(b':');
                 let val = record.get(col_idx).unwrap_or("");
-                serde_json::to_writer(&mut json_buf, &parse_csv_cell(val))
+                let ft = field_types
+                    .as_ref()
+                    .and_then(|ft| ft.get(col_name))
+                    .copied();
+                serde_json::to_writer(&mut json_buf, &parse_csv_cell_typed(val, ft))
                     .expect("value serialization is infallible");
             }
             json_buf.push(b'}');
@@ -885,6 +946,107 @@ fields:
         let dir = tempfile::tempdir().unwrap();
         let err = save_items(dir.path(), "../evil", &[]).unwrap_err();
         assert!(matches!(err, Error::InvalidFormat { .. }));
+    }
+
+    fn write_schema_for_items(
+        dir: &std::path::Path,
+        catalog_name: &str,
+        fields: &[(&str, CatalogFieldType)],
+    ) {
+        let catalog = Catalog {
+            name: catalog_name.into(),
+            description: None,
+            fields: fields
+                .iter()
+                .map(|(n, t)| CatalogField {
+                    name: (*n).into(),
+                    field_type: *t,
+                })
+                .collect(),
+        };
+        save_schema(dir, &catalog).unwrap();
+    }
+
+    #[test]
+    fn schema_aware_parsing_preserves_leading_zeros() {
+        let dir = tempfile::tempdir().unwrap();
+        write_schema_for_items(dir.path(), "codes", &[("code", CatalogFieldType::String)]);
+        write_items_csv(dir.path(), "codes", "id,code\na,007\nb,00123\n");
+
+        let loaded = load_items(&dir.path().join("codes/items.csv")).unwrap();
+        let rows = loaded.rows.as_ref().unwrap();
+        assert_eq!(rows[0].fields["code"], serde_json::json!("007"));
+        assert_eq!(rows[1].fields["code"], serde_json::json!("00123"));
+    }
+
+    #[test]
+    fn schema_aware_parsing_preserves_boolean_looking_strings() {
+        let dir = tempfile::tempdir().unwrap();
+        write_schema_for_items(dir.path(), "bools", &[("label", CatalogFieldType::String)]);
+        write_items_csv(dir.path(), "bools", "id,label\na,true\nb,false\n");
+
+        let loaded = load_items(&dir.path().join("bools/items.csv")).unwrap();
+        let rows = loaded.rows.as_ref().unwrap();
+        assert_eq!(rows[0].fields["label"], serde_json::json!("true"));
+        assert_eq!(rows[1].fields["label"], serde_json::json!("false"));
+    }
+
+    #[test]
+    fn schema_aware_number_field_still_parses_numbers() {
+        let dir = tempfile::tempdir().unwrap();
+        write_schema_for_items(dir.path(), "nums", &[("score", CatalogFieldType::Number)]);
+        write_items_csv(dir.path(), "nums", "id,score\na,42\nb,1.5\n");
+
+        let loaded = load_items(&dir.path().join("nums/items.csv")).unwrap();
+        let rows = loaded.rows.as_ref().unwrap();
+        assert_eq!(rows[0].fields["score"], serde_json::json!(42));
+        assert_eq!(rows[1].fields["score"], serde_json::json!(1.5));
+    }
+
+    #[test]
+    fn no_schema_falls_back_to_heuristic() {
+        let dir = tempfile::tempdir().unwrap();
+        // No schema.yaml, just items.csv
+        write_items_csv(dir.path(), "bare", "id,val\na,007\nb,hello\n");
+
+        let loaded = load_items(&dir.path().join("bare/items.csv")).unwrap();
+        let rows = loaded.rows.as_ref().unwrap();
+        // Without schema, "007" is parsed as number 7 (heuristic)
+        assert_eq!(rows[0].fields["val"], serde_json::json!(7));
+        assert_eq!(rows[1].fields["val"], serde_json::json!("hello"));
+    }
+
+    #[test]
+    fn schema_aware_hash_only_matches_materialize_path() {
+        let dir = tempfile::tempdir().unwrap();
+        write_schema_for_items(
+            dir.path(),
+            "mixed",
+            &[
+                ("code", CatalogFieldType::String),
+                ("count", CatalogFieldType::Number),
+                ("active", CatalogFieldType::Boolean),
+            ],
+        );
+        write_items_csv(dir.path(), "mixed", "id,code,count,active\na,007,42,true\n");
+
+        let csv_path = dir.path().join("mixed/items.csv");
+        let full = load_items(&csv_path).unwrap();
+        let hashes_only = load_item_hashes(&csv_path).unwrap();
+        assert_eq!(full.item_hashes, hashes_only.item_hashes);
+        // Verify the string field was not coerced
+        let row = &full.rows.as_ref().unwrap()[0];
+        assert_eq!(row.fields["code"], serde_json::json!("007"));
+    }
+
+    #[test]
+    fn empty_csv_cell_becomes_empty_string() {
+        let dir = tempfile::tempdir().unwrap();
+        write_items_csv(dir.path(), "empty_cell", "id,name\na,\n");
+
+        let loaded = load_items(&dir.path().join("empty_cell/items.csv")).unwrap();
+        let rows = loaded.rows.as_ref().unwrap();
+        assert_eq!(rows[0].fields["name"], serde_json::json!(""));
     }
 
     #[test]

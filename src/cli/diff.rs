@@ -73,15 +73,14 @@ pub async fn run(
                 summary.diffs.extend(diffs);
             }
             ResourceKind::CatalogItems => {
-                let (diffs, _map) =
-                    compute_catalog_items_diffs(
-                        &client,
-                        &catalogs_root,
-                        args.name.as_deref(),
-                        false,
-                    )
-                    .await
-                    .context("computing catalog_items diff")?;
+                let (diffs, _map) = compute_catalog_items_diffs(
+                    &client,
+                    &catalogs_root,
+                    args.name.as_deref(),
+                    false,
+                )
+                .await
+                .context("computing catalog_items diff")?;
                 summary.diffs.extend(diffs);
             }
             ResourceKind::EmailTemplate => {

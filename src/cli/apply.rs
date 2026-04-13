@@ -86,15 +86,14 @@ pub async fn run(
                 summary.diffs.extend(diffs);
             }
             ResourceKind::CatalogItems => {
-                let (diffs, local_map) =
-                    compute_catalog_items_diffs(
-                        &client,
-                        &catalogs_root,
-                        args.name.as_deref(),
-                        true,
-                    )
-                    .await
-                    .context("computing catalog_items plan")?;
+                let (diffs, local_map) = compute_catalog_items_diffs(
+                    &client,
+                    &catalogs_root,
+                    args.name.as_deref(),
+                    true,
+                )
+                .await
+                .context("computing catalog_items plan")?;
                 summary.diffs.extend(diffs);
                 catalog_items_local = Some(local_map);
             }
@@ -171,8 +170,7 @@ pub async fn run(
                         d.catalog_name
                     )
                 })?;
-                applied +=
-                    apply_catalog_items(&client, d, local, parallel_batches).await?;
+                applied += apply_catalog_items(&client, d, local, parallel_batches).await?;
             }
             ResourceDiff::ContentBlock(d) => {
                 applied += apply_content_block(
@@ -471,9 +469,7 @@ async fn apply_catalog_items(
                 client
                     .upsert_catalog_items(&catalog_name, &batch)
                     .await
-                    .with_context(|| {
-                        format!("upserting items batch for catalog '{catalog_name}'")
-                    })
+                    .with_context(|| format!("upserting items batch for catalog '{catalog_name}'"))
             }
         })
         .await?;
@@ -495,9 +491,7 @@ async fn apply_catalog_items(
                 client
                     .delete_catalog_items(&catalog_name, &batch)
                     .await
-                    .with_context(|| {
-                        format!("deleting items batch for catalog '{catalog_name}'")
-                    })
+                    .with_context(|| format!("deleting items batch for catalog '{catalog_name}'"))
             }
         })
         .await?;

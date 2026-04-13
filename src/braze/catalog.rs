@@ -25,6 +25,10 @@ struct CatalogsResponse {
     next_cursor: Option<String>,
 }
 
+/// Safety cap for catalog items pagination: 2000 pages × 50 items/page
+/// = 100k items, matching Braze's documented catalog size limit.
+const MAX_CATALOG_ITEM_PAGES: usize = 2_000;
+
 impl BrazeClient {
     /// `GET /catalogs` — list every catalog schema in the workspace.
     ///
@@ -115,14 +119,28 @@ impl BrazeClient {
     /// every cursor until exhausted. Unlike `list_catalogs` (which
     /// fails closed on pagination), catalog items actively paginates
     /// because catalogs can hold 10k–100k items.
+    ///
+    /// Caps at [`MAX_CATALOG_ITEM_PAGES`] pages to prevent infinite loops
+    /// from a buggy server that keeps returning the same cursor.
     pub async fn list_catalog_items(
         &self,
         catalog_name: &str,
     ) -> Result<Vec<CatalogItemRow>, BrazeApiError> {
         let mut all_items = Vec::new();
         let mut cursor: Option<String> = None;
+        let mut page: usize = 0;
 
         loop {
+            page += 1;
+            if page > MAX_CATALOG_ITEM_PAGES {
+                return Err(BrazeApiError::Http {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    body: format!(
+                        "catalog '{catalog_name}' pagination exceeded \
+                         {MAX_CATALOG_ITEM_PAGES} pages; aborting to prevent infinite loop"
+                    ),
+                });
+            }
             let mut req = self.get(&["catalogs", catalog_name, "items"]);
             if let Some(c) = &cursor {
                 req = req.query(&[("cursor", c.as_str())]);

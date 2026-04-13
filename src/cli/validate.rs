@@ -243,8 +243,7 @@ fn validate_email_templates(
     email_templates_root: &Path,
     issues: &mut Vec<ValidationIssue>,
 ) -> anyhow::Result<()> {
-    let Some(read_dir) = open_resource_dir(email_templates_root, "email_templates", issues)?
-    else {
+    let Some(read_dir) = open_resource_dir(email_templates_root, "email_templates", issues)? else {
         return Ok(());
     };
 
