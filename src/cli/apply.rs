@@ -397,13 +397,8 @@ async fn apply_catalog_items(
                 catalog_name
             )
         })?;
-        let upsert_set: std::collections::HashSet<&str> =
-            upsert_ids.iter().copied().collect();
         let row_by_id: std::collections::HashMap<&str, &crate::resource::CatalogItemRow> =
-            rows.iter()
-                .filter(|r| upsert_set.contains(r.id.as_str()))
-                .map(|r| (r.id.as_str(), r))
-                .collect();
+            rows.iter().map(|r| (r.id.as_str(), r)).collect();
 
         let pb = indicatif::ProgressBar::new(upsert_ids.len() as u64);
         pb.set_style(
@@ -453,12 +448,20 @@ async fn apply_catalog_items(
 
     let mut delete_count: usize = 0;
     if !d.removed_ids.is_empty() {
+        let pb = indicatif::ProgressBar::new(d.removed_ids.len() as u64);
+        pb.set_style(
+            indicatif::ProgressStyle::default_bar()
+                .template("{spinner:.red} [{elapsed_precise}] {bar:40} {pos}/{len} deletes")
+                .unwrap(),
+        );
+
         delete_count = futures::stream::iter(d.removed_ids.chunks(ITEMS_BATCH_SIZE).map(
             |chunk| {
                 let batch = chunk.to_vec();
                 let client = client.clone();
                 let catalog_name = catalog_name.clone();
                 let batch_len = batch.len();
+                let pb = pb.clone();
                 async move {
                     tracing::info!(
                         catalog = %catalog_name,
@@ -471,6 +474,7 @@ async fn apply_catalog_items(
                         .with_context(|| {
                             format!("deleting items batch for catalog '{catalog_name}'")
                         })?;
+                    pb.inc(batch_len as u64);
                     Ok::<usize, anyhow::Error>(batch_len)
                 }
             },
@@ -478,6 +482,8 @@ async fn apply_catalog_items(
         .buffer_unordered(concurrency)
         .try_fold(0usize, |acc, n| async move { Ok(acc + n) })
         .await?;
+
+        pb.finish_and_clear();
     }
 
     Ok(upsert_count + delete_count)
