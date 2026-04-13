@@ -13,7 +13,7 @@
 //! ```
 
 use crate::error::{Error, Result};
-use crate::fs::{validate_resource_name, write_atomic};
+use crate::fs::{try_read_resource_dir, validate_resource_name, write_atomic};
 use crate::resource::{Catalog, CatalogItemRow, CatalogItems};
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
@@ -38,20 +38,8 @@ const SCHEMA_FILE_NAME: &str = "schema.yaml";
 ///   `Err(InvalidFormat)`. Stopping here makes diff / apply correctness
 ///   trivially debuggable.
 pub fn load_all_schemas(catalogs_root: &Path) -> Result<Vec<Catalog>> {
-    let read_dir = match std::fs::read_dir(catalogs_root) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => {
-            // read_dir on a file (not a dir) returns an OS-specific error;
-            // surface it as InvalidFormat for a clearer message.
-            if catalogs_root.is_file() {
-                return Err(Error::InvalidFormat {
-                    path: catalogs_root.to_path_buf(),
-                    message: "expected a directory for the catalogs root".into(),
-                });
-            }
-            return Err(e.into());
-        }
+    let Some(read_dir) = try_read_resource_dir(catalogs_root, "catalogs")? else {
+        return Ok(Vec::new());
     };
 
     let mut schemas = Vec::new();
@@ -416,18 +404,8 @@ pub fn load_all_item_hashes(catalogs_root: &Path) -> Result<Vec<CatalogItems>> {
 }
 
 fn load_all_items_inner(catalogs_root: &Path, materialize_rows: bool) -> Result<Vec<CatalogItems>> {
-    let read_dir = match std::fs::read_dir(catalogs_root) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => {
-            if catalogs_root.is_file() {
-                return Err(Error::InvalidFormat {
-                    path: catalogs_root.to_path_buf(),
-                    message: "expected a directory for the catalogs root".into(),
-                });
-            }
-            return Err(e.into());
-        }
+    let Some(read_dir) = try_read_resource_dir(catalogs_root, "catalogs")? else {
+        return Ok(Vec::new());
     };
 
     let mut items_list = Vec::new();

@@ -381,6 +381,39 @@ fn items_progress_bar(total: u64, label: &str, color: &str) -> indicatif::Progre
     pb
 }
 
+/// Run a batch operation over `items` in chunks of [`ITEMS_BATCH_SIZE`],
+/// fanning out up to `concurrency` in-flight requests. Returns the total
+/// number of items processed.
+async fn run_batched<T, F, Fut>(
+    items: &[T],
+    concurrency: usize,
+    pb: &indicatif::ProgressBar,
+    batch_fn: F,
+) -> anyhow::Result<usize>
+where
+    T: Clone + Send + Sync + 'static,
+    F: Fn(Vec<T>) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let count = futures::stream::iter(items.chunks(ITEMS_BATCH_SIZE).map(|chunk| {
+        let batch = chunk.to_vec();
+        let batch_len = batch.len();
+        let fut = batch_fn(batch);
+        let pb = pb.clone();
+        async move {
+            fut.await?;
+            pb.inc(batch_len as u64);
+            Ok::<usize, anyhow::Error>(batch_len)
+        }
+    }))
+    .buffer_unordered(concurrency)
+    .try_fold(0usize, |acc, n| async move { Ok(acc + n) })
+    .await?;
+
+    pb.finish_and_clear();
+    Ok(count)
+}
+
 async fn apply_catalog_items(
     client: &BrazeClient,
     d: &CatalogItemsDiff,
@@ -412,80 +445,60 @@ async fn apply_catalog_items(
         let row_by_id: std::collections::HashMap<&str, &crate::resource::CatalogItemRow> =
             rows.iter().map(|r| (r.id.as_str(), r)).collect();
 
-        let pb = items_progress_bar(upsert_ids.len() as u64, "items", "green");
+        let upsert_rows: Vec<crate::resource::CatalogItemRow> = upsert_ids
+            .iter()
+            .map(|&id| {
+                (*row_by_id
+                    .get(id)
+                    .expect("item in diff but missing from local rows"))
+                .clone()
+            })
+            .collect();
 
-        upsert_count = futures::stream::iter(upsert_ids.chunks(ITEMS_BATCH_SIZE).map(
-            |chunk| {
-                let batch: Vec<crate::resource::CatalogItemRow> = chunk
-                    .iter()
-                    .map(|&id| {
-                        (*row_by_id
-                            .get(id)
-                            .expect("item in diff but missing from local rows"))
-                        .clone()
+        let pb = items_progress_bar(upsert_rows.len() as u64, "items", "green");
+
+        upsert_count = run_batched(&upsert_rows, concurrency, &pb, |batch| {
+            let client = client.clone();
+            let catalog_name = catalog_name.clone();
+            async move {
+                tracing::info!(
+                    catalog = %catalog_name,
+                    batch_size = batch.len(),
+                    "upserting catalog items batch"
+                );
+                client
+                    .upsert_catalog_items(&catalog_name, &batch)
+                    .await
+                    .with_context(|| {
+                        format!("upserting items batch for catalog '{catalog_name}'")
                     })
-                    .collect();
-                let client = client.clone();
-                let catalog_name = catalog_name.clone();
-                let batch_len = batch.len();
-                let pb = pb.clone();
-                async move {
-                    tracing::info!(
-                        catalog = %catalog_name,
-                        batch_size = batch_len,
-                        "upserting catalog items batch"
-                    );
-                    client
-                        .upsert_catalog_items(&catalog_name, &batch)
-                        .await
-                        .with_context(|| {
-                            format!("upserting items batch for catalog '{catalog_name}'")
-                        })?;
-                    pb.inc(batch_len as u64);
-                    Ok::<usize, anyhow::Error>(batch_len)
-                }
-            },
-        ))
-        .buffer_unordered(concurrency)
-        .try_fold(0usize, |acc, n| async move { Ok(acc + n) })
+            }
+        })
         .await?;
-
-        pb.finish_and_clear();
     }
 
     let mut delete_count: usize = 0;
     if !d.removed_ids.is_empty() {
         let pb = items_progress_bar(d.removed_ids.len() as u64, "deletes", "red");
 
-        delete_count = futures::stream::iter(d.removed_ids.chunks(ITEMS_BATCH_SIZE).map(
-            |chunk| {
-                let batch = chunk.to_vec();
-                let client = client.clone();
-                let catalog_name = catalog_name.clone();
-                let batch_len = batch.len();
-                let pb = pb.clone();
-                async move {
-                    tracing::info!(
-                        catalog = %catalog_name,
-                        batch_size = batch_len,
-                        "deleting catalog items batch"
-                    );
-                    client
-                        .delete_catalog_items(&catalog_name, &batch)
-                        .await
-                        .with_context(|| {
-                            format!("deleting items batch for catalog '{catalog_name}'")
-                        })?;
-                    pb.inc(batch_len as u64);
-                    Ok::<usize, anyhow::Error>(batch_len)
-                }
-            },
-        ))
-        .buffer_unordered(concurrency)
-        .try_fold(0usize, |acc, n| async move { Ok(acc + n) })
+        delete_count = run_batched(&d.removed_ids, concurrency, &pb, |batch| {
+            let client = client.clone();
+            let catalog_name = catalog_name.clone();
+            async move {
+                tracing::info!(
+                    catalog = %catalog_name,
+                    batch_size = batch.len(),
+                    "deleting catalog items batch"
+                );
+                client
+                    .delete_catalog_items(&catalog_name, &batch)
+                    .await
+                    .with_context(|| {
+                        format!("deleting items batch for catalog '{catalog_name}'")
+                    })
+            }
+        })
         .await?;
-
-        pb.finish_and_clear();
     }
 
     Ok(upsert_count + delete_count)

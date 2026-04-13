@@ -6,7 +6,7 @@
 //! shouldn't have to scroll past `tags:` to see what they're changing.
 
 use crate::error::{Error, Result};
-use crate::fs::{frontmatter, validate_resource_name, write_atomic};
+use crate::fs::{frontmatter, try_read_resource_dir, validate_resource_name, write_atomic};
 use crate::resource::{ContentBlock, ContentBlockState};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -39,18 +39,8 @@ struct Frontmatter {
 /// Missing root is not an error. Each file's stem must match its
 /// frontmatter `name:` — divergence is treated as a hard parse error.
 pub fn load_all_content_blocks(root: &Path) -> Result<Vec<ContentBlock>> {
-    let read_dir = match std::fs::read_dir(root) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => {
-            if root.is_file() {
-                return Err(Error::InvalidFormat {
-                    path: root.to_path_buf(),
-                    message: "expected a directory for the content_blocks root".into(),
-                });
-            }
-            return Err(e.into());
-        }
+    let Some(read_dir) = try_read_resource_dir(root, "content_blocks")? else {
+        return Ok(Vec::new());
     };
 
     let mut blocks = Vec::new();
