@@ -397,7 +397,6 @@ async fn apply_catalog_items(
                 catalog_name
             )
         })?;
-        // Only index the rows we actually need to upsert, not the entire catalog.
         let needed: std::collections::HashSet<&str> =
             upsert_ids.iter().copied().collect();
         let row_by_id: std::collections::HashMap<&str, &crate::resource::CatalogItemRow> =
@@ -415,10 +414,8 @@ async fn apply_catalog_items(
                 .unwrap(),
         );
 
-        // Build batches lazily inside the stream so only `concurrency`
-        // batches of cloned rows live in memory at a time.
-        let batch_counts: Vec<usize> =
-            futures::stream::iter(upsert_ids.chunks(ITEMS_BATCH_SIZE).map(|chunk| {
+        upsert_count = futures::stream::iter(upsert_ids.chunks(ITEMS_BATCH_SIZE).map(
+            |chunk| {
                 let batch: Vec<crate::resource::CatalogItemRow> = chunk
                     .iter()
                     .map(|&id| {
@@ -447,20 +444,19 @@ async fn apply_catalog_items(
                     pb.inc(batch_len as u64);
                     Ok::<usize, anyhow::Error>(batch_len)
                 }
-            }))
-            .buffer_unordered(concurrency)
-            .try_collect::<Vec<usize>>()
-            .await?;
-        upsert_count = batch_counts.into_iter().sum();
+            },
+        ))
+        .buffer_unordered(concurrency)
+        .try_fold(0usize, |acc, n| async move { Ok(acc + n) })
+        .await?;
 
         pb.finish_and_clear();
     }
 
-    // No destructive check here — already gated by --allow-destructive before the apply loop.
     let mut delete_count: usize = 0;
     if !d.removed_ids.is_empty() {
-        let batch_counts: Vec<usize> =
-            futures::stream::iter(d.removed_ids.chunks(ITEMS_BATCH_SIZE).map(|chunk| {
+        delete_count = futures::stream::iter(d.removed_ids.chunks(ITEMS_BATCH_SIZE).map(
+            |chunk| {
                 let batch = chunk.to_vec();
                 let client = client.clone();
                 let catalog_name = catalog_name.clone();
@@ -479,11 +475,11 @@ async fn apply_catalog_items(
                         })?;
                     Ok::<usize, anyhow::Error>(batch_len)
                 }
-            }))
-            .buffer_unordered(concurrency)
-            .try_collect::<Vec<usize>>()
-            .await?;
-        delete_count = batch_counts.into_iter().sum();
+            },
+        ))
+        .buffer_unordered(concurrency)
+        .try_fold(0usize, |acc, n| async move { Ok(acc + n) })
+        .await?;
     }
 
     Ok(upsert_count + delete_count)
