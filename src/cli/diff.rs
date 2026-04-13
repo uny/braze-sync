@@ -375,9 +375,9 @@ pub(crate) async fn compute_catalog_items_diffs(
     all_names.extend(local_map.keys().cloned());
     all_names.extend(remote_catalog_names);
 
-    // Fan out remote item fetches in parallel. Hash rows inside the
-    // closure so full row data is dropped immediately after each fetch,
-    // rather than all catalogs' rows living in memory simultaneously.
+    // Hash rows inside the closure so full row data is dropped
+    // immediately after each fetch, rather than all catalogs' rows
+    // living in memory simultaneously.
     let fetched: HashMap<String, Option<HashMap<String, String>>> =
         futures::stream::iter(all_names.iter().map(|name| {
             let client = client.clone();
