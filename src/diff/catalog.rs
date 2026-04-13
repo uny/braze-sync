@@ -331,10 +331,6 @@ mod tests {
         assert!(d.has_destructive());
     }
 
-    // =============================================================
-    // diff_items tests
-    // =============================================================
-
     fn hashes(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
             .iter()

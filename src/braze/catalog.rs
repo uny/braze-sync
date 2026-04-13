@@ -111,10 +111,6 @@ impl BrazeClient {
         self.send_ok(req).await
     }
 
-    // =================================================================
-    // Catalog Items endpoints
-    // =================================================================
-
     /// `GET /catalogs/{name}/items` — list all items, paging through
     /// every cursor until exhausted. Unlike `list_catalogs` (which
     /// fails closed on pagination), catalog items actively paginates
@@ -199,10 +195,6 @@ struct WireField<'a> {
     #[serde(rename = "type")]
     field_type: CatalogFieldType,
 }
-
-// =================================================================
-// Catalog Items wire types
-// =================================================================
 
 #[derive(Debug, Deserialize)]
 struct CatalogItemsResponse {
@@ -625,10 +617,6 @@ mod tests {
             other => panic!("expected Http, got {other:?}"),
         }
     }
-
-    // =============================================================
-    // Catalog Items endpoint tests
-    // =============================================================
 
     #[tokio::test]
     async fn list_catalog_items_single_page() {

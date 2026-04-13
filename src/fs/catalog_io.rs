@@ -115,10 +115,6 @@ pub fn save_schema(catalogs_root: &Path, catalog: &Catalog) -> Result<()> {
     Ok(())
 }
 
-// =====================================================================
-// Catalog Items CSV I/O
-// =====================================================================
-
 pub(crate) const ITEMS_FILE_NAME: &str = "items.csv";
 const ITEMS_ID_COLUMN: &str = "id";
 const MISSING_ID_COLUMN_MSG: &str = "items.csv is missing required 'id' column";
@@ -703,10 +699,6 @@ fields:
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].fields.len(), 2);
     }
-
-    // =================================================================
-    // Catalog Items CSV I/O tests
-    // =================================================================
 
     fn make_row(id: &str, fields: &[(&str, serde_json::Value)]) -> CatalogItemRow {
         let mut map = serde_json::Map::new();

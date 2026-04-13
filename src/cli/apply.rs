@@ -381,9 +381,6 @@ fn items_progress_bar(total: u64, label: &str, color: &str) -> indicatif::Progre
     pb
 }
 
-/// Run a batch operation over `items` in chunks of [`ITEMS_BATCH_SIZE`],
-/// fanning out up to `concurrency` in-flight requests. Returns the total
-/// number of items processed.
 async fn run_batched<T, F, Fut>(
     items: &[T],
     concurrency: usize,
@@ -434,7 +431,7 @@ async fn apply_catalog_items(
         .map(String::as_str)
         .collect();
 
-    let mut upsert_count: usize = 0;
+    let mut upsert_count = 0;
     if !upsert_ids.is_empty() {
         let rows = local.rows.as_ref().ok_or_else(|| {
             anyhow!(
@@ -477,7 +474,7 @@ async fn apply_catalog_items(
         .await?;
     }
 
-    let mut delete_count: usize = 0;
+    let mut delete_count = 0;
     if !d.removed_ids.is_empty() {
         let pb = items_progress_bar(d.removed_ids.len() as u64, "deletes", "red");
 

@@ -7,7 +7,7 @@
 
 use crate::config::ConfigFile;
 use crate::error::Error;
-use crate::fs::{catalog_io, content_block_io, email_template_io};
+use crate::fs::{catalog_io, content_block_io, email_template_io, try_read_resource_dir};
 use crate::resource::ResourceKind;
 use anyhow::anyhow;
 use clap::Args;
@@ -88,14 +88,10 @@ fn open_resource_dir(
     kind_label: &str,
     issues: &mut Vec<ValidationIssue>,
 ) -> anyhow::Result<Option<std::fs::ReadDir>> {
-    match std::fs::read_dir(root) {
-        Ok(rd) => Ok(Some(rd)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(_) if root.is_file() => {
-            issues.push(ValidationIssue {
-                path: root.to_path_buf(),
-                message: format!("expected directory for {kind_label} root"),
-            });
+    match try_read_resource_dir(root, kind_label) {
+        Ok(rd) => Ok(rd),
+        Err(Error::InvalidFormat { path, message }) => {
+            issues.push(ValidationIssue { path, message });
             Ok(None)
         }
         Err(e) => Err(e.into()),
