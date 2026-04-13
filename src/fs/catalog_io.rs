@@ -224,12 +224,24 @@ fn load_items_inner(path: &Path, materialize_rows: bool) -> Result<CatalogItems>
             message: MISSING_ID_COLUMN_MSG.into(),
         })?;
 
+    // Pre-sort non-id columns by name so hash-only path can build JSON in
+    // the same key order as serde_json::Map (BTreeMap) without allocating a Map.
+    let mut sorted_cols: Vec<(usize, &str)> = header_vec
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != id_col)
+        .map(|(i, name)| (i, name.as_str()))
+        .collect();
+    sorted_cols.sort_by_key(|(_, name)| *name);
+
     let mut rows = if materialize_rows {
         Some(Vec::new())
     } else {
         None
     };
     let mut item_hashes = HashMap::new();
+    // Reusable buffer for building JSON on the hash-only path.
+    let mut json_buf: Vec<u8> = Vec::new();
 
     for result in reader.records() {
         let record = result.map_err(|e| Error::CsvParse {
@@ -245,20 +257,44 @@ fn load_items_inner(path: &Path, materialize_rows: bool) -> Result<CatalogItems>
             });
         }
 
-        let mut fields = serde_json::Map::new();
-        for (i, val) in record.iter().enumerate() {
-            if i == id_col {
-                continue;
+        let hash = if materialize_rows {
+            let mut fields = serde_json::Map::new();
+            for (i, val) in record.iter().enumerate() {
+                if i == id_col {
+                    continue;
+                }
+                if let Some(col_name) = header_vec.get(i) {
+                    fields.insert(col_name.clone(), parse_csv_cell(val));
+                }
             }
-            if let Some(col_name) = header_vec.get(i) {
-                fields.insert(col_name.clone(), parse_csv_cell(val));
+            let h = CatalogItemRow::hash_fields(&fields);
+            if let Some(ref mut v) = rows {
+                v.push(CatalogItemRow {
+                    id: id.clone(),
+                    fields,
+                });
             }
-        }
-
-        // Compute the content hash from fields before potentially moving them
-        // into a CatalogItemRow. This avoids an unnecessary id clone + row
-        // construction on the hash-only (diff) path.
-        let hash = CatalogItemRow::hash_fields(&fields);
+            h
+        } else {
+            // Build canonical JSON directly without allocating a serde_json::Map.
+            // Produces identical bytes to serde_json::to_vec(&map) since both
+            // emit keys in sorted order.
+            json_buf.clear();
+            json_buf.push(b'{');
+            for (j, &(col_idx, col_name)) in sorted_cols.iter().enumerate() {
+                if j > 0 {
+                    json_buf.push(b',');
+                }
+                serde_json::to_writer(&mut json_buf, col_name)
+                    .expect("string serialization is infallible");
+                json_buf.push(b':');
+                let val = record.get(col_idx).unwrap_or("");
+                serde_json::to_writer(&mut json_buf, &parse_csv_cell(val))
+                    .expect("value serialization is infallible");
+            }
+            json_buf.push(b'}');
+            blake3::hash(&json_buf).to_hex().to_string()
+        };
 
         match item_hashes.entry(id) {
             std::collections::hash_map::Entry::Occupied(e) => {
@@ -268,12 +304,6 @@ fn load_items_inner(path: &Path, materialize_rows: bool) -> Result<CatalogItems>
                 });
             }
             std::collections::hash_map::Entry::Vacant(e) => {
-                if let Some(ref mut v) = rows {
-                    v.push(CatalogItemRow {
-                        id: e.key().clone(),
-                        fields,
-                    });
-                }
                 e.insert(hash);
             }
         }
@@ -886,5 +916,34 @@ fields:
         let dir = tempfile::tempdir().unwrap();
         let err = save_items(dir.path(), "../evil", &[]).unwrap_err();
         assert!(matches!(err, Error::InvalidFormat { .. }));
+    }
+
+    #[test]
+    fn hash_only_path_matches_full_load_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let rows = vec![
+            make_row(
+                "af001",
+                &[
+                    ("name", serde_json::json!("atrial")),
+                    ("order", serde_json::json!(1)),
+                    ("flag", serde_json::json!(true)),
+                ],
+            ),
+            make_row(
+                "af002",
+                &[
+                    ("name", serde_json::json!("ventricular")),
+                    ("order", serde_json::json!(2)),
+                    ("flag", serde_json::json!(false)),
+                ],
+            ),
+        ];
+        save_items(dir.path(), "test", &rows).unwrap();
+        let csv_path = dir.path().join("test/items.csv");
+        let full = load_items(&csv_path).unwrap();
+        let hashes_only = load_item_hashes(&csv_path).unwrap();
+        assert_eq!(full.item_hashes, hashes_only.item_hashes);
+        assert!(hashes_only.rows.is_none());
     }
 }

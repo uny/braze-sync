@@ -369,6 +369,18 @@ async fn apply_catalog_schema(
 /// Batch size for catalog items upsert/delete (Braze limit).
 const ITEMS_BATCH_SIZE: usize = 50;
 
+fn items_progress_bar(total: u64, label: &str, color: &str) -> indicatif::ProgressBar {
+    let pb = indicatif::ProgressBar::new(total);
+    pb.set_style(
+        indicatif::ProgressStyle::default_bar()
+            .template(&format!(
+                "{{spinner:.{color}}} [{{elapsed_precise}}] {{bar:40}} {{pos}}/{{len}} {label}"
+            ))
+            .unwrap(),
+    );
+    pb
+}
+
 async fn apply_catalog_items(
     client: &BrazeClient,
     d: &CatalogItemsDiff,
@@ -400,12 +412,7 @@ async fn apply_catalog_items(
         let row_by_id: std::collections::HashMap<&str, &crate::resource::CatalogItemRow> =
             rows.iter().map(|r| (r.id.as_str(), r)).collect();
 
-        let pb = indicatif::ProgressBar::new(upsert_ids.len() as u64);
-        pb.set_style(
-            indicatif::ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] {bar:40} {pos}/{len} items")
-                .unwrap(),
-        );
+        let pb = items_progress_bar(upsert_ids.len() as u64, "items", "green");
 
         upsert_count = futures::stream::iter(upsert_ids.chunks(ITEMS_BATCH_SIZE).map(
             |chunk| {
@@ -448,12 +455,7 @@ async fn apply_catalog_items(
 
     let mut delete_count: usize = 0;
     if !d.removed_ids.is_empty() {
-        let pb = indicatif::ProgressBar::new(d.removed_ids.len() as u64);
-        pb.set_style(
-            indicatif::ProgressStyle::default_bar()
-                .template("{spinner:.red} [{elapsed_precise}] {bar:40} {pos}/{len} deletes")
-                .unwrap(),
-        );
+        let pb = items_progress_bar(d.removed_ids.len() as u64, "deletes", "red");
 
         delete_count = futures::stream::iter(d.removed_ids.chunks(ITEMS_BATCH_SIZE).map(
             |chunk| {
