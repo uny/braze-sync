@@ -224,7 +224,6 @@ fn load_items_inner(path: &Path, materialize_rows: bool) -> Result<CatalogItems>
         None
     };
     let mut item_hashes = HashMap::new();
-    // Reusable buffer for building JSON on the hash-only path.
     let mut json_buf: Vec<u8> = Vec::new();
 
     for result in reader.records() {

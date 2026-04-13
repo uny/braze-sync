@@ -382,18 +382,23 @@ fn items_progress_bar(total: u64, label: &str, color: &str) -> indicatif::Progre
 }
 
 async fn run_batched<T, F, Fut>(
-    items: &[T],
+    items: Vec<T>,
     concurrency: usize,
     pb: &indicatif::ProgressBar,
     batch_fn: F,
 ) -> anyhow::Result<usize>
 where
-    T: Clone + Send + Sync + 'static,
+    T: Send + Sync + 'static,
     F: Fn(Vec<T>) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<()>>,
 {
-    let count = futures::stream::iter(items.chunks(ITEMS_BATCH_SIZE).map(|chunk| {
-        let batch = chunk.to_vec();
+    let mut batches: Vec<Vec<T>> = Vec::new();
+    let mut iter = items.into_iter().peekable();
+    while iter.peek().is_some() {
+        batches.push(iter.by_ref().take(ITEMS_BATCH_SIZE).collect());
+    }
+
+    let count = futures::stream::iter(batches.into_iter().map(|batch| {
         let batch_len = batch.len();
         let fut = batch_fn(batch);
         let pb = pb.clone();
@@ -454,7 +459,7 @@ async fn apply_catalog_items(
 
         let pb = items_progress_bar(upsert_rows.len() as u64, "items", "green");
 
-        upsert_count = run_batched(&upsert_rows, concurrency, &pb, |batch| {
+        upsert_count = run_batched(upsert_rows, concurrency, &pb, |batch| {
             let client = client.clone();
             let catalog_name = catalog_name.clone();
             async move {
@@ -478,7 +483,7 @@ async fn apply_catalog_items(
     if !d.removed_ids.is_empty() {
         let pb = items_progress_bar(d.removed_ids.len() as u64, "deletes", "red");
 
-        delete_count = run_batched(&d.removed_ids, concurrency, &pb, |batch| {
+        delete_count = run_batched(d.removed_ids.clone(), concurrency, &pb, |batch| {
             let client = client.clone();
             let catalog_name = catalog_name.clone();
             async move {
