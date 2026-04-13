@@ -17,6 +17,30 @@ pub mod frontmatter;
 use crate::error::{Error, Result};
 use std::path::{Path, PathBuf};
 
+/// Try to open a resource root directory for reading.
+///
+/// Returns `Ok(None)` when the path does not exist (a valid state for a
+/// fresh project), `Err(InvalidFormat)` when the path is a file, or
+/// `Ok(Some(ReadDir))` on success.
+pub(crate) fn try_read_resource_dir(
+    root: &Path,
+    kind_label: &str,
+) -> Result<Option<std::fs::ReadDir>> {
+    match std::fs::read_dir(root) {
+        Ok(rd) => Ok(Some(rd)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => {
+            if root.is_file() {
+                return Err(Error::InvalidFormat {
+                    path: root.to_path_buf(),
+                    message: format!("expected a directory for the {kind_label} root"),
+                });
+            }
+            Err(e.into())
+        }
+    }
+}
+
 /// Reject names that would escape the resource root or otherwise
 /// confuse the on-disk layout. Used by every resource writer as a last
 /// line of defence on top of the validate command's pattern check.

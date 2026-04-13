@@ -221,7 +221,6 @@ resources:
     path: catalogs/
   catalog_items:
     enabled: true
-    path: catalogs/
     parallel_batches: 8
   content_block:
     enabled: true

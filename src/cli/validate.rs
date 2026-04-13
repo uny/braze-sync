@@ -7,14 +7,14 @@
 
 use crate::config::ConfigFile;
 use crate::error::Error;
-use crate::fs::{catalog_io, content_block_io, email_template_io};
+use crate::fs::{catalog_io, content_block_io, email_template_io, try_read_resource_dir};
 use crate::resource::ResourceKind;
 use anyhow::anyhow;
 use clap::Args;
 use regex_lite::Regex;
 use std::path::{Path, PathBuf};
 
-use super::{selected_kinds, warn_unimplemented};
+use super::selected_kinds;
 
 #[derive(Args, Debug)]
 pub struct ValidateArgs {
@@ -52,11 +52,18 @@ pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> an
                     &mut issues,
                 )?;
             }
+            ResourceKind::CatalogItems => {
+                let catalogs_root = config_dir.join(&cfg.resources.catalog_schema.path);
+                validate_catalog_items(&catalogs_root, &mut issues)?;
+            }
             ResourceKind::EmailTemplate => {
                 let email_templates_root = config_dir.join(&cfg.resources.email_template.path);
                 validate_email_templates(&email_templates_root, &mut issues)?;
             }
-            other => warn_unimplemented(other),
+            ResourceKind::CustomAttribute => {
+                // Not yet implemented in this binary version.
+                tracing::debug!("custom_attribute validation not yet implemented");
+            }
         }
     }
 
@@ -73,22 +80,31 @@ pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> an
     Err(Error::Config(format!("{} validation issue(s) found", issues.len())).into())
 }
 
+/// Try to open a resource root directory. Returns `None` (and pushes an
+/// issue) when the path is missing or is a file — callers should return
+/// `Ok(())` in that case.
+fn open_resource_dir(
+    root: &Path,
+    kind_label: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> anyhow::Result<Option<std::fs::ReadDir>> {
+    match try_read_resource_dir(root, kind_label) {
+        Ok(rd) => Ok(rd),
+        Err(Error::InvalidFormat { path, message }) => {
+            issues.push(ValidationIssue { path, message });
+            Ok(None)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
 fn validate_catalog_schemas(
     catalogs_root: &Path,
     name_pattern: Option<&str>,
     issues: &mut Vec<ValidationIssue>,
 ) -> anyhow::Result<()> {
-    let read_dir = match std::fs::read_dir(catalogs_root) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(_) if catalogs_root.is_file() => {
-            issues.push(ValidationIssue {
-                path: catalogs_root.to_path_buf(),
-                message: "expected directory for catalogs root".into(),
-            });
-            return Ok(());
-        }
-        Err(e) => return Err(e.into()),
+    let Some(read_dir) = open_resource_dir(catalogs_root, "catalogs", issues)? else {
+        return Ok(());
     };
 
     let pattern: Option<(String, Regex)> = match name_pattern {
@@ -157,17 +173,8 @@ fn validate_content_blocks(
     name_pattern: Option<&str>,
     issues: &mut Vec<ValidationIssue>,
 ) -> anyhow::Result<()> {
-    let read_dir = match std::fs::read_dir(content_blocks_root) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(_) if content_blocks_root.is_file() => {
-            issues.push(ValidationIssue {
-                path: content_blocks_root.to_path_buf(),
-                message: "expected directory for the content_blocks root".into(),
-            });
-            return Ok(());
-        }
-        Err(e) => return Err(e.into()),
+    let Some(read_dir) = open_resource_dir(content_blocks_root, "content_blocks", issues)? else {
+        return Ok(());
     };
 
     let pattern: Option<(String, Regex)> = match name_pattern {
@@ -236,17 +243,8 @@ fn validate_email_templates(
     email_templates_root: &Path,
     issues: &mut Vec<ValidationIssue>,
 ) -> anyhow::Result<()> {
-    let read_dir = match std::fs::read_dir(email_templates_root) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(_) if email_templates_root.is_file() => {
-            issues.push(ValidationIssue {
-                path: email_templates_root.to_path_buf(),
-                message: "expected directory for the email_templates root".into(),
-            });
-            return Ok(());
-        }
-        Err(e) => return Err(e.into()),
+    let Some(read_dir) = open_resource_dir(email_templates_root, "email_templates", issues)? else {
+        return Ok(());
     };
 
     for entry in read_dir {
@@ -288,6 +286,83 @@ fn validate_email_templates(
                 path: template_yaml_path.clone(),
                 message: format!("email template '{}' has an empty subject", et.name),
             });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_catalog_items(
+    catalogs_root: &Path,
+    issues: &mut Vec<ValidationIssue>,
+) -> anyhow::Result<()> {
+    let Some(read_dir) = open_resource_dir(catalogs_root, "catalogs", issues)? else {
+        return Ok(());
+    };
+
+    for entry in read_dir {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let dir = entry.path();
+        let items_path = dir.join(catalog_io::ITEMS_FILE_NAME);
+        if !items_path.is_file() {
+            continue;
+        }
+
+        // Read only the CSV header — avoids materializing all rows.
+        let (catalog_name, csv_columns) = match catalog_io::read_item_csv_columns(&items_path) {
+            Ok(result) => result,
+            Err(e) => {
+                issues.push(ValidationIssue {
+                    path: items_path.clone(),
+                    message: format!("parse error: {e}"),
+                });
+                continue;
+            }
+        };
+
+        // Cross-check CSV header columns against sibling schema.yaml, if present.
+        let schema_path = dir.join("schema.yaml");
+        if schema_path.is_file() {
+            let schema = match catalog_io::read_schema_file(&schema_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    issues.push(ValidationIssue {
+                        path: schema_path.clone(),
+                        message: format!("cannot parse schema.yaml: {e}"),
+                    });
+                    continue;
+                }
+            };
+            let schema_field_names: std::collections::BTreeSet<&str> =
+                schema.fields.iter().map(|f| f.name.as_str()).collect();
+            let csv_field_names: std::collections::BTreeSet<&str> =
+                csv_columns.iter().map(String::as_str).collect();
+
+            for col in &csv_field_names {
+                if !schema_field_names.contains(col) {
+                    issues.push(ValidationIssue {
+                        path: items_path.clone(),
+                        message: format!(
+                            "CSV column '{}' is not in schema for catalog '{}'",
+                            col, catalog_name
+                        ),
+                    });
+                }
+            }
+            for field in &schema_field_names {
+                if !csv_field_names.contains(field) {
+                    issues.push(ValidationIssue {
+                        path: items_path.clone(),
+                        message: format!(
+                            "schema field '{}' is missing from CSV for catalog '{}'",
+                            field, catalog_name
+                        ),
+                    });
+                }
+            }
         }
     }
 

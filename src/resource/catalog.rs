@@ -1,7 +1,7 @@
 //! Catalog Schema and Catalog Items domain types. See IMPLEMENTATION.md §6.2.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Catalog {
@@ -67,11 +67,11 @@ impl Catalog {
 /// Catalog Items are streamed: we keep an item-id → content-hash index in
 /// memory (cheap, ~64 bytes/row) and only materialize the full rows when an
 /// `apply` actually needs to write them. See IMPLEMENTATION.md §6.2 / §11.2.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct CatalogItems {
     pub catalog_name: String,
     /// item id → blake3 content hash of the normalized non-id field map.
-    pub item_hashes: BTreeMap<String, String>,
+    pub item_hashes: HashMap<String, String>,
     /// Materialized rows. `None` until a streaming reader populates them.
     pub rows: Option<Vec<CatalogItemRow>>,
 }
@@ -89,8 +89,15 @@ impl CatalogItemRow {
     /// emitted in sorted order by `serde_json` for `serde_json::Map`, so the
     /// hash is independent of source field ordering.
     pub fn content_hash(&self) -> String {
+        Self::hash_fields(&self.fields)
+    }
+
+    /// Compute the content hash from a fields map without requiring a full
+    /// `CatalogItemRow`. Used on the diff-only path to avoid constructing
+    /// and cloning row structs that would be immediately discarded.
+    pub fn hash_fields(fields: &serde_json::Map<String, serde_json::Value>) -> String {
         let canonical =
-            serde_json::to_vec(&self.fields).expect("serde_json::Map serialization is infallible");
+            serde_json::to_vec(fields).expect("serde_json::Map serialization is infallible");
         blake3::hash(&canonical).to_hex().to_string()
     }
 }

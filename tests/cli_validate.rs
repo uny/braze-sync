@@ -11,7 +11,7 @@ mod common;
 use assert_cmd::Command;
 use common::{
     write_config_for_validate as write_config, write_content_block_raw, write_local_content_block,
-    write_local_email_template, write_schema_raw,
+    write_local_email_template, write_local_items, write_local_schema, write_schema_raw,
 };
 
 #[test]
@@ -290,4 +290,75 @@ fn validate_email_template_does_not_require_braze_api_key() {
         .args(["validate", "--resource", "email_template"])
         .assert()
         .success();
+}
+
+#[test]
+fn validate_catalog_items_passes_when_csv_matches_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = write_config(dir.path(), None, None);
+    write_local_schema(
+        dir.path(),
+        "cardiology",
+        &[("name", "string"), ("order", "number")],
+    );
+    write_local_items(dir.path(), "cardiology", "id,name,order\naf001,atrial,1\n");
+
+    Command::cargo_bin("braze-sync")
+        .unwrap()
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["validate", "--resource", "catalog_items"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn validate_catalog_items_reports_extra_csv_column() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = write_config(dir.path(), None, None);
+    write_local_schema(dir.path(), "cardiology", &[("name", "string")]);
+    write_local_items(
+        dir.path(),
+        "cardiology",
+        "id,name,extra_col\naf001,atrial,bonus\n",
+    );
+
+    let output = Command::cargo_bin("braze-sync")
+        .unwrap()
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["validate", "--resource", "catalog_items"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("extra_col"),
+        "should report extra column; stderr: {stderr}"
+    );
+}
+
+#[test]
+fn validate_catalog_items_reports_missing_schema_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = write_config(dir.path(), None, None);
+    write_local_schema(
+        dir.path(),
+        "cardiology",
+        &[("name", "string"), ("score", "number")],
+    );
+    write_local_items(dir.path(), "cardiology", "id,name\naf001,atrial\n");
+
+    let output = Command::cargo_bin("braze-sync")
+        .unwrap()
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["validate", "--resource", "catalog_items"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("score"),
+        "should report missing field; stderr: {stderr}"
+    );
 }

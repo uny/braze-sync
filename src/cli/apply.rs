@@ -11,22 +11,25 @@
 
 use crate::braze::BrazeClient;
 use crate::config::ResolvedConfig;
-use crate::diff::catalog::CatalogSchemaDiff;
+use crate::diff::catalog::{CatalogItemsDiff, CatalogSchemaDiff};
 use crate::diff::content_block::{ContentBlockDiff, ContentBlockIdIndex};
 use crate::diff::email_template::{EmailTemplateDiff, EmailTemplateIdIndex};
 use crate::diff::orphan;
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::error::Error;
 use crate::format::OutputFormat;
-use crate::resource::ResourceKind;
+use crate::resource::{CatalogItems, ResourceKind};
 use anyhow::{anyhow, Context as _};
 use clap::Args;
+use futures::stream::{StreamExt, TryStreamExt};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use super::diff::{
-    compute_catalog_schema_diffs, compute_content_block_plan, compute_email_template_plan,
+    compute_catalog_items_diffs, compute_catalog_schema_diffs, compute_content_block_plan,
+    compute_email_template_plan,
 };
-use super::{selected_kinds, warn_unimplemented};
+use super::selected_kinds;
 
 #[derive(Args, Debug)]
 pub struct ApplyArgs {
@@ -72,6 +75,7 @@ pub async fn run(
     let mut summary = DiffSummary::default();
     let mut content_block_id_index: Option<ContentBlockIdIndex> = None;
     let mut email_template_id_index: Option<EmailTemplateIdIndex> = None;
+    let mut catalog_items_local: Option<BTreeMap<String, CatalogItems>> = None;
     for kind in kinds {
         match kind {
             ResourceKind::CatalogSchema => {
@@ -80,6 +84,18 @@ pub async fn run(
                         .await
                         .context("computing catalog_schema plan")?;
                 summary.diffs.extend(diffs);
+            }
+            ResourceKind::CatalogItems => {
+                let (diffs, local_map) = compute_catalog_items_diffs(
+                    &client,
+                    &catalogs_root,
+                    args.name.as_deref(),
+                    true,
+                )
+                .await
+                .context("computing catalog_items plan")?;
+                summary.diffs.extend(diffs);
+                catalog_items_local = Some(local_map);
             }
             ResourceKind::ContentBlock => {
                 let (diffs, idx) =
@@ -100,7 +116,9 @@ pub async fn run(
                 summary.diffs.extend(diffs);
                 email_template_id_index = Some(idx);
             }
-            other => warn_unimplemented(other),
+            ResourceKind::CustomAttribute => {
+                tracing::debug!("custom_attribute apply not yet implemented");
+            }
         }
     }
 
@@ -135,11 +153,24 @@ pub async fn run(
     // matters more than matching the operator's local calendar.
     let today = chrono::Utc::now().date_naive();
 
+    let parallel_batches = resolved.resources.catalog_items.parallel_batches;
     let mut applied = 0;
     for diff in &summary.diffs {
         match diff {
             ResourceDiff::CatalogSchema(d) => {
                 applied += apply_catalog_schema(&client, d).await?;
+            }
+            ResourceDiff::CatalogItems(d) => {
+                let local_map = catalog_items_local.as_ref().ok_or_else(|| {
+                    anyhow!("internal: catalog_items_local not populated before apply")
+                })?;
+                let local = local_map.get(&d.catalog_name).ok_or_else(|| {
+                    anyhow!(
+                        "internal: local items for catalog '{}' missing from items map",
+                        d.catalog_name
+                    )
+                })?;
+                applied += apply_catalog_items(&client, d, local, parallel_batches).await?;
             }
             ResourceDiff::ContentBlock(d) => {
                 applied += apply_content_block(
@@ -161,7 +192,7 @@ pub async fn run(
                 )
                 .await?;
             }
-            _ => {}
+            ResourceDiff::CustomAttribute(_) => {}
         }
     }
 
@@ -331,6 +362,142 @@ async fn apply_catalog_schema(
         }
     }
     Ok(count)
+}
+
+/// Batch size for catalog items upsert/delete (Braze limit).
+const ITEMS_BATCH_SIZE: usize = 50;
+
+fn items_progress_bar(total: u64, label: &str, color: &str) -> indicatif::ProgressBar {
+    let pb = indicatif::ProgressBar::new(total);
+    pb.set_style(
+        indicatif::ProgressStyle::default_bar()
+            .template(&format!(
+                "{{spinner:.{color}}} [{{elapsed_precise}}] {{bar:40}} {{pos}}/{{len}} {label}"
+            ))
+            .unwrap(),
+    );
+    pb
+}
+
+async fn run_batched<T, F, Fut>(
+    items: Vec<T>,
+    concurrency: usize,
+    pb: &indicatif::ProgressBar,
+    batch_fn: F,
+) -> anyhow::Result<usize>
+where
+    T: Send + Sync + 'static,
+    F: Fn(Vec<T>) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let mut batches: Vec<Vec<T>> = Vec::new();
+    let mut iter = items.into_iter().peekable();
+    while iter.peek().is_some() {
+        batches.push(iter.by_ref().take(ITEMS_BATCH_SIZE).collect());
+    }
+
+    let count = futures::stream::iter(batches.into_iter().map(|batch| {
+        let batch_len = batch.len();
+        let fut = batch_fn(batch);
+        let pb = pb.clone();
+        async move {
+            fut.await?;
+            pb.inc(batch_len as u64);
+            Ok::<usize, anyhow::Error>(batch_len)
+        }
+    }))
+    .buffer_unordered(concurrency)
+    .try_fold(0usize, |acc, n| async move { Ok(acc + n) })
+    .await?;
+
+    pb.finish_and_clear();
+    Ok(count)
+}
+
+async fn apply_catalog_items(
+    client: &BrazeClient,
+    d: &CatalogItemsDiff,
+    local: &CatalogItems,
+    parallel_batches: u32,
+) -> anyhow::Result<usize> {
+    if !d.has_changes() {
+        return Ok(0);
+    }
+
+    let catalog_name = &d.catalog_name;
+    let concurrency = (parallel_batches as usize).max(1);
+
+    let upsert_ids: Vec<&str> = d
+        .added_ids
+        .iter()
+        .chain(d.modified_ids.iter())
+        .map(String::as_str)
+        .collect();
+
+    let mut upsert_count = 0;
+    if !upsert_ids.is_empty() {
+        let rows = local.rows.as_ref().ok_or_else(|| {
+            anyhow!(
+                "internal: local items for catalog '{}' have no materialized rows",
+                catalog_name
+            )
+        })?;
+        let row_by_id: std::collections::HashMap<&str, &crate::resource::CatalogItemRow> =
+            rows.iter().map(|r| (r.id.as_str(), r)).collect();
+
+        let upsert_rows: Vec<crate::resource::CatalogItemRow> = upsert_ids
+            .iter()
+            .map(|&id| {
+                (*row_by_id
+                    .get(id)
+                    .expect("item in diff but missing from local rows"))
+                .clone()
+            })
+            .collect();
+
+        let pb = items_progress_bar(upsert_rows.len() as u64, "items", "green");
+
+        upsert_count = run_batched(upsert_rows, concurrency, &pb, |batch| {
+            let client = client.clone();
+            let catalog_name = catalog_name.clone();
+            async move {
+                tracing::info!(
+                    catalog = %catalog_name,
+                    batch_size = batch.len(),
+                    "upserting catalog items batch"
+                );
+                client
+                    .upsert_catalog_items(&catalog_name, &batch)
+                    .await
+                    .with_context(|| format!("upserting items batch for catalog '{catalog_name}'"))
+            }
+        })
+        .await?;
+    }
+
+    let mut delete_count = 0;
+    if !d.removed_ids.is_empty() {
+        let pb = items_progress_bar(d.removed_ids.len() as u64, "deletes", "red");
+
+        delete_count = run_batched(d.removed_ids.clone(), concurrency, &pb, |batch| {
+            let client = client.clone();
+            let catalog_name = catalog_name.clone();
+            async move {
+                tracing::info!(
+                    catalog = %catalog_name,
+                    batch_size = batch.len(),
+                    "deleting catalog items batch"
+                );
+                client
+                    .delete_catalog_items(&catalog_name, &batch)
+                    .await
+                    .with_context(|| format!("deleting items batch for catalog '{catalog_name}'"))
+            }
+        })
+        .await?;
+    }
+
+    Ok(upsert_count + delete_count)
 }
 
 async fn apply_email_template(

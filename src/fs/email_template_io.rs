@@ -14,7 +14,7 @@
 //! and follows the directory-per-resource pattern from IMPLEMENTATION.md §9.5.
 
 use crate::error::{Error, Result};
-use crate::fs::{validate_resource_name, write_atomic};
+use crate::fs::{try_read_resource_dir, validate_resource_name, write_atomic};
 use crate::resource::EmailTemplate;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -45,18 +45,8 @@ struct TemplateYaml {
 /// Missing root is not an error. Each directory's name must match its
 /// `template.yaml` `name:` field — divergence is a hard parse error.
 pub fn load_all_email_templates(root: &Path) -> Result<Vec<EmailTemplate>> {
-    let read_dir = match std::fs::read_dir(root) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => {
-            if root.is_file() {
-                return Err(Error::InvalidFormat {
-                    path: root.to_path_buf(),
-                    message: "expected a directory for the email_templates root".into(),
-                });
-            }
-            return Err(e.into());
-        }
+    let Some(read_dir) = try_read_resource_dir(root, "email_templates")? else {
+        return Ok(Vec::new());
     };
 
     let mut templates = Vec::new();

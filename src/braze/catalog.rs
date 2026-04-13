@@ -1,8 +1,8 @@
-//! Catalog Schema endpoints. See IMPLEMENTATION.md §8.3.
+//! Catalog Schema and Catalog Items endpoints. See IMPLEMENTATION.md §8.3.
 
 use crate::braze::error::BrazeApiError;
 use crate::braze::BrazeClient;
-use crate::resource::{Catalog, CatalogField, CatalogFieldType};
+use crate::resource::{Catalog, CatalogField, CatalogFieldType, CatalogItemRow};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +24,10 @@ struct CatalogsResponse {
     #[serde(default)]
     next_cursor: Option<String>,
 }
+
+/// Safety cap for catalog items pagination: 2000 pages × 50 items/page
+/// = 100k items, matching Braze's documented catalog size limit.
+const MAX_CATALOG_ITEM_PAGES: usize = 2_000;
 
 impl BrazeClient {
     /// `GET /catalogs` — list every catalog schema in the workspace.
@@ -110,6 +114,90 @@ impl BrazeClient {
         let req = self.delete(&["catalogs", catalog_name, "fields", field_name]);
         self.send_ok(req).await
     }
+
+    /// `GET /catalogs/{name}/items` — list all items, paging through
+    /// every cursor until exhausted. Unlike `list_catalogs` (which
+    /// fails closed on pagination), catalog items actively paginates
+    /// because catalogs can hold 10k–100k items.
+    ///
+    /// Caps at [`MAX_CATALOG_ITEM_PAGES`] pages to prevent infinite loops
+    /// from a buggy server that keeps returning the same cursor.
+    pub async fn list_catalog_items(
+        &self,
+        catalog_name: &str,
+    ) -> Result<Vec<CatalogItemRow>, BrazeApiError> {
+        let mut all_items = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut page: usize = 0;
+
+        loop {
+            page += 1;
+            if page > MAX_CATALOG_ITEM_PAGES {
+                return Err(BrazeApiError::Http {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    body: format!(
+                        "catalog '{catalog_name}' pagination exceeded \
+                         {MAX_CATALOG_ITEM_PAGES} pages; aborting to prevent infinite loop"
+                    ),
+                });
+            }
+            let mut req = self.get(&["catalogs", catalog_name, "items"]);
+            if let Some(c) = &cursor {
+                req = req.query(&[("cursor", c.as_str())]);
+            }
+            let resp: CatalogItemsResponse = match self.send_json(req).await {
+                Ok(r) => r,
+                Err(BrazeApiError::Http { status, .. }) if status == StatusCode::NOT_FOUND => {
+                    return Err(BrazeApiError::NotFound {
+                        resource: format!("catalog '{catalog_name}'"),
+                    });
+                }
+                Err(e) => return Err(e),
+            };
+            all_items.extend(resp.items);
+
+            match resp.next_cursor {
+                Some(c) if !c.is_empty() => cursor = Some(c),
+                _ => break,
+            }
+        }
+
+        Ok(all_items)
+    }
+
+    /// `POST /catalogs/{name}/items` — upsert a batch of items.
+    ///
+    /// Braze enforces a maximum of 50 items per request. The caller is
+    /// responsible for chunking; this method sends exactly what it receives.
+    pub async fn upsert_catalog_items(
+        &self,
+        catalog_name: &str,
+        items: &[CatalogItemRow],
+    ) -> Result<(), BrazeApiError> {
+        let body = UpsertItemsRequest { items };
+        let req = self.post(&["catalogs", catalog_name, "items"]).json(&body);
+        self.send_ok(req).await
+    }
+
+    /// `DELETE /catalogs/{name}/items` — delete a batch of items by id.
+    /// **Destructive**.
+    ///
+    /// Max 50 per request; caller chunks.
+    pub async fn delete_catalog_items(
+        &self,
+        catalog_name: &str,
+        item_ids: &[String],
+    ) -> Result<(), BrazeApiError> {
+        let items: Vec<DeleteItemId<'_>> = item_ids
+            .iter()
+            .map(|id| DeleteItemId { id: id.as_str() })
+            .collect();
+        let body = DeleteItemsRequest { items };
+        let req = self
+            .delete(&["catalogs", catalog_name, "items"])
+            .json(&body);
+        self.send_ok(req).await
+    }
 }
 
 #[derive(Serialize)]
@@ -124,6 +212,29 @@ struct WireField<'a> {
     /// wire string stays in sync with `CatalogFieldType` automatically.
     #[serde(rename = "type")]
     field_type: CatalogFieldType,
+}
+
+#[derive(Debug, Deserialize)]
+struct CatalogItemsResponse {
+    #[serde(default)]
+    items: Vec<CatalogItemRow>,
+    #[serde(default)]
+    next_cursor: Option<String>,
+}
+
+#[derive(Serialize)]
+struct UpsertItemsRequest<'a> {
+    items: &'a [CatalogItemRow],
+}
+
+#[derive(Serialize)]
+struct DeleteItemsRequest<'a> {
+    items: Vec<DeleteItemId<'a>>,
+}
+
+#[derive(Serialize)]
+struct DeleteItemId<'a> {
+    id: &'a str,
 }
 
 #[cfg(test)]
@@ -523,5 +634,184 @@ mod tests {
             }
             other => panic!("expected Http, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn list_catalog_items_single_page() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/catalogs/cardiology/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "items": [
+                    {"id": "af001", "name": "atrial", "order": 1},
+                    {"id": "af002", "name": "ventricular", "order": 2}
+                ],
+                "message": "success"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let items = client.list_catalog_items("cardiology").await.unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].id, "af001");
+        assert_eq!(items[1].id, "af002");
+    }
+
+    #[tokio::test]
+    async fn list_catalog_items_paginated() {
+        let server = MockServer::start().await;
+        // Page 2 (mounted first so it matches cursor-bearing requests)
+        Mock::given(method("GET"))
+            .and(path("/catalogs/cardiology/items"))
+            .and(wiremock::matchers::query_param("cursor", "page2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "items": [{"id": "af003", "name": "third"}],
+                "message": "success"
+            })))
+            .mount(&server)
+            .await;
+        // Page 1 (no cursor param)
+        Mock::given(method("GET"))
+            .and(path("/catalogs/cardiology/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "items": [
+                    {"id": "af001", "name": "first"},
+                    {"id": "af002", "name": "second"}
+                ],
+                "next_cursor": "page2",
+                "message": "success"
+            })))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let items = client.list_catalog_items("cardiology").await.unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].id, "af001");
+        assert_eq!(items[2].id, "af003");
+    }
+
+    #[tokio::test]
+    async fn list_catalog_items_empty() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/catalogs/empty/items"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"items": [], "message": "success"})),
+            )
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let items = client.list_catalog_items("empty").await.unwrap();
+        assert!(items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_catalog_items_404_is_not_found() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/catalogs/missing/items"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let err = client.list_catalog_items("missing").await.unwrap_err();
+        assert!(matches!(err, BrazeApiError::NotFound { .. }), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn upsert_catalog_items_sends_correct_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/catalogs/cardiology/items"))
+            .and(header("authorization", "Bearer test-key"))
+            .and(body_json(json!({
+                "items": [
+                    {"id": "af001", "name": "atrial", "order": 1}
+                ]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let mut fields = serde_json::Map::new();
+        fields.insert("name".into(), json!("atrial"));
+        fields.insert("order".into(), json!(1));
+        let items = vec![CatalogItemRow {
+            id: "af001".into(),
+            fields,
+        }];
+        client
+            .upsert_catalog_items("cardiology", &items)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn upsert_catalog_items_retries_on_429() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/catalogs/cardiology/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "ok"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/catalogs/cardiology/items"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let items = vec![CatalogItemRow {
+            id: "x".into(),
+            fields: serde_json::Map::new(),
+        }];
+        client
+            .upsert_catalog_items("cardiology", &items)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_catalog_items_sends_id_only_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/catalogs/cardiology/items"))
+            .and(body_json(json!({
+                "items": [{"id": "old1"}, {"id": "old2"}]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        client
+            .delete_catalog_items("cardiology", &["old1".into(), "old2".into()])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_catalog_items_unauthorized() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/catalogs/c/items"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let err = client
+            .delete_catalog_items("c", &["x".into()])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BrazeApiError::Unauthorized), "got {err:?}");
     }
 }
