@@ -57,6 +57,8 @@ impl BrazeClient {
                 name: w.custom_attribute_name,
                 attribute_type: wire_data_type_to_domain(w.data_type.as_deref()),
                 description: w.description,
+                // Braze omits `blocklisted` for non-blocklisted attributes;
+                // treat absent as active (not deprecated).
                 deprecated: w.blocklisted.unwrap_or(false),
             })
             .collect())
@@ -85,7 +87,11 @@ impl BrazeClient {
 fn wire_data_type_to_domain(data_type: Option<&str>) -> CustomAttributeType {
     match data_type {
         Some("string") => CustomAttributeType::String,
+        // Braze docs list "integer" and "float"; "number" is not
+        // documented but included defensively in case the API ever
+        // returns it as an alias.
         Some("integer") | Some("float") | Some("number") => CustomAttributeType::Number,
+        // "bool" is not documented either but guarded for the same reason.
         Some("boolean") | Some("bool") => CustomAttributeType::Boolean,
         Some("date") | Some("time") => CustomAttributeType::Time,
         Some("array") => CustomAttributeType::Array,

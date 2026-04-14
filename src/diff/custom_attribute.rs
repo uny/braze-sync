@@ -75,6 +75,16 @@ pub fn diff_registry(
 }
 
 /// Compare a single attribute present on both sides.
+///
+/// Priority order:
+///   1. `deprecated` flag → `DeprecationToggled` (the only actionable mutation)
+///   2. `description` text → `MetadataOnly`
+///   3. `attribute_type` → `Unchanged` (Braze is authoritative; see below)
+///
+/// When both `deprecated` and `description` differ, only
+/// `DeprecationToggled` is reported. This is by design: `apply` will
+/// push the deprecation toggle, and the user should re-run `export`
+/// afterwards to reconcile the description with Braze's state.
 fn diff_single_attribute(local: &CustomAttribute, remote: &CustomAttribute) -> CustomAttributeOp {
     if local.deprecated != remote.deprecated {
         return CustomAttributeOp::DeprecationToggled {
@@ -85,9 +95,12 @@ fn diff_single_attribute(local: &CustomAttribute, remote: &CustomAttribute) -> C
     if !opt_str_eq(&local.description, &remote.description) {
         return CustomAttributeOp::MetadataOnly;
     }
-    // attribute_type differences are informational only — Braze controls
-    // the canonical type. We treat type-only differences as Unchanged
-    // because braze-sync cannot change the type via API.
+    // attribute_type differences are treated as `Unchanged` — not
+    // `MetadataOnly` — because the semantics differ: MetadataOnly means
+    // "the user intentionally changed something that can't be pushed",
+    // whereas a type mismatch means "the local registry is stale" (Braze
+    // is the sole authority on types). The fix is always `export`, not
+    // `apply`. We log it so `--verbose` users see the hint.
     if local.attribute_type != remote.attribute_type {
         tracing::info!(
             name = local.name,
