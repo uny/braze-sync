@@ -90,6 +90,8 @@ fn diff_single_attribute(local: &CustomAttribute, remote: &CustomAttribute) -> C
         if !opt_str_eq(&local.description, &remote.description) {
             tracing::info!(
                 name = local.name,
+                local_description = local.description.as_deref().unwrap_or("(none)"),
+                remote_description = remote.description.as_deref().unwrap_or("(none)"),
                 "description also differs; will be reconciled on next export"
             );
         }

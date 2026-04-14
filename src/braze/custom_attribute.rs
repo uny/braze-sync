@@ -102,7 +102,10 @@ fn wire_data_type_to_domain(data_type: Option<&str>) -> CustomAttributeType {
             );
             CustomAttributeType::String
         }
-        None => CustomAttributeType::String,
+        None => {
+            tracing::debug!("Braze data_type is absent, defaulting to string");
+            CustomAttributeType::String
+        }
     }
 }
 
