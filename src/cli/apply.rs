@@ -13,6 +13,7 @@ use crate::braze::BrazeClient;
 use crate::config::ResolvedConfig;
 use crate::diff::catalog::{CatalogItemsDiff, CatalogSchemaDiff};
 use crate::diff::content_block::{ContentBlockDiff, ContentBlockIdIndex};
+use crate::diff::custom_attribute::{CustomAttributeDiff, CustomAttributeOp};
 use crate::diff::email_template::{EmailTemplateDiff, EmailTemplateIdIndex};
 use crate::diff::orphan;
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
@@ -27,7 +28,7 @@ use std::path::Path;
 
 use super::diff::{
     compute_catalog_items_diffs, compute_catalog_schema_diffs, compute_content_block_plan,
-    compute_email_template_plan,
+    compute_custom_attribute_diffs, compute_email_template_plan,
 };
 use super::selected_kinds;
 
@@ -69,6 +70,7 @@ pub async fn run(
     let catalogs_root = config_dir.join(&resolved.resources.catalog_schema.path);
     let content_blocks_root = config_dir.join(&resolved.resources.content_block.path);
     let email_templates_root = config_dir.join(&resolved.resources.email_template.path);
+    let custom_attributes_path = config_dir.join(&resolved.resources.custom_attribute.path);
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
@@ -117,7 +119,10 @@ pub async fn run(
                 email_template_id_index = Some(idx);
             }
             ResourceKind::CustomAttribute => {
-                tracing::debug!("custom_attribute apply not yet implemented");
+                let diffs = compute_custom_attribute_diffs(&client, &custom_attributes_path)
+                    .await
+                    .context("computing custom_attribute plan")?;
+                summary.diffs.extend(diffs);
             }
         }
     }
@@ -192,7 +197,9 @@ pub async fn run(
                 )
                 .await?;
             }
-            ResourceDiff::CustomAttribute(_) => {}
+            ResourceDiff::CustomAttribute(d) => {
+                applied += apply_custom_attribute(&client, d).await?;
+            }
         }
     }
 
@@ -211,6 +218,14 @@ pub async fn run(
 /// (e.g. content-type change with no in-place update), re-evaluate.
 fn check_for_unsupported_ops(summary: &DiffSummary) -> anyhow::Result<()> {
     for diff in &summary.diffs {
+        if let ResourceDiff::CustomAttribute(d) = diff {
+            if matches!(d.op, CustomAttributeOp::PresentInGitOnly) {
+                return Err(Error::CustomAttributeCreateNotSupported {
+                    name: d.name.clone(),
+                }
+                .into());
+            }
+        }
         if let ResourceDiff::CatalogSchema(d) = diff {
             match &d.op {
                 DiffOp::Added(_) => {
@@ -562,5 +577,32 @@ async fn apply_email_template(
             unreachable!("diff layer routes email template removals through orphan")
         }
         DiffOp::Unchanged => Ok(0),
+    }
+}
+
+async fn apply_custom_attribute(
+    client: &BrazeClient,
+    d: &CustomAttributeDiff,
+) -> anyhow::Result<usize> {
+    match &d.op {
+        CustomAttributeOp::DeprecationToggled { to, .. } => {
+            tracing::info!(
+                custom_attribute = %d.name,
+                blocklisted = *to,
+                "toggling custom attribute deprecation"
+            );
+            client
+                .set_custom_attribute_blocklist(&[d.name.as_str()], *to)
+                .await
+                .with_context(|| {
+                    format!("toggling deprecation for custom attribute '{}'", d.name)
+                })?;
+            Ok(1)
+        }
+        // All other variants are report-only — no API call.
+        CustomAttributeOp::UnregisteredInGit
+        | CustomAttributeOp::PresentInGitOnly
+        | CustomAttributeOp::MetadataOnly
+        | CustomAttributeOp::Unchanged => Ok(0),
     }
 }

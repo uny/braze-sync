@@ -13,6 +13,7 @@
 
 pub mod catalog;
 pub mod content_block;
+pub mod custom_attribute;
 pub mod email_template;
 pub mod error;
 pub mod rate_limit;

@@ -7,11 +7,14 @@
 
 use crate::config::ConfigFile;
 use crate::error::Error;
-use crate::fs::{catalog_io, content_block_io, email_template_io, try_read_resource_dir};
+use crate::fs::{
+    catalog_io, content_block_io, custom_attribute_io, email_template_io, try_read_resource_dir,
+};
 use crate::resource::ResourceKind;
 use anyhow::anyhow;
 use clap::Args;
 use regex_lite::Regex;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::selected_kinds;
@@ -61,8 +64,12 @@ pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> an
                 validate_email_templates(&email_templates_root, &mut issues)?;
             }
             ResourceKind::CustomAttribute => {
-                // Not yet implemented in this binary version.
-                tracing::debug!("custom_attribute validation not yet implemented");
+                let registry_path = config_dir.join(&cfg.resources.custom_attribute.path);
+                validate_custom_attributes(
+                    &registry_path,
+                    cfg.naming.custom_attribute_name_pattern.as_deref(),
+                    &mut issues,
+                )?;
             }
         }
     }
@@ -362,6 +369,59 @@ fn validate_catalog_items(
                         ),
                     });
                 }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_custom_attributes(
+    registry_path: &Path,
+    name_pattern: Option<&str>,
+    issues: &mut Vec<ValidationIssue>,
+) -> anyhow::Result<()> {
+    let registry = match custom_attribute_io::load_registry(registry_path) {
+        Ok(Some(r)) => r,
+        Ok(None) => return Ok(()),
+        Err(Error::YamlParse { path, .. }) => {
+            issues.push(ValidationIssue {
+                path,
+                message: "failed to parse custom attribute registry YAML".into(),
+            });
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let pattern: Option<(String, Regex)> = match name_pattern {
+        Some(p) => Some((
+            p.to_string(),
+            Regex::new(p)
+                .map_err(|e| anyhow!("invalid custom_attribute_name_pattern regex {p:?}: {e}"))?,
+        )),
+        None => None,
+    };
+
+    // Check for duplicate names.
+    let mut seen = HashSet::new();
+    for attr in &registry.attributes {
+        if !seen.insert(&attr.name) {
+            issues.push(ValidationIssue {
+                path: registry_path.to_path_buf(),
+                message: format!("duplicate custom attribute name '{}'", attr.name),
+            });
+        }
+
+        if let Some((pattern_str, re)) = &pattern {
+            if !re.is_match(&attr.name) {
+                issues.push(ValidationIssue {
+                    path: registry_path.to_path_buf(),
+                    message: format!(
+                        "custom attribute name '{}' does not match custom_attribute_name_pattern '{}'",
+                        attr.name, pattern_str
+                    ),
+                });
             }
         }
     }

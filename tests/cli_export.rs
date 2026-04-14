@@ -423,3 +423,69 @@ async fn export_catalog_items_writes_csv() {
     assert!(csv.contains("af001"));
     assert!(csv.contains("af002"));
 }
+
+// =====================================================================
+// Custom Attribute (v0.5.0)
+// =====================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_custom_attributes_writes_registry_yaml() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/custom_attributes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 3,
+            "custom_attributes": [
+                {
+                    "custom_attribute_name": "last_visit_date",
+                    "data_type": "date",
+                    "description": "Most recent visit",
+                    "blocklisted": false
+                },
+                {
+                    "custom_attribute_name": "preferred_clinic_id",
+                    "data_type": "string",
+                    "description": "User's preferred clinic",
+                    "blocklisted": false
+                },
+                {
+                    "custom_attribute_name": "legacy_segment",
+                    "data_type": "string",
+                    "blocklisted": true
+                }
+            ],
+            "message": "success"
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    let tmp_path = tmp.path().to_path_buf();
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["export", "--resource", "custom_attribute"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    let registry_path = tmp_path.join("custom_attributes/registry.yaml");
+    assert!(registry_path.exists(), "registry.yaml should exist");
+    let content = fs::read_to_string(&registry_path).unwrap();
+    assert!(content.contains("last_visit_date"));
+    assert!(content.contains("preferred_clinic_id"));
+    assert!(content.contains("legacy_segment"));
+    assert!(content.contains("deprecated: true"));
+    // Verify sorted order (last_visit_date < legacy_segment < preferred_clinic_id)
+    let pos_last = content.find("last_visit_date").unwrap();
+    let pos_legacy = content.find("legacy_segment").unwrap();
+    let pos_pref = content.find("preferred_clinic_id").unwrap();
+    assert!(pos_last < pos_legacy);
+    assert!(pos_legacy < pos_pref);
+}

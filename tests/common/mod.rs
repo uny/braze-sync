@@ -26,6 +26,16 @@ pub fn write_config_for_validate(
     catalog_pattern: Option<&str>,
     content_block_pattern: Option<&str>,
 ) -> PathBuf {
+    write_config_for_validate_full(dir, catalog_pattern, content_block_pattern, None)
+}
+
+/// Extended version that also supports custom attribute naming pattern.
+pub fn write_config_for_validate_full(
+    dir: &Path,
+    catalog_pattern: Option<&str>,
+    content_block_pattern: Option<&str>,
+    custom_attribute_pattern: Option<&str>,
+) -> PathBuf {
     let config_path = dir.join("braze-sync.config.yaml");
     let mut yaml = String::from(
         "version: 1
@@ -36,13 +46,19 @@ environments:
     api_key_env: BRAZE_VALIDATE_TEST_NOT_SET
 ",
     );
-    if catalog_pattern.is_some() || content_block_pattern.is_some() {
+    if catalog_pattern.is_some()
+        || content_block_pattern.is_some()
+        || custom_attribute_pattern.is_some()
+    {
         yaml.push_str("naming:\n");
         if let Some(p) = catalog_pattern {
             yaml.push_str(&format!("  catalog_name_pattern: \"{p}\"\n"));
         }
         if let Some(p) = content_block_pattern {
             yaml.push_str(&format!("  content_block_name_pattern: \"{p}\"\n"));
+        }
+        if let Some(p) = custom_attribute_pattern {
+            yaml.push_str(&format!("  custom_attribute_name_pattern: \"{p}\"\n"));
         }
     }
     fs::write(&config_path, yaml).unwrap();
@@ -90,6 +106,14 @@ pub fn write_local_items(dir: &Path, catalog_name: &str, csv_content: &str) {
     let cat_dir = dir.join("catalogs").join(catalog_name);
     fs::create_dir_all(&cat_dir).unwrap();
     fs::write(cat_dir.join("items.csv"), csv_content).unwrap();
+}
+
+/// Write a local custom attribute registry to
+/// `<dir>/custom_attributes/registry.yaml`.
+pub fn write_local_custom_attribute_registry(dir: &Path, yaml_body: &str) {
+    let ca_dir = dir.join("custom_attributes");
+    fs::create_dir_all(&ca_dir).unwrap();
+    fs::write(ca_dir.join("registry.yaml"), yaml_body).unwrap();
 }
 
 /// Write a local email template directory under `<dir>/email_templates/<name>/`.

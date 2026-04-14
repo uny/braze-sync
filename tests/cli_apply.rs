@@ -16,8 +16,8 @@ mod common;
 
 use assert_cmd::Command;
 use common::{
-    write_config, write_local_content_block, write_local_email_template, write_local_items,
-    write_local_schema,
+    write_config, write_local_content_block, write_local_custom_attribute_registry,
+    write_local_email_template, write_local_items, write_local_schema,
 };
 use serde_json::json;
 use wiremock::matchers::{body_json, method, path, query_param};
@@ -978,4 +978,144 @@ async fn apply_catalog_items_dry_run_does_not_upsert() {
     .unwrap();
 
     drop(upsert_mock);
+}
+
+// =====================================================================
+// Custom Attribute (v0.5.0)
+// =====================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_custom_attribute_deprecation_toggle_with_confirm() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/custom_attributes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1,
+            "custom_attributes": [
+                {
+                    "custom_attribute_name": "legacy_field",
+                    "data_type": "string",
+                    "blocklisted": false
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/custom_attributes/blocklist"))
+        .and(body_json(json!({
+            "custom_attribute_names": ["legacy_field"],
+            "blocklisted": true
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  - name: legacy_field\n    type: string\n    deprecated: true\n",
+    );
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "custom_attribute", "--confirm"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_custom_attribute_dry_run_makes_no_write_call() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/custom_attributes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1,
+            "custom_attributes": [
+                {
+                    "custom_attribute_name": "legacy_field",
+                    "data_type": "string",
+                    "blocklisted": false
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+    // No POST call should be made in dry-run mode.
+    Mock::given(method("POST"))
+        .and(path("/custom_attributes/blocklist"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  - name: legacy_field\n    type: string\n    deprecated: true\n",
+    );
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "custom_attribute"]) // no --confirm
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_custom_attribute_present_in_git_only_rejects() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/custom_attributes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "custom_attributes": []
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  - name: typo_attr\n    type: string\n",
+    );
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "custom_attribute", "--confirm"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot be created via API"),
+        "stderr: {stderr}"
+    );
 }

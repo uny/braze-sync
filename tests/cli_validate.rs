@@ -10,7 +10,8 @@ mod common;
 
 use assert_cmd::Command;
 use common::{
-    write_config_for_validate as write_config, write_content_block_raw, write_local_content_block,
+    write_config_for_validate as write_config, write_config_for_validate_full,
+    write_content_block_raw, write_local_content_block, write_local_custom_attribute_registry,
     write_local_email_template, write_local_items, write_local_schema, write_schema_raw,
 };
 
@@ -361,4 +362,111 @@ fn validate_catalog_items_reports_missing_schema_field() {
         stderr.contains("score"),
         "should report missing field; stderr: {stderr}"
     );
+}
+
+// =====================================================================
+// Custom Attribute (v0.5.0)
+// =====================================================================
+
+#[test]
+fn validate_passes_for_well_formed_custom_attribute_registry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), None, None);
+    write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  - name: last_visit\n    type: time\n  - name: pref_clinic\n    type: string\n",
+    );
+
+    Command::cargo_bin("braze-sync")
+        .unwrap()
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["validate", "--resource", "custom_attribute"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn validate_custom_attribute_does_not_require_braze_api_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), None, None);
+    write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  - name: x\n    type: string\n",
+    );
+
+    Command::cargo_bin("braze-sync")
+        .unwrap()
+        .env_remove("BRAZE_VALIDATE_TEST_NOT_SET")
+        .env_remove("BRAZE_API_KEY")
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["validate", "--resource", "custom_attribute"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn validate_custom_attribute_reports_duplicate_names() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), None, None);
+    write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  - name: dup\n    type: string\n  - name: dup\n    type: number\n",
+    );
+
+    let output = Command::cargo_bin("braze-sync")
+        .unwrap()
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["validate", "--resource", "custom_attribute"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("duplicate"),
+        "should report duplicate; stderr: {stderr}"
+    );
+}
+
+#[test]
+fn validate_custom_attribute_reports_naming_pattern_violation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path =
+        write_config_for_validate_full(tmp.path(), None, None, Some("^[a-z][a-z0-9_]*$"));
+    write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  - name: BadName\n    type: string\n",
+    );
+
+    let output = Command::cargo_bin("braze-sync")
+        .unwrap()
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["validate", "--resource", "custom_attribute"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("BadName"),
+        "should report bad name; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("custom_attribute_name_pattern"),
+        "should reference pattern; stderr: {stderr}"
+    );
+}
+
+#[test]
+fn validate_custom_attribute_missing_file_passes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), None, None);
+    // No registry.yaml written — valid state for a fresh project
+
+    Command::cargo_bin("braze-sync")
+        .unwrap()
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["validate", "--resource", "custom_attribute"])
+        .assert()
+        .success();
 }
