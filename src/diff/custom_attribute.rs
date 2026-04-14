@@ -4,7 +4,7 @@
 
 use crate::diff::opt_str_eq;
 use crate::resource::{CustomAttribute, CustomAttributeRegistry};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone)]
 pub struct CustomAttributeDiff {
@@ -51,7 +51,7 @@ pub fn diff_registry(
     let remote_by_name: BTreeMap<&str, &CustomAttribute> =
         remote.iter().map(|a| (a.name.as_str(), a)).collect();
 
-    let mut all_names: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut all_names: BTreeSet<&str> = BTreeSet::new();
     all_names.extend(local_by_name.keys());
     all_names.extend(remote_by_name.keys());
 

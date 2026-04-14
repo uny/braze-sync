@@ -13,7 +13,7 @@ use crate::braze::BrazeClient;
 use crate::config::ResolvedConfig;
 use crate::diff::catalog::{CatalogItemsDiff, CatalogSchemaDiff};
 use crate::diff::content_block::{ContentBlockDiff, ContentBlockIdIndex};
-use crate::diff::custom_attribute::{CustomAttributeDiff, CustomAttributeOp};
+use crate::diff::custom_attribute::CustomAttributeOp;
 use crate::diff::email_template::{EmailTemplateDiff, EmailTemplateIdIndex};
 use crate::diff::orphan;
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
@@ -197,11 +197,15 @@ pub async fn run(
                 )
                 .await?;
             }
-            ResourceDiff::CustomAttribute(d) => {
-                applied += apply_custom_attribute(&client, d).await?;
+            ResourceDiff::CustomAttribute(_) => {
+                // Handled in batched pass below.
             }
         }
     }
+
+    // Batch custom attribute deprecation toggles — the Braze endpoint
+    // accepts multiple names per call, so group by direction to avoid N+1.
+    applied += apply_custom_attribute_batch(&client, &summary).await?;
 
     eprintln!("✓ Applied {applied} change(s).");
     Ok(())
@@ -580,29 +584,50 @@ async fn apply_email_template(
     }
 }
 
-async fn apply_custom_attribute(
+/// Batch custom attribute deprecation toggles by direction (deprecate
+/// vs. reactivate) so we issue at most two API calls instead of one per
+/// attribute.
+async fn apply_custom_attribute_batch(
     client: &BrazeClient,
-    d: &CustomAttributeDiff,
+    summary: &DiffSummary,
 ) -> anyhow::Result<usize> {
-    match &d.op {
-        CustomAttributeOp::DeprecationToggled { to, .. } => {
-            tracing::info!(
-                custom_attribute = %d.name,
-                blocklisted = *to,
-                "toggling custom attribute deprecation"
-            );
-            client
-                .set_custom_attribute_blocklist(&[d.name.as_str()], *to)
-                .await
-                .with_context(|| {
-                    format!("toggling deprecation for custom attribute '{}'", d.name)
-                })?;
-            Ok(1)
+    let mut to_deprecate: Vec<&str> = Vec::new();
+    let mut to_reactivate: Vec<&str> = Vec::new();
+    for diff in &summary.diffs {
+        if let ResourceDiff::CustomAttribute(d) = diff {
+            if let CustomAttributeOp::DeprecationToggled { to, .. } = &d.op {
+                if *to {
+                    to_deprecate.push(&d.name);
+                } else {
+                    to_reactivate.push(&d.name);
+                }
+            }
         }
-        // All other variants are report-only — no API call.
-        CustomAttributeOp::UnregisteredInGit
-        | CustomAttributeOp::PresentInGitOnly
-        | CustomAttributeOp::MetadataOnly
-        | CustomAttributeOp::Unchanged => Ok(0),
     }
+
+    let mut applied = 0;
+    if !to_deprecate.is_empty() {
+        tracing::info!(
+            attributes = ?to_deprecate,
+            "deprecating custom attributes"
+        );
+        client
+            .set_custom_attribute_blocklist(&to_deprecate, true)
+            .await
+            .context("deprecating custom attributes")?;
+        applied += to_deprecate.len();
+    }
+    if !to_reactivate.is_empty() {
+        tracing::info!(
+            attributes = ?to_reactivate,
+            "reactivating custom attributes"
+        );
+        client
+            .set_custom_attribute_blocklist(&to_reactivate, false)
+            .await
+            .context("reactivating custom attributes")?;
+        applied += to_reactivate.len();
+    }
+
+    Ok(applied)
 }

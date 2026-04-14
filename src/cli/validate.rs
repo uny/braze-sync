@@ -406,7 +406,7 @@ fn validate_custom_attributes(
     // Check for duplicate names.
     let mut seen = HashSet::new();
     for attr in &registry.attributes {
-        if !seen.insert(&attr.name) {
+        if !seen.insert(attr.name.as_str()) {
             issues.push(ValidationIssue {
                 path: registry_path.to_path_buf(),
                 message: format!("duplicate custom attribute name '{}'", attr.name),
