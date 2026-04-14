@@ -198,7 +198,7 @@ pub async fn run(
                 .await?;
             }
             ResourceDiff::CustomAttribute(_) => {
-                // Handled in batched pass below.
+                // Batched in apply_custom_attribute_batch() below.
             }
         }
     }

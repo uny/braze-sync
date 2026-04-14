@@ -19,23 +19,16 @@ environments:
     config_path
 }
 
-/// Write a minimal braze-sync config for validate (no real server needed).
-/// Optionally sets the catalog and/or content block naming pattern.
-pub fn write_config_for_validate(
-    dir: &Path,
-    catalog_pattern: Option<&str>,
-    content_block_pattern: Option<&str>,
-) -> PathBuf {
-    write_config_for_validate_full(dir, catalog_pattern, content_block_pattern, None)
+/// Optional naming patterns for `write_config_for_validate`.
+#[derive(Default)]
+pub struct ValidateNaming<'a> {
+    pub catalog: Option<&'a str>,
+    pub content_block: Option<&'a str>,
+    pub custom_attribute: Option<&'a str>,
 }
 
-/// Extended version that also supports custom attribute naming pattern.
-pub fn write_config_for_validate_full(
-    dir: &Path,
-    catalog_pattern: Option<&str>,
-    content_block_pattern: Option<&str>,
-    custom_attribute_pattern: Option<&str>,
-) -> PathBuf {
+/// Write a minimal braze-sync config for validate (no real server needed).
+pub fn write_config_for_validate(dir: &Path, naming: ValidateNaming<'_>) -> PathBuf {
     let config_path = dir.join("braze-sync.config.yaml");
     let mut yaml = String::from(
         "version: 1
@@ -46,18 +39,16 @@ environments:
     api_key_env: BRAZE_VALIDATE_TEST_NOT_SET
 ",
     );
-    if catalog_pattern.is_some()
-        || content_block_pattern.is_some()
-        || custom_attribute_pattern.is_some()
+    if naming.catalog.is_some() || naming.content_block.is_some() || naming.custom_attribute.is_some()
     {
         yaml.push_str("naming:\n");
-        if let Some(p) = catalog_pattern {
+        if let Some(p) = naming.catalog {
             yaml.push_str(&format!("  catalog_name_pattern: \"{p}\"\n"));
         }
-        if let Some(p) = content_block_pattern {
+        if let Some(p) = naming.content_block {
             yaml.push_str(&format!("  content_block_name_pattern: \"{p}\"\n"));
         }
-        if let Some(p) = custom_attribute_pattern {
+        if let Some(p) = naming.custom_attribute {
             yaml.push_str(&format!("  custom_attribute_name_pattern: \"{p}\"\n"));
         }
     }
