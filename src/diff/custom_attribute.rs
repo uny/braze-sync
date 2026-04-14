@@ -87,6 +87,12 @@ pub fn diff_registry(
 /// afterwards to reconcile the description with Braze's state.
 fn diff_single_attribute(local: &CustomAttribute, remote: &CustomAttribute) -> CustomAttributeOp {
     if local.deprecated != remote.deprecated {
+        if !opt_str_eq(&local.description, &remote.description) {
+            tracing::info!(
+                name = local.name,
+                "description also differs; will be reconciled on next export"
+            );
+        }
         return CustomAttributeOp::DeprecationToggled {
             from: remote.deprecated,
             to: local.deprecated,
