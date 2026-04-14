@@ -88,6 +88,14 @@ fn diff_single_attribute(local: &CustomAttribute, remote: &CustomAttribute) -> C
     // attribute_type differences are informational only — Braze controls
     // the canonical type. We treat type-only differences as Unchanged
     // because braze-sync cannot change the type via API.
+    if local.attribute_type != remote.attribute_type {
+        tracing::debug!(
+            name = local.name,
+            local_type = ?local.attribute_type,
+            remote_type = ?remote.attribute_type,
+            "attribute type mismatch (Braze is authoritative; run export to update local registry)"
+        );
+    }
     CustomAttributeOp::Unchanged
 }
 

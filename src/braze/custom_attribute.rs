@@ -74,7 +74,11 @@ fn wire_data_type_to_domain(data_type: Option<&str>) -> CustomAttributeType {
         Some("boolean") | Some("bool") => CustomAttributeType::Boolean,
         Some("date") | Some("time") => CustomAttributeType::Time,
         Some("array") => CustomAttributeType::Array,
-        _ => CustomAttributeType::String,
+        Some(unknown) => {
+            tracing::warn!(data_type = unknown, "unknown Braze data_type, defaulting to string");
+            CustomAttributeType::String
+        }
+        None => CustomAttributeType::String,
     }
 }
 
