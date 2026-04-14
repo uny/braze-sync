@@ -197,6 +197,29 @@ fn parse_retry_after(resp: &reqwest::Response) -> Option<Duration> {
         .map(Duration::from_secs)
 }
 
+/// Check whether a list response was truncated and return a
+/// `PaginationNotImplemented` error if so.  Shared by every list
+/// endpoint that uses the fail-closed pagination guard.
+pub(crate) fn check_pagination(
+    count: Option<usize>,
+    returned: usize,
+    limit: usize,
+    endpoint: &'static str,
+) -> Result<(), BrazeApiError> {
+    let truncation_detail: Option<String> = match count {
+        Some(total) if total > returned => Some(format!("got {returned} of {total} results")),
+        None if returned >= limit => Some(format!(
+            "got a full page of {returned} result(s) with no total reported; \
+             cannot verify whether more exist"
+        )),
+        _ => None,
+    };
+    if let Some(detail) = truncation_detail {
+        return Err(BrazeApiError::PaginationNotImplemented { endpoint, detail });
+    }
+    Ok(())
+}
+
 /// Outcome of classifying the `message` field on a Braze `/info`
 /// response. Shared by content_block and email_template — the only
 /// difference is the resource-specific "not found" phrase.

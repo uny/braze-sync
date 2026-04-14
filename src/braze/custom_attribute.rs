@@ -9,7 +9,7 @@
 //! is no declarative "create attribute" API.
 
 use crate::braze::error::BrazeApiError;
-use crate::braze::BrazeClient;
+use crate::braze::{check_pagination, BrazeClient};
 use crate::resource::{CustomAttribute, CustomAttributeType};
 use serde::{Deserialize, Serialize};
 
@@ -27,22 +27,13 @@ impl BrazeClient {
         let resp: CustomAttributeListResponse = self.send_json(req).await?;
         let returned = resp.custom_attributes.len();
 
-        // Fail-closed pagination guard — same pattern as content_block
-        // and email_template list endpoints.
-        let truncation_detail: Option<String> = match resp.count {
-            Some(total) if total > returned => Some(format!("got {returned} of {total} results")),
-            None if returned >= LIST_LIMIT as usize => Some(format!(
-                "got a full page of {returned} result(s) with no total reported; \
-                 cannot verify whether more exist"
-            )),
-            _ => None,
-        };
-        if let Some(detail) = truncation_detail {
-            return Err(BrazeApiError::PaginationNotImplemented {
-                endpoint: "/custom_attributes",
-                detail,
-            });
-        }
+        // Fail-closed pagination guard.
+        check_pagination(
+            resp.count,
+            returned,
+            LIST_LIMIT as usize,
+            "/custom_attributes",
+        )?;
 
         Ok(resp
             .custom_attributes

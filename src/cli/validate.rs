@@ -105,6 +105,23 @@ fn open_resource_dir(
     }
 }
 
+/// Compile an optional naming-pattern regex, returning the raw string
+/// alongside the compiled `Regex` so error messages can reference the
+/// original pattern.  `config_key` names the config field for the error
+/// message (e.g. `"catalog_name_pattern"`).
+fn compile_name_pattern(
+    raw: Option<&str>,
+    config_key: &str,
+) -> anyhow::Result<Option<(String, Regex)>> {
+    match raw {
+        Some(p) => Ok(Some((
+            p.to_string(),
+            Regex::new(p).map_err(|e| anyhow!("invalid {config_key} regex {p:?}: {e}"))?,
+        ))),
+        None => Ok(None),
+    }
+}
+
 fn validate_catalog_schemas(
     catalogs_root: &Path,
     name_pattern: Option<&str>,
@@ -114,13 +131,7 @@ fn validate_catalog_schemas(
         return Ok(());
     };
 
-    let pattern: Option<(String, Regex)> = match name_pattern {
-        Some(p) => Some((
-            p.to_string(),
-            Regex::new(p).map_err(|e| anyhow!("invalid catalog_name_pattern regex {p:?}: {e}"))?,
-        )),
-        None => None,
-    };
+    let pattern = compile_name_pattern(name_pattern, "catalog_name_pattern")?;
 
     for entry in read_dir {
         let entry = entry?;
@@ -184,14 +195,7 @@ fn validate_content_blocks(
         return Ok(());
     };
 
-    let pattern: Option<(String, Regex)> = match name_pattern {
-        Some(p) => Some((
-            p.to_string(),
-            Regex::new(p)
-                .map_err(|e| anyhow!("invalid content_block_name_pattern regex {p:?}: {e}"))?,
-        )),
-        None => None,
-    };
+    let pattern = compile_name_pattern(name_pattern, "content_block_name_pattern")?;
 
     for entry in read_dir {
         let entry = entry?;
@@ -394,16 +398,8 @@ fn validate_custom_attributes(
         Err(e) => return Err(e.into()),
     };
 
-    let pattern: Option<(String, Regex)> = match name_pattern {
-        Some(p) => Some((
-            p.to_string(),
-            Regex::new(p)
-                .map_err(|e| anyhow!("invalid custom_attribute_name_pattern regex {p:?}: {e}"))?,
-        )),
-        None => None,
-    };
+    let pattern = compile_name_pattern(name_pattern, "custom_attribute_name_pattern")?;
 
-    // Check for duplicate names.
     let mut seen = HashSet::new();
     for attr in &registry.attributes {
         if !seen.insert(attr.name.as_str()) {
