@@ -588,11 +588,9 @@ async fn apply_email_template(
 /// vs. reactivate) so we issue at most two API calls instead of one per
 /// attribute.
 ///
-/// Note: if the first batch (deprecate) succeeds but the second
-/// (reactivate) fails, the caller propagates the error and the
-/// partial success count is not reported to the user. This is
-/// acceptable because the deprecate call is already committed on the
-/// Braze side and a re-run will skip the already-applied toggles.
+/// Each successful batch is reported to stderr immediately so the
+/// user knows what was already committed if a later batch fails.
+/// A re-run will skip the already-applied toggles.
 async fn apply_custom_attribute_batch(
     client: &BrazeClient,
     summary: &DiffSummary,
@@ -621,7 +619,9 @@ async fn apply_custom_attribute_batch(
             .set_custom_attribute_blocklist(&to_deprecate, true)
             .await
             .context("deprecating custom attributes")?;
-        applied += to_deprecate.len();
+        let n = to_deprecate.len();
+        eprintln!("  ✓ deprecated {n} custom attribute(s)");
+        applied += n;
     }
     if !to_reactivate.is_empty() {
         tracing::info!(
@@ -632,7 +632,9 @@ async fn apply_custom_attribute_batch(
             .set_custom_attribute_blocklist(&to_reactivate, false)
             .await
             .context("reactivating custom attributes")?;
-        applied += to_reactivate.len();
+        let n = to_reactivate.len();
+        eprintln!("  ✓ reactivated {n} custom attribute(s)");
+        applied += n;
     }
 
     Ok(applied)
