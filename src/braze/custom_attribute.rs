@@ -35,6 +35,21 @@ impl BrazeClient {
             "/custom_attributes",
         )?;
 
+        // Duplicate names would collapse the name-keyed BTreeMap in
+        // diff_registry, silently dropping one of a pair. Braze is
+        // expected to enforce uniqueness; this is a loud contract
+        // violation, consistent with content_block / email_template.
+        let mut seen: std::collections::HashSet<&str> =
+            std::collections::HashSet::with_capacity(returned);
+        for entry in &resp.custom_attributes {
+            if !seen.insert(entry.custom_attribute_name.as_str()) {
+                return Err(BrazeApiError::DuplicateNameInListResponse {
+                    endpoint: "/custom_attributes",
+                    name: entry.custom_attribute_name.clone(),
+                });
+            }
+        }
+
         Ok(resp
             .custom_attributes
             .into_iter()
@@ -75,7 +90,10 @@ fn wire_data_type_to_domain(data_type: Option<&str>) -> CustomAttributeType {
         Some("date") | Some("time") => CustomAttributeType::Time,
         Some("array") => CustomAttributeType::Array,
         Some(unknown) => {
-            tracing::warn!(data_type = unknown, "unknown Braze data_type, defaulting to string");
+            tracing::warn!(
+                data_type = unknown,
+                "unknown Braze data_type, defaulting to string"
+            );
             CustomAttributeType::String
         }
         None => CustomAttributeType::String,
@@ -325,6 +343,32 @@ mod tests {
             .set_custom_attribute_blocklist(&["legacy_segment"], true)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_errors_on_duplicate_name() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/custom_attributes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 3,
+                "custom_attributes": [
+                    {"custom_attribute_name": "dup", "data_type": "string"},
+                    {"custom_attribute_name": "unique", "data_type": "number"},
+                    {"custom_attribute_name": "dup", "data_type": "string"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let client = make_client(&server);
+        let err = client.list_custom_attributes().await.unwrap_err();
+        match err {
+            BrazeApiError::DuplicateNameInListResponse { endpoint, name } => {
+                assert_eq!(endpoint, "/custom_attributes");
+                assert_eq!(name, "dup");
+            }
+            other => panic!("expected DuplicateNameInListResponse, got {other:?}"),
+        }
     }
 
     #[tokio::test]

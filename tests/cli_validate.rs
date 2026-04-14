@@ -443,14 +443,13 @@ fn validate_custom_attribute_reports_duplicate_names() {
 #[test]
 fn validate_custom_attribute_reports_naming_pattern_violation() {
     let tmp = tempfile::tempdir().unwrap();
-    let config_path =
-        write_config(
-            tmp.path(),
-            ValidateNaming {
-                custom_attribute: Some("^[a-z][a-z0-9_]*$"),
-                ..Default::default()
-            },
-        );
+    let config_path = write_config(
+        tmp.path(),
+        ValidateNaming {
+            custom_attribute: Some("^[a-z][a-z0-9_]*$"),
+            ..Default::default()
+        },
+    );
     write_local_custom_attribute_registry(
         tmp.path(),
         "attributes:\n  - name: BadName\n    type: string\n",

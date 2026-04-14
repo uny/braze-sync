@@ -39,7 +39,9 @@ environments:
     api_key_env: BRAZE_VALIDATE_TEST_NOT_SET
 ",
     );
-    if naming.catalog.is_some() || naming.content_block.is_some() || naming.custom_attribute.is_some()
+    if naming.catalog.is_some()
+        || naming.content_block.is_some()
+        || naming.custom_attribute.is_some()
     {
         yaml.push_str("naming:\n");
         if let Some(p) = naming.catalog {
