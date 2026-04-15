@@ -36,11 +36,15 @@ impl CustomAttributeDiff {
         !matches!(self.op, CustomAttributeOp::Unchanged)
     }
 
-    /// Whether `apply` should consider this diff actionable.
-    /// `DeprecationToggled` produces an API call; `PresentInGitOnly` is
-    /// rejected as unsupported. `MetadataOnly` and `UnregisteredInGit`
-    /// are informational — they represent drift but `apply` cannot
-    /// resolve them (the fix is `export`, not `apply`).
+    /// Whether `apply` should consider this diff actionable — i.e. it
+    /// must not be skipped by the "No changes to apply" early exit.
+    ///
+    /// - `DeprecationToggled` produces an API call.
+    /// - `PresentInGitOnly` is included so it reaches
+    ///   `check_for_unsupported_ops` and produces a clear rejection
+    ///   error rather than being silently ignored.
+    /// - `MetadataOnly` and `UnregisteredInGit` are informational drift
+    ///   that `apply` cannot resolve (the fix is `export`, not `apply`).
     pub fn is_actionable(&self) -> bool {
         matches!(
             self.op,

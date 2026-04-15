@@ -136,7 +136,14 @@ pub async fn run(
     print!("{}", format.formatter().format(&summary));
 
     if summary.actionable_count() == 0 {
-        eprintln!("No changes to apply.");
+        if summary.changed_count() > 0 {
+            eprintln!(
+                "No actionable changes to apply \
+                 (informational drift above can be reconciled with `export`)."
+            );
+        } else {
+            eprintln!("No changes to apply.");
+        }
         return Ok(());
     }
 
