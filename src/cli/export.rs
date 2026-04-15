@@ -71,6 +71,12 @@ pub async fn run(
                 total_written += n;
             }
             ResourceKind::CustomAttribute => {
+                if args.name.is_some() {
+                    eprintln!(
+                        "⚠ custom_attribute: --name is not supported for export \
+                         (the registry is a single file); exporting all attributes"
+                    );
+                }
                 let n = export_custom_attributes(&client, &custom_attributes_path)
                     .await
                     .context("exporting custom_attribute")?;
