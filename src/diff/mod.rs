@@ -118,8 +118,9 @@ impl ResourceDiff {
 
     /// Whether `apply` can act on this diff. For most resource types this
     /// is the same as `has_changes()`. Custom Attributes are the exception:
-    /// `MetadataOnly`, `UnregisteredInGit`, and `PresentInGitOnly` are
-    /// informational drift that `apply` cannot resolve via API.
+    /// `MetadataOnly` and `UnregisteredInGit` are informational drift
+    /// that `apply` cannot resolve via API. `PresentInGitOnly` is
+    /// actionable so `apply` can surface the unsupported-create error.
     pub fn is_actionable(&self) -> bool {
         match self {
             Self::CustomAttribute(d) => d.is_actionable(),

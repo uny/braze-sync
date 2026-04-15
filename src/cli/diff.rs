@@ -96,9 +96,13 @@ pub async fn run(
                 summary.diffs.extend(diffs);
             }
             ResourceKind::CustomAttribute => {
-                let diffs = compute_custom_attribute_diffs(&client, &custom_attributes_path)
-                    .await
-                    .context("computing custom_attribute diff")?;
+                let diffs = compute_custom_attribute_diffs(
+                    &client,
+                    &custom_attributes_path,
+                    args.name.as_deref(),
+                )
+                .await
+                .context("computing custom_attribute diff")?;
                 summary.diffs.extend(diffs);
             }
         }
@@ -429,15 +433,21 @@ pub(crate) async fn compute_catalog_items_diffs(
 
 /// Compute Custom Attribute diffs by comparing the local registry file
 /// against the Braze attribute list. Shared by `diff` and `apply`.
+///
+/// When `name_filter` is `Some`, only the attribute with that exact name
+/// is included in the result — consistent with the `--name` flag on
+/// other resource types.
 pub(crate) async fn compute_custom_attribute_diffs(
     client: &BrazeClient,
     registry_path: &Path,
+    name_filter: Option<&str>,
 ) -> anyhow::Result<Vec<ResourceDiff>> {
     let local = custom_attribute_io::load_registry(registry_path)?;
     let remote = client.list_custom_attributes().await?;
     let attr_diffs = diff_custom_attributes(local.as_ref(), &remote);
     Ok(attr_diffs
         .into_iter()
+        .filter(|d| name_filter.is_none_or(|n| d.name == n))
         .map(ResourceDiff::CustomAttribute)
         .collect())
 }

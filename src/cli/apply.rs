@@ -119,9 +119,13 @@ pub async fn run(
                 email_template_id_index = Some(idx);
             }
             ResourceKind::CustomAttribute => {
-                let diffs = compute_custom_attribute_diffs(&client, &custom_attributes_path)
-                    .await
-                    .context("computing custom_attribute plan")?;
+                let diffs = compute_custom_attribute_diffs(
+                    &client,
+                    &custom_attributes_path,
+                    args.name.as_deref(),
+                )
+                .await
+                .context("computing custom_attribute plan")?;
                 summary.diffs.extend(diffs);
             }
         }

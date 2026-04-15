@@ -1,0 +1,23 @@
+---
+source: src/format/snapshot_tests.rs
+expression: "JsonFormatter.format(&fixtures::custom_attribute_unchanged_with_hint())"
+---
+{
+  "version": 1,
+  "summary": {
+    "changed": 0,
+    "in_sync": 1,
+    "destructive": 0,
+    "orphan": 0
+  },
+  "diffs": [
+    {
+      "kind": "custom_attribute",
+      "name": "visit_count",
+      "op": "unchanged",
+      "hints": [
+        "type mismatch: local number vs Braze string (run export to update)"
+      ]
+    }
+  ]
+}
