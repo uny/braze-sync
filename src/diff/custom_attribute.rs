@@ -35,6 +35,18 @@ impl CustomAttributeDiff {
     pub fn has_changes(&self) -> bool {
         !matches!(self.op, CustomAttributeOp::Unchanged)
     }
+
+    /// Whether `apply` should consider this diff actionable.
+    /// `DeprecationToggled` produces an API call; `PresentInGitOnly` is
+    /// rejected as unsupported. `MetadataOnly` and `UnregisteredInGit`
+    /// are informational — they represent drift but `apply` cannot
+    /// resolve them (the fix is `export`, not `apply`).
+    pub fn is_actionable(&self) -> bool {
+        matches!(
+            self.op,
+            CustomAttributeOp::DeprecationToggled { .. } | CustomAttributeOp::PresentInGitOnly
+        )
+    }
 }
 
 /// Compare a local registry against a remote (Braze) attribute set and
@@ -118,7 +130,7 @@ fn diff_single_attribute(
     // `apply`.
     if local.attribute_type != remote.attribute_type {
         hints.push(format!(
-            "type mismatch: local {:?} vs Braze {:?} (run export to update)",
+            "type mismatch: local {} vs Braze {} (run export to update)",
             local.attribute_type, remote.attribute_type,
         ));
     }
@@ -309,6 +321,20 @@ mod tests {
     }
 
     #[test]
+    fn is_actionable_correctly_classifies() {
+        let make = |op: CustomAttributeOp| CustomAttributeDiff {
+            name: "x".into(),
+            op,
+            hints: Vec::new(),
+        };
+        assert!(make(CustomAttributeOp::DeprecationToggled { from: false, to: true }).is_actionable());
+        assert!(make(CustomAttributeOp::PresentInGitOnly).is_actionable());
+        assert!(!make(CustomAttributeOp::MetadataOnly).is_actionable());
+        assert!(!make(CustomAttributeOp::UnregisteredInGit).is_actionable());
+        assert!(!make(CustomAttributeOp::Unchanged).is_actionable());
+    }
+
+    #[test]
     fn deprecation_toggle_with_description_diff_adds_hint() {
         let registry = CustomAttributeRegistry {
             attributes: vec![CustomAttribute {
@@ -353,6 +379,12 @@ mod tests {
         assert!(matches!(diffs[0].op, CustomAttributeOp::Unchanged));
         assert_eq!(diffs[0].hints.len(), 1);
         assert!(diffs[0].hints[0].contains("type mismatch"));
+        // Verify snake_case format (Display), not Debug (Number/String).
+        assert!(
+            diffs[0].hints[0].contains("local number vs Braze string"),
+            "hint should use snake_case: {}",
+            diffs[0].hints[0]
+        );
     }
 
     #[test]

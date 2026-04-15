@@ -135,7 +135,7 @@ pub async fn run(
     eprintln!("{mode_label}");
     print!("{}", format.formatter().format(&summary));
 
-    if summary.changed_count() == 0 {
+    if summary.actionable_count() == 0 {
         eprintln!("No changes to apply.");
         return Ok(());
     }

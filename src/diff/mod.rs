@@ -116,6 +116,17 @@ impl ResourceDiff {
         }
     }
 
+    /// Whether `apply` can act on this diff. For most resource types this
+    /// is the same as `has_changes()`. Custom Attributes are the exception:
+    /// `MetadataOnly`, `UnregisteredInGit`, and `PresentInGitOnly` are
+    /// informational drift that `apply` cannot resolve via API.
+    pub fn is_actionable(&self) -> bool {
+        match self {
+            Self::CustomAttribute(d) => d.is_actionable(),
+            other => other.has_changes(),
+        }
+    }
+
     pub fn has_destructive(&self) -> bool {
         match self {
             Self::CatalogSchema(d) => d.has_destructive(),
@@ -147,6 +158,12 @@ pub struct DiffSummary {
 impl DiffSummary {
     pub fn changed_count(&self) -> usize {
         self.diffs.iter().filter(|d| d.has_changes()).count()
+    }
+
+    /// Count of diffs that `apply` can actually act on. Excludes
+    /// informational-only drift (e.g. Custom Attribute metadata-only).
+    pub fn actionable_count(&self) -> usize {
+        self.diffs.iter().filter(|d| d.is_actionable()).count()
     }
 
     pub fn destructive_count(&self) -> usize {
