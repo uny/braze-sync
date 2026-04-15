@@ -13,7 +13,9 @@
 //! - Pagination: `limit` (default 100, max 1000) + `offset`
 
 use crate::braze::error::BrazeApiError;
-use crate::braze::{check_pagination, classify_info_message, BrazeClient, InfoMessageClass};
+use crate::braze::{
+    check_duplicate_names, check_pagination, classify_info_message, BrazeClient, InfoMessageClass,
+};
 use crate::resource::EmailTemplate;
 use serde::{Deserialize, Serialize};
 
@@ -43,18 +45,11 @@ impl BrazeClient {
             "/templates/email/list",
         )?;
 
-        // Duplicate names would collapse the name→id index in
-        // compute_email_template_plan.
-        let mut seen: std::collections::HashSet<&str> =
-            std::collections::HashSet::with_capacity(resp.templates.len());
-        for entry in &resp.templates {
-            if !seen.insert(entry.template_name.as_str()) {
-                return Err(BrazeApiError::DuplicateNameInListResponse {
-                    endpoint: "/templates/email/list",
-                    name: entry.template_name.clone(),
-                });
-            }
-        }
+        check_duplicate_names(
+            resp.templates.iter().map(|e| e.template_name.as_str()),
+            resp.templates.len(),
+            "/templates/email/list",
+        )?;
 
         Ok(resp
             .templates

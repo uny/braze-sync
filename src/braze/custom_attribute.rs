@@ -9,7 +9,7 @@
 //! is no declarative "create attribute" API.
 
 use crate::braze::error::BrazeApiError;
-use crate::braze::{check_pagination, BrazeClient};
+use crate::braze::{check_duplicate_names, check_pagination, BrazeClient};
 use crate::resource::{CustomAttribute, CustomAttributeType};
 use serde::{Deserialize, Serialize};
 
@@ -35,20 +35,11 @@ impl BrazeClient {
             "/custom_attributes",
         )?;
 
-        // Duplicate names would collapse the name-keyed BTreeMap in
-        // diff_registry, silently dropping one of a pair. Braze is
-        // expected to enforce uniqueness; this is a loud contract
-        // violation, consistent with content_block / email_template.
-        let mut seen: std::collections::HashSet<&str> =
-            std::collections::HashSet::with_capacity(returned);
-        for entry in &resp.custom_attributes {
-            if !seen.insert(entry.custom_attribute_name.as_str()) {
-                return Err(BrazeApiError::DuplicateNameInListResponse {
-                    endpoint: "/custom_attributes",
-                    name: entry.custom_attribute_name.clone(),
-                });
-            }
-        }
+        check_duplicate_names(
+            resp.custom_attributes.iter().map(|e| e.custom_attribute_name.as_str()),
+            returned,
+            "/custom_attributes",
+        )?;
 
         Ok(resp
             .custom_attributes

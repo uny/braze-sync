@@ -6,7 +6,9 @@
 //! remote-only blocks are surfaced as orphans rather than `Removed` diffs.
 
 use crate::braze::error::BrazeApiError;
-use crate::braze::{check_pagination, classify_info_message, BrazeClient, InfoMessageClass};
+use crate::braze::{
+    check_duplicate_names, check_pagination, classify_info_message, BrazeClient, InfoMessageClass,
+};
 use crate::resource::{ContentBlock, ContentBlockState};
 use serde::{Deserialize, Serialize};
 
@@ -36,21 +38,11 @@ impl BrazeClient {
             "/content_blocks/list",
         )?;
 
-        // Duplicate names would collapse the name→id index in
-        // `diff::compute_content_block_plan`, making one of a pair
-        // invisible to every subsequent list/update/archive op. Braze
-        // is expected to enforce uniqueness, so this is a loud contract
-        // violation, not a recoverable condition.
-        let mut seen: std::collections::HashSet<&str> =
-            std::collections::HashSet::with_capacity(resp.content_blocks.len());
-        for entry in &resp.content_blocks {
-            if !seen.insert(entry.name.as_str()) {
-                return Err(BrazeApiError::DuplicateNameInListResponse {
-                    endpoint: "/content_blocks/list",
-                    name: entry.name.clone(),
-                });
-            }
-        }
+        check_duplicate_names(
+            resp.content_blocks.iter().map(|e| e.name.as_str()),
+            resp.content_blocks.len(),
+            "/content_blocks/list",
+        )?;
 
         Ok(resp
             .content_blocks

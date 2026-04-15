@@ -220,6 +220,25 @@ pub(crate) fn check_pagination(
     Ok(())
 }
 
+/// Check that no two items in a list response share the same name.
+/// Shared by every list endpoint that indexes resources by name.
+pub(crate) fn check_duplicate_names<'a>(
+    names: impl Iterator<Item = &'a str>,
+    count: usize,
+    endpoint: &'static str,
+) -> Result<(), BrazeApiError> {
+    let mut seen = std::collections::HashSet::with_capacity(count);
+    for name in names {
+        if !seen.insert(name) {
+            return Err(BrazeApiError::DuplicateNameInListResponse {
+                endpoint,
+                name: name.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Outcome of classifying the `message` field on a Braze `/info`
 /// response. Shared by content_block and email_template — the only
 /// difference is the resource-specific "not found" phrase.
