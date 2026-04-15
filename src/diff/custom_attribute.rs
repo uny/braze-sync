@@ -60,7 +60,19 @@ pub fn diff_registry(
     remote: &[CustomAttribute],
 ) -> Vec<CustomAttributeDiff> {
     let local_by_name: BTreeMap<&str, &CustomAttribute> = local
-        .map(|r| r.attributes.iter().map(|a| (a.name.as_str(), a)).collect())
+        .map(|r| {
+            let mut map = BTreeMap::new();
+            for a in &r.attributes {
+                if map.insert(a.name.as_str(), a).is_some() {
+                    tracing::warn!(
+                        name = a.name.as_str(),
+                        "duplicate custom attribute name in local registry; \
+                         last entry wins (run `validate` to catch this)"
+                    );
+                }
+            }
+            map
+        })
         .unwrap_or_default();
 
     let remote_by_name: BTreeMap<&str, &CustomAttribute> =
@@ -175,6 +187,18 @@ mod tests {
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].name, "bar");
         assert!(matches!(diffs[0].op, CustomAttributeOp::UnregisteredInGit));
+    }
+
+    #[test]
+    fn duplicate_local_name_uses_last_entry() {
+        let registry = CustomAttributeRegistry {
+            attributes: vec![attr("dup", true, None), attr("dup", false, None)],
+        };
+        let remote = vec![attr("dup", false, None)];
+        let diffs = diff_registry(Some(&registry), &remote);
+        assert_eq!(diffs.len(), 1);
+        // Last entry (deprecated=false) wins → matches remote → Unchanged.
+        assert!(matches!(diffs[0].op, CustomAttributeOp::Unchanged));
     }
 
     #[test]
