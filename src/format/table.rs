@@ -191,4 +191,7 @@ fn render_custom_attribute(out: &mut String, d: &CustomAttributeDiff) {
         }
         CustomAttributeOp::Unchanged => {}
     }
+    for hint in &d.hints {
+        let _ = writeln!(out, "   ℹ {hint}");
+    }
 }

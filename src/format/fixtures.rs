@@ -184,6 +184,7 @@ pub fn all_kinds_mixed() -> DiffSummary {
             from: false,
             to: true,
         },
+        hints: Vec::new(),
     };
 
     DiffSummary {

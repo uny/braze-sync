@@ -10,6 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct CustomAttributeDiff {
     pub name: String,
     pub op: CustomAttributeOp,
+    /// Non-actionable notes surfaced in diff output (e.g. "description
+    /// also differs", "type is stale"). These do NOT count as changes.
+    pub hints: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -59,15 +62,16 @@ pub fn diff_registry(
     for name in all_names {
         let l = local_by_name.get(name);
         let r = remote_by_name.get(name);
-        let op = match (l, r) {
+        let (op, hints) = match (l, r) {
             (Some(local_attr), Some(remote_attr)) => diff_single_attribute(local_attr, remote_attr),
-            (Some(_), None) => CustomAttributeOp::PresentInGitOnly,
-            (None, Some(_)) => CustomAttributeOp::UnregisteredInGit,
+            (Some(_), None) => (CustomAttributeOp::PresentInGitOnly, Vec::new()),
+            (None, Some(_)) => (CustomAttributeOp::UnregisteredInGit, Vec::new()),
             (None, None) => unreachable!("name came from one of the two maps"),
         };
         diffs.push(CustomAttributeDiff {
             name: name.to_string(),
             op,
+            hints,
         });
     }
 
@@ -85,39 +89,40 @@ pub fn diff_registry(
 /// `DeprecationToggled` is reported. This is by design: `apply` will
 /// push the deprecation toggle, and the user should re-run `export`
 /// afterwards to reconcile the description with Braze's state.
-fn diff_single_attribute(local: &CustomAttribute, remote: &CustomAttribute) -> CustomAttributeOp {
+fn diff_single_attribute(
+    local: &CustomAttribute,
+    remote: &CustomAttribute,
+) -> (CustomAttributeOp, Vec<String>) {
+    let mut hints = Vec::new();
+
     if local.deprecated != remote.deprecated {
         if !opt_str_eq(&local.description, &remote.description) {
-            tracing::info!(
-                name = local.name,
-                local_description = local.description.as_deref().unwrap_or("(none)"),
-                remote_description = remote.description.as_deref().unwrap_or("(none)"),
-                "description also differs; will be reconciled on next export"
-            );
+            hints.push("description also differs; will be reconciled on next export".into());
         }
-        return CustomAttributeOp::DeprecationToggled {
-            from: remote.deprecated,
-            to: local.deprecated,
-        };
+        return (
+            CustomAttributeOp::DeprecationToggled {
+                from: remote.deprecated,
+                to: local.deprecated,
+            },
+            hints,
+        );
     }
     if !opt_str_eq(&local.description, &remote.description) {
-        return CustomAttributeOp::MetadataOnly;
+        return (CustomAttributeOp::MetadataOnly, hints);
     }
     // attribute_type differences are treated as `Unchanged` — not
     // `MetadataOnly` — because the semantics differ: MetadataOnly means
     // "the user intentionally changed something that can't be pushed",
     // whereas a type mismatch means "the local registry is stale" (Braze
     // is the sole authority on types). The fix is always `export`, not
-    // `apply`. We log it so `--verbose` users see the hint.
+    // `apply`.
     if local.attribute_type != remote.attribute_type {
-        tracing::info!(
-            name = local.name,
-            local_type = ?local.attribute_type,
-            remote_type = ?remote.attribute_type,
-            "attribute type mismatch (Braze is authoritative; run export to update local registry)"
-        );
+        hints.push(format!(
+            "type mismatch: local {:?} vs Braze {:?} (run export to update)",
+            local.attribute_type, remote.attribute_type,
+        ));
     }
-    CustomAttributeOp::Unchanged
+    (CustomAttributeOp::Unchanged, hints)
 }
 
 #[cfg(test)]
@@ -291,13 +296,72 @@ mod tests {
         let unchanged = CustomAttributeDiff {
             name: "x".into(),
             op: CustomAttributeOp::Unchanged,
+            hints: Vec::new(),
         };
         assert!(!unchanged.has_changes());
 
         let changed = CustomAttributeDiff {
             name: "x".into(),
             op: CustomAttributeOp::PresentInGitOnly,
+            hints: Vec::new(),
         };
         assert!(changed.has_changes());
+    }
+
+    #[test]
+    fn deprecation_toggle_with_description_diff_adds_hint() {
+        let registry = CustomAttributeRegistry {
+            attributes: vec![CustomAttribute {
+                name: "x".into(),
+                attribute_type: CustomAttributeType::String,
+                description: Some("local desc".into()),
+                deprecated: true,
+            }],
+        };
+        let remote = vec![CustomAttribute {
+            name: "x".into(),
+            attribute_type: CustomAttributeType::String,
+            description: Some("remote desc".into()),
+            deprecated: false,
+        }];
+        let diffs = diff_registry(Some(&registry), &remote);
+        assert!(matches!(
+            diffs[0].op,
+            CustomAttributeOp::DeprecationToggled { .. }
+        ));
+        assert_eq!(diffs[0].hints.len(), 1);
+        assert!(diffs[0].hints[0].contains("description"));
+    }
+
+    #[test]
+    fn type_mismatch_adds_hint_but_stays_unchanged() {
+        let registry = CustomAttributeRegistry {
+            attributes: vec![CustomAttribute {
+                name: "x".into(),
+                attribute_type: CustomAttributeType::Number,
+                description: None,
+                deprecated: false,
+            }],
+        };
+        let remote = vec![CustomAttribute {
+            name: "x".into(),
+            attribute_type: CustomAttributeType::String,
+            description: None,
+            deprecated: false,
+        }];
+        let diffs = diff_registry(Some(&registry), &remote);
+        assert!(matches!(diffs[0].op, CustomAttributeOp::Unchanged));
+        assert_eq!(diffs[0].hints.len(), 1);
+        assert!(diffs[0].hints[0].contains("type mismatch"));
+    }
+
+    #[test]
+    fn no_hints_when_fully_matching() {
+        let registry = CustomAttributeRegistry {
+            attributes: vec![attr("x", false, Some("desc"))],
+        };
+        let remote = vec![attr("x", false, Some("desc"))];
+        let diffs = diff_registry(Some(&registry), &remote);
+        assert!(diffs[0].hints.is_empty());
     }
 }
