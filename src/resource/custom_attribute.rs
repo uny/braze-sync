@@ -14,10 +14,6 @@
 
 use serde::{Deserialize, Serialize};
 
-fn is_false(v: &bool) -> bool {
-    !v
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CustomAttributeRegistry {
     pub attributes: Vec<CustomAttribute>,
@@ -31,7 +27,7 @@ pub struct CustomAttribute {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Marks the attribute deprecated. The only mutation `apply` performs.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deprecated: bool,
 }
 

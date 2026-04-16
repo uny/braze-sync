@@ -44,8 +44,8 @@ fn render_one(out: &mut String, diff: &ResourceDiff) {
 
     if unchanged {
         out.push_str("   no drift\n");
-        // Custom Attributes may carry informational hints even when
-        // unchanged (e.g. type mismatch). Fall through to render them.
+        // Custom Attributes may carry informational hints (e.g. type
+        // mismatch) even when unchanged.
         if let ResourceDiff::CustomAttribute(d) = diff {
             render_custom_attribute(out, d);
         }

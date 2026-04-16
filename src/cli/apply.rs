@@ -222,8 +222,6 @@ pub async fn run(
         }
     }
 
-    // Batch custom attribute deprecation toggles — the Braze endpoint
-    // accepts multiple names per call, so group by direction to avoid N+1.
     applied += apply_custom_attribute_batch(&client, &ca_deprecate, &ca_reactivate).await?;
 
     eprintln!("✓ Applied {applied} change(s).");
