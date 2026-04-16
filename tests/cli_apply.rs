@@ -1119,3 +1119,133 @@ async fn apply_custom_attribute_present_in_git_only_rejects() {
         "stderr: {stderr}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_custom_attribute_metadata_only_is_informational_no_op() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/custom_attributes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1,
+            "custom_attributes": [
+                {
+                    "custom_attribute_name": "drift",
+                    "data_type": "string",
+                    "description": "remote desc",
+                    "blocklisted": false
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+    // MetadataOnly is informational drift — `apply` must not POST.
+    Mock::given(method("POST"))
+        .and(path("/custom_attributes/blocklist"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  - name: drift\n    type: string\n    description: local desc\n",
+    );
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "custom_attribute", "--confirm"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("No actionable changes to apply"),
+        "expected informational-drift message; stderr: {stderr}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_custom_attribute_batches_both_directions() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/custom_attributes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2,
+            "custom_attributes": [
+                {
+                    "custom_attribute_name": "to_deprecate",
+                    "data_type": "string",
+                    "blocklisted": false
+                },
+                {
+                    "custom_attribute_name": "to_reactivate",
+                    "data_type": "string",
+                    "blocklisted": true
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/custom_attributes/blocklist"))
+        .and(body_json(json!({
+            "custom_attribute_names": ["to_deprecate"],
+            "blocklisted": true
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/custom_attributes/blocklist"))
+        .and(body_json(json!({
+            "custom_attribute_names": ["to_reactivate"],
+            "blocklisted": false
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  \
+         - name: to_deprecate\n    type: string\n    deprecated: true\n  \
+         - name: to_reactivate\n    type: string\n",
+    );
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "custom_attribute", "--confirm"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Applied 2 change(s)"), "stderr: {stderr}");
+}
