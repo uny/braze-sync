@@ -36,7 +36,9 @@ impl BrazeClient {
         )?;
 
         check_duplicate_names(
-            resp.custom_attributes.iter().map(|e| e.custom_attribute_name.as_str()),
+            resp.custom_attributes
+                .iter()
+                .map(|e| e.custom_attribute_name.as_str()),
             returned,
             "/custom_attributes",
         )?;
@@ -74,15 +76,12 @@ impl BrazeClient {
 
 /// Map the Braze wire `data_type` string to our domain enum.
 /// Unknown types default to `String` — forward-compat for types Braze
-/// may add in the future.
+/// may add in the future. `"number"` and `"bool"` aliases are undocumented
+/// but guarded defensively in case the API ever returns them.
 fn wire_data_type_to_domain(data_type: Option<&str>) -> CustomAttributeType {
     match data_type {
         Some("string") => CustomAttributeType::String,
-        // Braze docs list "integer" and "float"; "number" is not
-        // documented but included defensively in case the API ever
-        // returns it as an alias.
         Some("integer") | Some("float") | Some("number") => CustomAttributeType::Number,
-        // "bool" is not documented either but guarded for the same reason.
         Some("boolean") | Some("bool") => CustomAttributeType::Boolean,
         Some("date") | Some("time") => CustomAttributeType::Time,
         Some("array") => CustomAttributeType::Array,

@@ -122,6 +122,30 @@ fn compile_name_pattern(
     }
 }
 
+/// Check `name` against the compiled pattern and push a uniform
+/// "does not match <config_key>" issue when it fails. `kind_label` is
+/// the human-readable resource noun for the message (e.g. `"catalog"`).
+fn check_name_pattern(
+    pattern: Option<&(String, Regex)>,
+    name: &str,
+    path: &Path,
+    kind_label: &str,
+    config_key: &str,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    let Some((pattern_str, re)) = pattern else {
+        return;
+    };
+    if !re.is_match(name) {
+        issues.push(ValidationIssue {
+            path: path.to_path_buf(),
+            message: format!(
+                "{kind_label} name '{name}' does not match {config_key} '{pattern_str}'"
+            ),
+        });
+    }
+}
+
 fn validate_catalog_schemas(
     catalogs_root: &Path,
     name_pattern: Option<&str>,
@@ -170,17 +194,14 @@ fn validate_catalog_schemas(
             });
         }
 
-        if let Some((pattern_str, re)) = &pattern {
-            if !re.is_match(&cat.name) {
-                issues.push(ValidationIssue {
-                    path: schema_path.clone(),
-                    message: format!(
-                        "catalog name '{}' does not match catalog_name_pattern '{}'",
-                        cat.name, pattern_str
-                    ),
-                });
-            }
-        }
+        check_name_pattern(
+            pattern.as_ref(),
+            &cat.name,
+            &schema_path,
+            "catalog",
+            "catalog_name_pattern",
+            issues,
+        );
     }
 
     Ok(())
@@ -234,17 +255,14 @@ fn validate_content_blocks(
             });
         }
 
-        if let Some((pattern_str, re)) = &pattern {
-            if !re.is_match(&cb.name) {
-                issues.push(ValidationIssue {
-                    path: path.clone(),
-                    message: format!(
-                        "content block name '{}' does not match content_block_name_pattern '{}'",
-                        cb.name, pattern_str
-                    ),
-                });
-            }
-        }
+        check_name_pattern(
+            pattern.as_ref(),
+            &cb.name,
+            &path,
+            "content block",
+            "content_block_name_pattern",
+            issues,
+        );
     }
 
     Ok(())
@@ -409,17 +427,14 @@ fn validate_custom_attributes(
             });
         }
 
-        if let Some((pattern_str, re)) = &pattern {
-            if !re.is_match(&attr.name) {
-                issues.push(ValidationIssue {
-                    path: registry_path.to_path_buf(),
-                    message: format!(
-                        "custom attribute name '{}' does not match custom_attribute_name_pattern '{}'",
-                        attr.name, pattern_str
-                    ),
-                });
-            }
-        }
+        check_name_pattern(
+            pattern.as_ref(),
+            &attr.name,
+            registry_path,
+            "custom attribute",
+            "custom_attribute_name_pattern",
+            issues,
+        );
     }
 
     Ok(())

@@ -603,13 +603,9 @@ async fn apply_email_template(
     }
 }
 
-/// Batch custom attribute deprecation toggles by direction (deprecate
-/// vs. reactivate) so we issue at most two API calls instead of one per
-/// attribute.
-///
-/// Each successful batch is reported to stderr immediately so the
-/// user knows what was already committed if a later batch fails.
-/// A re-run will skip the already-applied toggles.
+/// Batch custom attribute deprecation toggles by direction so we issue
+/// at most two API calls. Each batch is reported to stderr on success so
+/// the user can tell what was committed if a later batch fails.
 async fn apply_custom_attribute_batch(
     client: &BrazeClient,
     to_deprecate: &[&str],
@@ -629,7 +625,11 @@ async fn apply_custom_attribute_batch(
             .await
             .with_context(|| format!("{verb} custom attributes"))?;
         let n = names.len();
-        let past = if blocklisted { "deprecated" } else { "reactivated" };
+        let past = if blocklisted {
+            "deprecated"
+        } else {
+            "reactivated"
+        };
         eprintln!("  ✓ {past} {n} custom attribute(s)");
         applied += n;
     }

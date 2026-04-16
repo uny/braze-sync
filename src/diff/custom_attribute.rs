@@ -356,7 +356,11 @@ mod tests {
             op,
             hints: Vec::new(),
         };
-        assert!(make(CustomAttributeOp::DeprecationToggled { from: false, to: true }).is_actionable());
+        assert!(make(CustomAttributeOp::DeprecationToggled {
+            from: false,
+            to: true
+        })
+        .is_actionable());
         assert!(make(CustomAttributeOp::PresentInGitOnly).is_actionable());
         assert!(!make(CustomAttributeOp::MetadataOnly).is_actionable());
         assert!(!make(CustomAttributeOp::UnregisteredInGit).is_actionable());

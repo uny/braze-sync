@@ -136,7 +136,5 @@ fn custom_attribute_unchanged_with_hint_table() {
 
 #[test]
 fn custom_attribute_unchanged_with_hint_json() {
-    insta::assert_snapshot!(
-        JsonFormatter.format(&fixtures::custom_attribute_unchanged_with_hint())
-    );
+    insta::assert_snapshot!(JsonFormatter.format(&fixtures::custom_attribute_unchanged_with_hint()));
 }

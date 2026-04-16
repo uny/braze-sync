@@ -204,9 +204,7 @@ pub fn custom_attribute_unchanged_with_hint() -> DiffSummary {
     let ca = CustomAttributeDiff {
         name: "visit_count".into(),
         op: CustomAttributeOp::Unchanged,
-        hints: vec![
-            "type mismatch: local number vs Braze string (run export to update)".into(),
-        ],
+        hints: vec!["type mismatch: local number vs Braze string (run export to update)".into()],
     };
     DiffSummary {
         diffs: vec![ResourceDiff::CustomAttribute(ca)],
