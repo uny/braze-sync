@@ -171,6 +171,8 @@ pub async fn run(
 
     let parallel_batches = resolved.resources.catalog_items.parallel_batches;
     let mut applied = 0;
+    let mut ca_deprecate: Vec<&str> = Vec::new();
+    let mut ca_reactivate: Vec<&str> = Vec::new();
     for diff in &summary.diffs {
         match diff {
             ResourceDiff::CatalogSchema(d) => {
@@ -208,15 +210,21 @@ pub async fn run(
                 )
                 .await?;
             }
-            ResourceDiff::CustomAttribute(_) => {
-                // Batched in apply_custom_attribute_batch() below.
+            ResourceDiff::CustomAttribute(d) => {
+                if let CustomAttributeOp::DeprecationToggled { to, .. } = &d.op {
+                    if *to {
+                        ca_deprecate.push(&d.name);
+                    } else {
+                        ca_reactivate.push(&d.name);
+                    }
+                }
             }
         }
     }
 
     // Batch custom attribute deprecation toggles — the Braze endpoint
     // accepts multiple names per call, so group by direction to avoid N+1.
-    applied += apply_custom_attribute_batch(&client, &summary).await?;
+    applied += apply_custom_attribute_batch(&client, ca_deprecate, ca_reactivate).await?;
 
     eprintln!("✓ Applied {applied} change(s).");
     Ok(())
@@ -604,22 +612,9 @@ async fn apply_email_template(
 /// A re-run will skip the already-applied toggles.
 async fn apply_custom_attribute_batch(
     client: &BrazeClient,
-    summary: &DiffSummary,
+    to_deprecate: Vec<&str>,
+    to_reactivate: Vec<&str>,
 ) -> anyhow::Result<usize> {
-    let mut to_deprecate: Vec<&str> = Vec::new();
-    let mut to_reactivate: Vec<&str> = Vec::new();
-    for diff in &summary.diffs {
-        if let ResourceDiff::CustomAttribute(d) = diff {
-            if let CustomAttributeOp::DeprecationToggled { to, .. } = &d.op {
-                if *to {
-                    to_deprecate.push(&d.name);
-                } else {
-                    to_reactivate.push(&d.name);
-                }
-            }
-        }
-    }
-
     let mut applied = 0;
     if !to_deprecate.is_empty() {
         tracing::info!(
