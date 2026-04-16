@@ -6,7 +6,9 @@
 //! remote-only blocks are surfaced as orphans rather than `Removed` diffs.
 
 use crate::braze::error::BrazeApiError;
-use crate::braze::{classify_info_message, BrazeClient, InfoMessageClass};
+use crate::braze::{
+    check_duplicate_names, check_pagination, classify_info_message, BrazeClient, InfoMessageClass,
+};
 use crate::resource::{ContentBlock, ContentBlockState};
 use serde::{Deserialize, Serialize};
 
@@ -28,48 +30,19 @@ impl BrazeClient {
         let resp: ContentBlockListResponse = self.send_json(req).await?;
         let returned = resp.content_blocks.len();
 
-        // Fail closed when the page is or might be truncated. The
-        // ambiguous case (full page, no `count`) is treated as truncated
-        // because we'd rather refuse a workspace that happens to have
-        // exactly LIST_LIMIT blocks than let apply create duplicates of
-        // page-2 blocks in a workspace with LIST_LIMIT + N.
-        // The remaining `_ => None` arm also covers `None if returned <
-        // LIST_LIMIT`: a short page with no `count` is trusted as the
-        // full workspace because every paginated API we know of returns
-        // exactly `limit` when more pages exist. If Braze ever returns a
-        // soft-filtered short page (e.g. tombstoned entries hidden
-        // server-side), that assumption would silently truncate — worth
-        // revisiting in Phase C alongside real pagination.
-        let truncation_detail: Option<String> = match resp.count {
-            Some(total) if total > returned => Some(format!("got {returned} of {total} results")),
-            None if returned >= LIST_LIMIT as usize => Some(format!(
-                "got a full page of {returned} result(s) with no total reported; \
-                 cannot verify whether more exist"
-            )),
-            _ => None,
-        };
-        if let Some(detail) = truncation_detail {
-            return Err(BrazeApiError::PaginationNotImplemented {
-                endpoint: "/content_blocks/list",
-                detail,
-            });
-        }
+        // Fail closed when the page is or might be truncated.
+        check_pagination(
+            resp.count,
+            returned,
+            LIST_LIMIT as usize,
+            "/content_blocks/list",
+        )?;
 
-        // Duplicate names would collapse the name→id index in
-        // `diff::compute_content_block_plan`, making one of a pair
-        // invisible to every subsequent list/update/archive op. Braze
-        // is expected to enforce uniqueness, so this is a loud contract
-        // violation, not a recoverable condition.
-        let mut seen: std::collections::HashSet<&str> =
-            std::collections::HashSet::with_capacity(resp.content_blocks.len());
-        for entry in &resp.content_blocks {
-            if !seen.insert(entry.name.as_str()) {
-                return Err(BrazeApiError::DuplicateNameInListResponse {
-                    endpoint: "/content_blocks/list",
-                    name: entry.name.clone(),
-                });
-            }
-        }
+        check_duplicate_names(
+            resp.content_blocks.iter().map(|e| e.name.as_str()),
+            resp.content_blocks.len(),
+            "/content_blocks/list",
+        )?;
 
         Ok(resp
             .content_blocks

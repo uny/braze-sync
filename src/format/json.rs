@@ -87,6 +87,8 @@ enum JsonDiffEntry {
         name: String,
         #[serde(flatten)]
         change: JsonCustomAttributeChange,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        hints: Vec<String>,
     },
 }
 
@@ -205,6 +207,7 @@ impl JsonDiffEntry {
         Self::CustomAttribute {
             name: c.name.clone(),
             change: json_custom_attribute_change(&c.op),
+            hints: c.hints.clone(),
         }
     }
 }

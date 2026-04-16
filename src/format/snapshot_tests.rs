@@ -122,3 +122,19 @@ fn all_kinds_mixed_table() {
 fn all_kinds_mixed_json() {
     insta::assert_snapshot!(JsonFormatter.format(&fixtures::all_kinds_mixed()));
 }
+
+// =====================================================================
+// custom attribute unchanged with type-mismatch hint
+// =====================================================================
+
+#[test]
+fn custom_attribute_unchanged_with_hint_table() {
+    insta::assert_snapshot!(
+        TableFormatter.format(&fixtures::custom_attribute_unchanged_with_hint())
+    );
+}
+
+#[test]
+fn custom_attribute_unchanged_with_hint_json() {
+    insta::assert_snapshot!(JsonFormatter.format(&fixtures::custom_attribute_unchanged_with_hint()));
+}

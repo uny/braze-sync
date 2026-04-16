@@ -1,0 +1,9 @@
+---
+source: src/format/snapshot_tests.rs
+expression: "TableFormatter.format(&fixtures::custom_attribute_unchanged_with_hint())"
+---
+✅ Custom Attribute: visit_count
+   no drift
+   ℹ type mismatch: local number vs Braze string (run export to update)
+
+Summary: 0 changed, 1 in sync, 0 orphan, 0 destructive

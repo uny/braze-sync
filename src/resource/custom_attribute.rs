@@ -27,7 +27,7 @@ pub struct CustomAttribute {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Marks the attribute deprecated. The only mutation `apply` performs.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deprecated: bool,
 }
 
@@ -39,6 +39,22 @@ pub enum CustomAttributeType {
     Boolean,
     Time,
     Array,
+}
+
+impl CustomAttributeType {
+    /// The lowercase wire string for this attribute type ("string",
+    /// "number", ...). Matches the snake_case `Serialize` representation
+    /// derived above so the wire string and the explicit method cannot
+    /// drift.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::String => "string",
+            Self::Number => "number",
+            Self::Boolean => "boolean",
+            Self::Time => "time",
+            Self::Array => "array",
+        }
+    }
 }
 
 impl CustomAttributeRegistry {

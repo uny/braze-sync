@@ -13,6 +13,7 @@ use crate::braze::BrazeClient;
 use crate::config::ResolvedConfig;
 use crate::diff::catalog::{CatalogItemsDiff, CatalogSchemaDiff};
 use crate::diff::content_block::{ContentBlockDiff, ContentBlockIdIndex};
+use crate::diff::custom_attribute::CustomAttributeOp;
 use crate::diff::email_template::{EmailTemplateDiff, EmailTemplateIdIndex};
 use crate::diff::orphan;
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
@@ -27,7 +28,7 @@ use std::path::Path;
 
 use super::diff::{
     compute_catalog_items_diffs, compute_catalog_schema_diffs, compute_content_block_plan,
-    compute_email_template_plan,
+    compute_custom_attribute_diffs, compute_email_template_plan,
 };
 use super::selected_kinds;
 
@@ -69,6 +70,7 @@ pub async fn run(
     let catalogs_root = config_dir.join(&resolved.resources.catalog_schema.path);
     let content_blocks_root = config_dir.join(&resolved.resources.content_block.path);
     let email_templates_root = config_dir.join(&resolved.resources.email_template.path);
+    let custom_attributes_path = config_dir.join(&resolved.resources.custom_attribute.path);
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
@@ -117,7 +119,14 @@ pub async fn run(
                 email_template_id_index = Some(idx);
             }
             ResourceKind::CustomAttribute => {
-                tracing::debug!("custom_attribute apply not yet implemented");
+                let diffs = compute_custom_attribute_diffs(
+                    &client,
+                    &custom_attributes_path,
+                    args.name.as_deref(),
+                )
+                .await
+                .context("computing custom_attribute plan")?;
+                summary.diffs.extend(diffs);
             }
         }
     }
@@ -130,8 +139,15 @@ pub async fn run(
     eprintln!("{mode_label}");
     print!("{}", format.formatter().format(&summary));
 
-    if summary.changed_count() == 0 {
-        eprintln!("No changes to apply.");
+    if summary.actionable_count() == 0 {
+        if summary.changed_count() > 0 {
+            eprintln!(
+                "No actionable changes to apply \
+                 (informational drift above can be reconciled with `export`)."
+            );
+        } else {
+            eprintln!("No changes to apply.");
+        }
         return Ok(());
     }
 
@@ -155,6 +171,8 @@ pub async fn run(
 
     let parallel_batches = resolved.resources.catalog_items.parallel_batches;
     let mut applied = 0;
+    let mut ca_deprecate: Vec<&str> = Vec::new();
+    let mut ca_reactivate: Vec<&str> = Vec::new();
     for diff in &summary.diffs {
         match diff {
             ResourceDiff::CatalogSchema(d) => {
@@ -192,8 +210,20 @@ pub async fn run(
                 )
                 .await?;
             }
-            ResourceDiff::CustomAttribute(_) => {}
+            ResourceDiff::CustomAttribute(d) => {
+                if let CustomAttributeOp::DeprecationToggled { to, .. } = &d.op {
+                    if *to {
+                        ca_deprecate.push(&d.name);
+                    } else {
+                        ca_reactivate.push(&d.name);
+                    }
+                }
+            }
         }
+    }
+
+    if !ca_deprecate.is_empty() || !ca_reactivate.is_empty() {
+        applied += apply_custom_attribute_batch(&client, &ca_deprecate, &ca_reactivate).await?;
     }
 
     eprintln!("✓ Applied {applied} change(s).");
@@ -211,6 +241,14 @@ pub async fn run(
 /// (e.g. content-type change with no in-place update), re-evaluate.
 fn check_for_unsupported_ops(summary: &DiffSummary) -> anyhow::Result<()> {
     for diff in &summary.diffs {
+        if let ResourceDiff::CustomAttribute(d) = diff {
+            if matches!(d.op, CustomAttributeOp::PresentInGitOnly) {
+                return Err(Error::CustomAttributeCreateNotSupported {
+                    name: d.name.clone(),
+                }
+                .into());
+            }
+        }
         if let ResourceDiff::CatalogSchema(d) = diff {
             match &d.op {
                 DiffOp::Added(_) => {
@@ -563,4 +601,38 @@ async fn apply_email_template(
         }
         DiffOp::Unchanged => Ok(0),
     }
+}
+
+/// Batch custom attribute deprecation toggles by direction so we issue
+/// at most two API calls. Each batch is reported to stderr on success so
+/// the user can tell what was committed if a later batch fails.
+async fn apply_custom_attribute_batch(
+    client: &BrazeClient,
+    to_deprecate: &[&str],
+    to_reactivate: &[&str],
+) -> anyhow::Result<usize> {
+    let mut applied = 0;
+    for (names, blocklisted, verb) in [
+        (to_deprecate, true, "deprecating"),
+        (to_reactivate, false, "reactivating"),
+    ] {
+        if names.is_empty() {
+            continue;
+        }
+        tracing::info!(attributes = ?names, "{verb} custom attributes");
+        client
+            .set_custom_attribute_blocklist(names, blocklisted)
+            .await
+            .with_context(|| format!("{verb} custom attributes"))?;
+        let n = names.len();
+        let past = if blocklisted {
+            "deprecated"
+        } else {
+            "reactivated"
+        };
+        eprintln!("  ✓ {past} {n} custom attribute(s)");
+        applied += n;
+    }
+
+    Ok(applied)
 }

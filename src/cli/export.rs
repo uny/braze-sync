@@ -3,8 +3,8 @@
 use crate::braze::error::BrazeApiError;
 use crate::braze::BrazeClient;
 use crate::config::ResolvedConfig;
-use crate::fs::{catalog_io, content_block_io, email_template_io};
-use crate::resource::ResourceKind;
+use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io};
+use crate::resource::{CustomAttributeRegistry, ResourceKind};
 use anyhow::Context as _;
 use clap::Args;
 use futures::stream::{StreamExt, TryStreamExt};
@@ -34,6 +34,7 @@ pub async fn run(
     let catalogs_root = config_dir.join(&resolved.resources.catalog_schema.path);
     let content_blocks_root = config_dir.join(&resolved.resources.content_block.path);
     let email_templates_root = config_dir.join(&resolved.resources.email_template.path);
+    let custom_attributes_path = config_dir.join(&resolved.resources.custom_attribute.path);
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
@@ -70,7 +71,17 @@ pub async fn run(
                 total_written += n;
             }
             ResourceKind::CustomAttribute => {
-                tracing::debug!("custom_attribute export not yet implemented");
+                if args.name.is_some() {
+                    eprintln!(
+                        "⚠ custom_attribute: --name is not supported for export \
+                         (the registry is a single file); exporting all attributes"
+                    );
+                }
+                let n = export_custom_attributes(&client, &custom_attributes_path)
+                    .await
+                    .context("exporting custom_attribute")?;
+                eprintln!("✓ custom_attribute: exported {n} attribute(s)");
+                total_written += n;
             }
         }
     }
@@ -218,5 +229,16 @@ async fn export_catalog_items(
             count += 1;
         }
     }
+    Ok(count)
+}
+
+async fn export_custom_attributes(
+    client: &BrazeClient,
+    registry_path: &Path,
+) -> anyhow::Result<usize> {
+    let attrs = client.list_custom_attributes().await?;
+    let count = attrs.len();
+    let registry = CustomAttributeRegistry { attributes: attrs };
+    custom_attribute_io::save_registry(registry_path, &registry)?;
     Ok(count)
 }

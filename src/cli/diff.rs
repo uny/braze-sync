@@ -11,13 +11,14 @@ use crate::diff::catalog::{diff_items, diff_schema};
 use crate::diff::content_block::{
     diff as diff_content_block, ContentBlockDiff, ContentBlockIdIndex,
 };
+use crate::diff::custom_attribute::diff as diff_custom_attributes;
 use crate::diff::email_template::{
     diff as diff_email_template, EmailTemplateDiff, EmailTemplateIdIndex,
 };
 use crate::diff::{DiffSummary, ResourceDiff};
 use crate::error::Error;
 use crate::format::OutputFormat;
-use crate::fs::{catalog_io, content_block_io, email_template_io};
+use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io};
 use crate::resource::{Catalog, CatalogItems, ContentBlock, EmailTemplate, ResourceKind};
 use anyhow::Context as _;
 use clap::Args;
@@ -52,6 +53,7 @@ pub async fn run(
     let catalogs_root = config_dir.join(&resolved.resources.catalog_schema.path);
     let content_blocks_root = config_dir.join(&resolved.resources.content_block.path);
     let email_templates_root = config_dir.join(&resolved.resources.email_template.path);
+    let custom_attributes_path = config_dir.join(&resolved.resources.custom_attribute.path);
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
@@ -94,7 +96,14 @@ pub async fn run(
                 summary.diffs.extend(diffs);
             }
             ResourceKind::CustomAttribute => {
-                tracing::debug!("custom_attribute diff not yet implemented");
+                let diffs = compute_custom_attribute_diffs(
+                    &client,
+                    &custom_attributes_path,
+                    args.name.as_deref(),
+                )
+                .await
+                .context("computing custom_attribute diff")?;
+                summary.diffs.extend(diffs);
             }
         }
     }
@@ -420,4 +429,30 @@ pub(crate) async fn compute_catalog_items_diffs(
     }
 
     Ok((diffs, local_map))
+}
+
+/// Compute Custom Attribute diffs by comparing the local registry file
+/// against the Braze attribute list. Shared by `diff` and `apply`.
+///
+/// When `name_filter` is `Some`, only the attribute with that exact name
+/// is included in the result — consistent with the `--name` flag on
+/// other resource types.
+pub(crate) async fn compute_custom_attribute_diffs(
+    client: &BrazeClient,
+    registry_path: &Path,
+    name_filter: Option<&str>,
+) -> anyhow::Result<Vec<ResourceDiff>> {
+    let mut local = custom_attribute_io::load_registry(registry_path)?;
+    let mut remote = client.list_custom_attributes().await?;
+    if let Some(name) = name_filter {
+        if let Some(r) = local.as_mut() {
+            r.attributes.retain(|a| a.name == name);
+        }
+        remote.retain(|a| a.name == name);
+    }
+    let attr_diffs = diff_custom_attributes(local.as_ref(), &remote);
+    Ok(attr_diffs
+        .into_iter()
+        .map(ResourceDiff::CustomAttribute)
+        .collect())
 }

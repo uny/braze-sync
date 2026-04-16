@@ -13,7 +13,9 @@
 //! - Pagination: `limit` (default 100, max 1000) + `offset`
 
 use crate::braze::error::BrazeApiError;
-use crate::braze::{classify_info_message, BrazeClient, InfoMessageClass};
+use crate::braze::{
+    check_duplicate_names, check_pagination, classify_info_message, BrazeClient, InfoMessageClass,
+};
 use crate::resource::EmailTemplate;
 use serde::{Deserialize, Serialize};
 
@@ -36,34 +38,18 @@ impl BrazeClient {
         let returned = resp.templates.len();
 
         // Fail closed when the page is or might be truncated.
-        // Same pattern as content_block::list_content_blocks.
-        let truncation_detail: Option<String> = match resp.count {
-            Some(total) if total > returned => Some(format!("got {returned} of {total} results")),
-            None if returned >= LIST_LIMIT as usize => Some(format!(
-                "got a full page of {returned} result(s) with no total reported; \
-                 cannot verify whether more exist"
-            )),
-            _ => None,
-        };
-        if let Some(detail) = truncation_detail {
-            return Err(BrazeApiError::PaginationNotImplemented {
-                endpoint: "/templates/email/list",
-                detail,
-            });
-        }
+        check_pagination(
+            resp.count,
+            returned,
+            LIST_LIMIT as usize,
+            "/templates/email/list",
+        )?;
 
-        // Duplicate names would collapse the name→id index in
-        // compute_email_template_plan.
-        let mut seen: std::collections::HashSet<&str> =
-            std::collections::HashSet::with_capacity(resp.templates.len());
-        for entry in &resp.templates {
-            if !seen.insert(entry.template_name.as_str()) {
-                return Err(BrazeApiError::DuplicateNameInListResponse {
-                    endpoint: "/templates/email/list",
-                    name: entry.template_name.clone(),
-                });
-            }
-        }
+        check_duplicate_names(
+            resp.templates.iter().map(|e| e.template_name.as_str()),
+            resp.templates.len(),
+            "/templates/email/list",
+        )?;
 
         Ok(resp
             .templates
