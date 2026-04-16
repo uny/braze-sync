@@ -59,7 +59,7 @@ impl CustomAttributeDiff {
 ///
 /// Either side may be `None` (no local file yet, or no remote
 /// attributes). When both are `None` the result is empty.
-pub fn diff_registry(
+pub fn diff(
     local: Option<&CustomAttributeRegistry>,
     remote: &[CustomAttribute],
 ) -> Vec<CustomAttributeDiff> {
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn both_sides_empty() {
-        let diffs = diff_registry(None, &[]);
+        let diffs = diff(None, &[]);
         assert!(diffs.is_empty());
     }
 
@@ -178,7 +178,7 @@ mod tests {
         let registry = CustomAttributeRegistry {
             attributes: vec![attr("foo", false, None)],
         };
-        let diffs = diff_registry(Some(&registry), &[]);
+        let diffs = diff(Some(&registry), &[]);
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].name, "foo");
         assert!(matches!(diffs[0].op, CustomAttributeOp::PresentInGitOnly));
@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn remote_only_attributes() {
         let remote = vec![attr("bar", false, None)];
-        let diffs = diff_registry(None, &remote);
+        let diffs = diff(None, &remote);
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].name, "bar");
         assert!(matches!(diffs[0].op, CustomAttributeOp::UnregisteredInGit));
@@ -199,7 +199,7 @@ mod tests {
             attributes: vec![attr("dup", true, None), attr("dup", false, None)],
         };
         let remote = vec![attr("dup", false, None)];
-        let diffs = diff_registry(Some(&registry), &remote);
+        let diffs = diff(Some(&registry), &remote);
         assert_eq!(diffs.len(), 1);
         // Last entry (deprecated=false) wins → matches remote → Unchanged.
         assert!(matches!(diffs[0].op, CustomAttributeOp::Unchanged));
@@ -211,7 +211,7 @@ mod tests {
             attributes: vec![attr("x", false, Some("desc"))],
         };
         let remote = vec![attr("x", false, Some("desc"))];
-        let diffs = diff_registry(Some(&registry), &remote);
+        let diffs = diff(Some(&registry), &remote);
         assert_eq!(diffs.len(), 1);
         assert!(matches!(diffs[0].op, CustomAttributeOp::Unchanged));
     }
@@ -222,7 +222,7 @@ mod tests {
             attributes: vec![attr("x", true, None)],
         };
         let remote = vec![attr("x", false, None)];
-        let diffs = diff_registry(Some(&registry), &remote);
+        let diffs = diff(Some(&registry), &remote);
         assert_eq!(diffs.len(), 1);
         match &diffs[0].op {
             CustomAttributeOp::DeprecationToggled { from, to } => {
@@ -239,7 +239,7 @@ mod tests {
             attributes: vec![attr("x", false, None)],
         };
         let remote = vec![attr("x", true, None)];
-        let diffs = diff_registry(Some(&registry), &remote);
+        let diffs = diff(Some(&registry), &remote);
         match &diffs[0].op {
             CustomAttributeOp::DeprecationToggled { from, to } => {
                 assert!(from);
@@ -255,7 +255,7 @@ mod tests {
             attributes: vec![attr("x", false, Some("new desc"))],
         };
         let remote = vec![attr("x", false, Some("old desc"))];
-        let diffs = diff_registry(Some(&registry), &remote);
+        let diffs = diff(Some(&registry), &remote);
         assert!(matches!(diffs[0].op, CustomAttributeOp::MetadataOnly));
     }
 
@@ -265,7 +265,7 @@ mod tests {
             attributes: vec![attr("x", false, Some("added"))],
         };
         let remote = vec![attr("x", false, None)];
-        let diffs = diff_registry(Some(&registry), &remote);
+        let diffs = diff(Some(&registry), &remote);
         assert!(matches!(diffs[0].op, CustomAttributeOp::MetadataOnly));
     }
 
@@ -285,7 +285,7 @@ mod tests {
             description: Some("old desc".into()),
             deprecated: false,
         }];
-        let diffs = diff_registry(Some(&registry), &remote);
+        let diffs = diff(Some(&registry), &remote);
         assert!(matches!(
             diffs[0].op,
             CustomAttributeOp::DeprecationToggled { .. }
@@ -298,7 +298,7 @@ mod tests {
             attributes: vec![attr("charlie", false, None), attr("alpha", true, None)],
         };
         let remote = vec![attr("alpha", false, None), attr("bravo", false, None)];
-        let diffs = diff_registry(Some(&registry), &remote);
+        let diffs = diff(Some(&registry), &remote);
         assert_eq!(diffs.len(), 3);
         assert_eq!(diffs[0].name, "alpha");
         assert!(matches!(
@@ -327,7 +327,7 @@ mod tests {
             description: None,
             deprecated: false,
         }];
-        let diffs = diff_registry(Some(&registry), &remote);
+        let diffs = diff(Some(&registry), &remote);
         assert!(matches!(diffs[0].op, CustomAttributeOp::Unchanged));
     }
 
@@ -378,7 +378,7 @@ mod tests {
             description: Some("remote desc".into()),
             deprecated: false,
         }];
-        let diffs = diff_registry(Some(&registry), &remote);
+        let diffs = diff(Some(&registry), &remote);
         assert!(matches!(
             diffs[0].op,
             CustomAttributeOp::DeprecationToggled { .. }
@@ -403,7 +403,7 @@ mod tests {
             description: None,
             deprecated: false,
         }];
-        let diffs = diff_registry(Some(&registry), &remote);
+        let diffs = diff(Some(&registry), &remote);
         assert!(matches!(diffs[0].op, CustomAttributeOp::Unchanged));
         assert_eq!(diffs[0].hints.len(), 1);
         assert!(diffs[0].hints[0].contains("type mismatch"));
@@ -421,7 +421,7 @@ mod tests {
             attributes: vec![attr("x", false, Some("desc"))],
         };
         let remote = vec![attr("x", false, Some("desc"))];
-        let diffs = diff_registry(Some(&registry), &remote);
+        let diffs = diff(Some(&registry), &remote);
         assert!(diffs[0].hints.is_empty());
     }
 }

@@ -224,7 +224,7 @@ pub async fn run(
 
     // Batch custom attribute deprecation toggles — the Braze endpoint
     // accepts multiple names per call, so group by direction to avoid N+1.
-    applied += apply_custom_attribute_batch(&client, ca_deprecate, ca_reactivate).await?;
+    applied += apply_custom_attribute_batch(&client, &ca_deprecate, &ca_reactivate).await?;
 
     eprintln!("✓ Applied {applied} change(s).");
     Ok(())
@@ -612,8 +612,8 @@ async fn apply_email_template(
 /// A re-run will skip the already-applied toggles.
 async fn apply_custom_attribute_batch(
     client: &BrazeClient,
-    to_deprecate: Vec<&str>,
-    to_reactivate: Vec<&str>,
+    to_deprecate: &[&str],
+    to_reactivate: &[&str],
 ) -> anyhow::Result<usize> {
     let mut applied = 0;
     if !to_deprecate.is_empty() {
@@ -622,7 +622,7 @@ async fn apply_custom_attribute_batch(
             "deprecating custom attributes"
         );
         client
-            .set_custom_attribute_blocklist(&to_deprecate, true)
+            .set_custom_attribute_blocklist(to_deprecate, true)
             .await
             .context("deprecating custom attributes")?;
         let n = to_deprecate.len();
@@ -635,7 +635,7 @@ async fn apply_custom_attribute_batch(
             "reactivating custom attributes"
         );
         client
-            .set_custom_attribute_blocklist(&to_reactivate, false)
+            .set_custom_attribute_blocklist(to_reactivate, false)
             .await
             .context("reactivating custom attributes")?;
         let n = to_reactivate.len();

@@ -11,7 +11,7 @@ use crate::diff::catalog::{diff_items, diff_schema};
 use crate::diff::content_block::{
     diff as diff_content_block, ContentBlockDiff, ContentBlockIdIndex,
 };
-use crate::diff::custom_attribute::diff_registry as diff_custom_attributes;
+use crate::diff::custom_attribute::diff as diff_custom_attributes;
 use crate::diff::email_template::{
     diff as diff_email_template, EmailTemplateDiff, EmailTemplateIdIndex,
 };

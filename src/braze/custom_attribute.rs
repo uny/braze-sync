@@ -27,7 +27,7 @@ impl BrazeClient {
         let resp: CustomAttributeListResponse = self.send_json(req).await?;
         let returned = resp.custom_attributes.len();
 
-        // Fail-closed pagination guard.
+        // Fail closed when the page is or might be truncated.
         check_pagination(
             resp.count,
             returned,
