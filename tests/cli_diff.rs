@@ -550,7 +550,7 @@ async fn diff_catalog_items_detects_added_item() {
 }
 
 // =====================================================================
-// Custom Attribute (v0.5.0)
+// Custom Attribute
 // =====================================================================
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -981,7 +981,7 @@ async fn apply_catalog_items_dry_run_does_not_upsert() {
 }
 
 // =====================================================================
-// Custom Attribute (v0.5.0)
+// Custom Attribute
 // =====================================================================
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

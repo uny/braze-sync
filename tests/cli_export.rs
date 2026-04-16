@@ -425,7 +425,7 @@ async fn export_catalog_items_writes_csv() {
 }
 
 // =====================================================================
-// Custom Attribute (v0.5.0)
+// Custom Attribute
 // =====================================================================
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

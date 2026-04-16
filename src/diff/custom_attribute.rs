@@ -147,7 +147,8 @@ fn diff_single_attribute(
     if local.attribute_type != remote.attribute_type {
         hints.push(format!(
             "type mismatch: local {} vs Braze {} (run export to update)",
-            local.attribute_type, remote.attribute_type,
+            local.attribute_type.as_str(),
+            remote.attribute_type.as_str(),
         ));
     }
     (CustomAttributeOp::Unchanged, hints)

@@ -388,10 +388,10 @@ fn validate_custom_attributes(
     let registry = match custom_attribute_io::load_registry(registry_path) {
         Ok(Some(r)) => r,
         Ok(None) => return Ok(()),
-        Err(Error::YamlParse { path, .. }) => {
+        Err(Error::YamlParse { path, source }) => {
             issues.push(ValidationIssue {
                 path,
-                message: "failed to parse custom attribute registry YAML".into(),
+                message: format!("parse error: {source}"),
             });
             return Ok(());
         }
@@ -400,7 +400,7 @@ fn validate_custom_attributes(
 
     let pattern = compile_name_pattern(name_pattern, "custom_attribute_name_pattern")?;
 
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::with_capacity(registry.attributes.len());
     for attr in &registry.attributes {
         if !seen.insert(attr.name.as_str()) {
             issues.push(ValidationIssue {

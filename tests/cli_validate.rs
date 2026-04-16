@@ -377,7 +377,7 @@ fn validate_catalog_items_reports_missing_schema_field() {
 }
 
 // =====================================================================
-// Custom Attribute (v0.5.0)
+// Custom Attribute
 // =====================================================================
 
 #[test]

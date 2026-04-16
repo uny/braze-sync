@@ -442,12 +442,17 @@ pub(crate) async fn compute_custom_attribute_diffs(
     registry_path: &Path,
     name_filter: Option<&str>,
 ) -> anyhow::Result<Vec<ResourceDiff>> {
-    let local = custom_attribute_io::load_registry(registry_path)?;
-    let remote = client.list_custom_attributes().await?;
+    let mut local = custom_attribute_io::load_registry(registry_path)?;
+    let mut remote = client.list_custom_attributes().await?;
+    if let Some(name) = name_filter {
+        if let Some(r) = local.as_mut() {
+            r.attributes.retain(|a| a.name == name);
+        }
+        remote.retain(|a| a.name == name);
+    }
     let attr_diffs = diff_custom_attributes(local.as_ref(), &remote);
     Ok(attr_diffs
         .into_iter()
-        .filter(|d| name_filter.is_none_or(|n| d.name == n))
         .map(ResourceDiff::CustomAttribute)
         .collect())
 }

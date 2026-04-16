@@ -222,7 +222,9 @@ pub async fn run(
         }
     }
 
-    applied += apply_custom_attribute_batch(&client, &ca_deprecate, &ca_reactivate).await?;
+    if !ca_deprecate.is_empty() || !ca_reactivate.is_empty() {
+        applied += apply_custom_attribute_batch(&client, &ca_deprecate, &ca_reactivate).await?;
+    }
 
     eprintln!("✓ Applied {applied} change(s).");
     Ok(())
@@ -614,30 +616,21 @@ async fn apply_custom_attribute_batch(
     to_reactivate: &[&str],
 ) -> anyhow::Result<usize> {
     let mut applied = 0;
-    if !to_deprecate.is_empty() {
-        tracing::info!(
-            attributes = ?to_deprecate,
-            "deprecating custom attributes"
-        );
+    for (names, blocklisted, verb) in [
+        (to_deprecate, true, "deprecating"),
+        (to_reactivate, false, "reactivating"),
+    ] {
+        if names.is_empty() {
+            continue;
+        }
+        tracing::info!(attributes = ?names, "{verb} custom attributes");
         client
-            .set_custom_attribute_blocklist(to_deprecate, true)
+            .set_custom_attribute_blocklist(names, blocklisted)
             .await
-            .context("deprecating custom attributes")?;
-        let n = to_deprecate.len();
-        eprintln!("  ✓ deprecated {n} custom attribute(s)");
-        applied += n;
-    }
-    if !to_reactivate.is_empty() {
-        tracing::info!(
-            attributes = ?to_reactivate,
-            "reactivating custom attributes"
-        );
-        client
-            .set_custom_attribute_blocklist(to_reactivate, false)
-            .await
-            .context("reactivating custom attributes")?;
-        let n = to_reactivate.len();
-        eprintln!("  ✓ reactivated {n} custom attribute(s)");
+            .with_context(|| format!("{verb} custom attributes"))?;
+        let n = names.len();
+        let past = if blocklisted { "deprecated" } else { "reactivated" };
+        eprintln!("  ✓ {past} {n} custom attribute(s)");
         applied += n;
     }
 

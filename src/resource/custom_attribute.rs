@@ -41,14 +41,18 @@ pub enum CustomAttributeType {
     Array,
 }
 
-impl std::fmt::Display for CustomAttributeType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl CustomAttributeType {
+    /// The lowercase wire string for this attribute type ("string",
+    /// "number", ...). Matches the snake_case `Serialize` representation
+    /// derived above so the wire string and the explicit method cannot
+    /// drift.
+    pub fn as_str(self) -> &'static str {
         match self {
-            Self::String => f.write_str("string"),
-            Self::Number => f.write_str("number"),
-            Self::Boolean => f.write_str("boolean"),
-            Self::Time => f.write_str("time"),
-            Self::Array => f.write_str("array"),
+            Self::String => "string",
+            Self::Number => "number",
+            Self::Boolean => "boolean",
+            Self::Time => "time",
+            Self::Array => "array",
         }
     }
 }
