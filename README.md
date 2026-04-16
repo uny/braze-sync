@@ -8,20 +8,19 @@ synchronize it to Braze with the same workflow you'd use for
 detection in CI, and an `--allow-destructive` gate that has to be
 crossed explicitly before anything is dropped.
 
-## Status: v0.2.0 (Catalog Schema + Content Block)
+## Status: v0.6.0 (all 5 resources + init)
 
-v0.2.0 ships **Catalog Schema** and **Content Block** end-to-end:
+All five v1.0 resource kinds are implemented end-to-end: **Catalog
+Schema**, **Catalog Items**, **Content Block**, **Email Template**, and
+**Custom Attribute** (registry mode).
 
 | Command | What it does |
 |:---|:---|
+| `braze-sync init` | Scaffolds a new workspace (config, directories, `.gitignore`) |
 | `braze-sync export` | Pulls current Braze state into local files |
 | `braze-sync diff` | Shows drift between local files and Braze |
 | `braze-sync apply` | Applies local intent to Braze (dry-run by default) |
 | `braze-sync validate` | Local-only structural and naming checks (no API call) |
-
-Three other resource kinds (Email Template, Catalog Items, Custom
-Attribute) are visible in `--resource` and emit a "not yet implemented
-(Phase B)" warning. They fill in across v0.3.0 → v0.5.0.
 
 ### Content Block specifics
 
@@ -61,33 +60,37 @@ cargo install --path .
 
 ## Quick start
 
-1. Set your Braze API key in an environment variable:
+1. Scaffold a new workspace (config, directories, `.gitignore`):
+
+   ```bash
+   braze-sync init
+   ```
+
+   This writes a commented `braze-sync.config.yaml` (pointing at the
+   EU default endpoint — edit if your instance is elsewhere) plus
+   empty `catalogs/`, `content_blocks/`, `email_templates/`, and
+   `custom_attributes/` directories. Safe to re-run: existing configs
+   are kept unless `--force` is passed.
+
+2. Set your Braze API key in an environment variable:
 
    ```bash
    export BRAZE_DEV_API_KEY="your-key-here"
    ```
 
-2. Create `braze-sync.config.yaml`:
-
-   ```yaml
-   version: 1
-   default_environment: dev
-   environments:
-     dev:
-       api_endpoint: https://rest.fra-02.braze.eu
-       api_key_env: BRAZE_DEV_API_KEY
-   ```
-
-3. Pull the current state from Braze:
+3. Pull the current Braze state into the scaffolded layout:
 
    ```bash
    braze-sync export
    ```
 
-   This writes `catalogs/<name>/schema.yaml` for every Catalog Schema in
-   your workspace.
+   Or do steps 1 and 3 in one shot:
 
-4. Edit a schema (e.g. add a field) and check the drift:
+   ```bash
+   braze-sync init --from-existing
+   ```
+
+4. Edit a resource (e.g. add a catalog field) and check the drift:
 
    ```bash
    braze-sync diff
@@ -128,15 +131,11 @@ API keys never live in the config file. The config only references the
 held in `secrecy::SecretString` from the moment it leaves the OS so
 that `tracing` / `Debug` / panic messages cannot leak it.
 
-## v0.2.0 limitations
+## Limitations
 
 These will be lifted across the v0.x → v1.0 milestones:
 
-- **Catalog Schema and Content Block only.** Email Template, Catalog
-  Items, and Custom Attribute land in v0.3 → v0.5. They appear in
-  `--resource` so the CLI surface stays stable, but selecting one in
-  v0.2.0 just emits a "not yet implemented (Phase B)" warning.
-- **No catalog create / delete.** v0.2.0 manages fields on existing
+- **No catalog create / delete.** v0.6.0 manages fields on existing
   catalogs. To create a brand-new catalog, create it in the Braze
   dashboard first, then run `braze-sync export`.
 - **No field type changes.** Changing a field's type from `string` to
