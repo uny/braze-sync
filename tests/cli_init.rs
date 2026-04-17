@@ -94,8 +94,6 @@ fn init_is_idempotent_for_directories_and_gitignore() {
 
     let gitignore_after_first = fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
 
-    // --force on the second run because the config now exists; directories
-    // and .gitignore must remain idempotent regardless.
     Command::cargo_bin("braze-sync")
         .unwrap()
         .args(["--config", config_path.to_str().unwrap()])

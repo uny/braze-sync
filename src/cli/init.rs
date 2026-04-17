@@ -174,7 +174,7 @@ async fn run_from_existing(
     env_override: Option<&str>,
 ) -> anyhow::Result<()> {
     let cfg = ConfigFile::load(config_path)
-        .with_context(|| format!("reloading config from {}", config_path.display()))?;
+        .with_context(|| format!("loading config from {}", config_path.display()))?;
     let resolved = cfg
         .resolve(env_override)
         .context("resolving environment for --from-existing")?;
@@ -291,10 +291,8 @@ mod tests {
         let path = tmp.path().join(".gitignore");
         fs::write(&path, ".env\n").unwrap();
         let updated = update_gitignore(tmp.path()).unwrap();
-        // `.env.*` is still missing, so we expect an update.
         assert!(updated);
         let content = fs::read_to_string(&path).unwrap();
-        // `.env` should still appear exactly once.
         let count = content.lines().filter(|l| l.trim() == ".env").count();
         assert_eq!(count, 1, "should not duplicate .env");
         assert!(content.contains(".env.*"));
