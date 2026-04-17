@@ -1,8 +1,4 @@
 //! `braze-sync init` — scaffold a new braze-sync workspace.
-//!
-//! `.gitignore` entries are appended (not rewritten) so any operator
-//! edits to that file survive. `--force` only gates the config file;
-//! directories and `.gitignore` are always idempotent.
 
 use crate::config::ConfigFile;
 use anyhow::{bail, Context as _};
@@ -106,9 +102,6 @@ fn write_config_file(config_path: &Path, on_existing: OnExisting) -> anyhow::Res
     Ok(true)
 }
 
-/// Matches the resource paths in `CONFIG_TEMPLATE` (and thus
-/// `ResourcesConfig` defaults). An operator who edits the config to
-/// point elsewhere is expected to create those directories themselves.
 const SUBDIRS: [&str; 4] = [
     "catalogs",
     "content_blocks",
@@ -127,8 +120,6 @@ fn scaffold_resource_dirs(config_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Missing entries are appended under a labeled section so the operator
-/// can tell where they came from; existing file content is preserved.
 fn update_gitignore(config_dir: &Path) -> anyhow::Result<bool> {
     let path = config_dir.join(".gitignore");
 
@@ -179,15 +170,10 @@ async fn run_from_existing(
         .resolve(env_override)
         .context("resolving environment for --from-existing")?;
 
-    let export_args = super::export::ExportArgs {
-        resource: None,
-        name: None,
-    };
-    super::export::run(&export_args, resolved, config_dir).await
+    super::export::run(&super::export::ExportArgs::default(), resolved, config_dir).await
 }
 
-pub(crate) const CONFIG_TEMPLATE: &str = r#"# braze-sync configuration (v1 schema, frozen at v1.0).
-# Reference: https://github.com/uny/braze-sync#configuration
+const CONFIG_TEMPLATE: &str = r#"# braze-sync configuration (v1 schema, frozen at v1.0).
 
 version: 1
 
@@ -241,14 +227,10 @@ mod tests {
 
     #[test]
     fn config_template_parses_as_valid_config() {
-        // Guard against drift: if the template ever disagrees with the
-        // deserializer, init would produce a config that the rest of
-        // braze-sync refuses to load. That's a bug we want to catch at
-        // build time, not at user `export` time.
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("braze-sync.config.yaml");
         fs::write(&path, CONFIG_TEMPLATE).unwrap();
-        let cfg = ConfigFile::load(&path).expect("template must load cleanly");
+        let cfg = ConfigFile::load(&path).unwrap();
         assert_eq!(cfg.version, 1);
         assert_eq!(cfg.default_environment, "dev");
         assert!(cfg.environments.contains_key("dev"));
@@ -270,7 +252,7 @@ mod tests {
         let first = update_gitignore(tmp.path()).unwrap();
         assert!(first);
         let second = update_gitignore(tmp.path()).unwrap();
-        assert!(!second, "second run should be a no-op");
+        assert!(!second);
     }
 
     #[test]
@@ -280,7 +262,7 @@ mod tests {
         fs::write(&path, "target/\ndist/\n").unwrap();
         update_gitignore(tmp.path()).unwrap();
         let content = fs::read_to_string(&path).unwrap();
-        assert!(content.contains("target/"), "existing entry must survive");
+        assert!(content.contains("target/"));
         assert!(content.contains("dist/"));
         assert!(content.contains(".env"));
     }
@@ -294,7 +276,7 @@ mod tests {
         assert!(updated);
         let content = fs::read_to_string(&path).unwrap();
         let count = content.lines().filter(|l| l.trim() == ".env").count();
-        assert_eq!(count, 1, "should not duplicate .env");
+        assert_eq!(count, 1);
         assert!(content.contains(".env.*"));
     }
 
@@ -303,7 +285,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         scaffold_resource_dirs(tmp.path()).unwrap();
         for sub in SUBDIRS {
-            assert!(tmp.path().join(sub).is_dir(), "{sub} should exist");
+            assert!(tmp.path().join(sub).is_dir());
         }
     }
 
@@ -311,7 +293,7 @@ mod tests {
     fn scaffold_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         scaffold_resource_dirs(tmp.path()).unwrap();
-        scaffold_resource_dirs(tmp.path()).expect("second run should succeed");
+        scaffold_resource_dirs(tmp.path()).unwrap();
     }
 
     #[test]
@@ -342,7 +324,7 @@ mod tests {
         let path = tmp.path().join("braze-sync.config.yaml");
         fs::write(&path, "# operator-tuned\nversion: 1\n").unwrap();
         let written = write_config_file(&path, OnExisting::Keep).unwrap();
-        assert!(!written, "existing config should be kept");
+        assert!(!written);
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("operator-tuned"));
     }

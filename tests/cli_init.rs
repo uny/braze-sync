@@ -1,9 +1,4 @@
 //! Integration tests for `braze-sync init`.
-//!
-//! `init` scaffolds before config loading, so these tests run against
-//! an empty temp directory and assert on the resulting filesystem. The
-//! `--from-existing` test additionally stands up a wiremock server so
-//! the export phase has something to pull.
 
 use assert_cmd::Command;
 use serde_json::json;
@@ -23,20 +18,19 @@ fn init_in_empty_dir_creates_full_scaffold() {
         .assert()
         .success();
 
-    assert!(config_path.exists(), "config file should be written");
+    assert!(config_path.exists());
     for sub in [
         "catalogs",
         "content_blocks",
         "email_templates",
         "custom_attributes",
     ] {
-        assert!(tmp.path().join(sub).is_dir(), "{sub} dir should be created");
+        assert!(tmp.path().join(sub).is_dir(), "{sub}");
     }
     let gitignore = fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
     assert!(gitignore.contains(".env"));
     assert!(gitignore.contains(".env.*"));
 
-    // The scaffolded config must be loadable by the same binary.
     let config_yaml = fs::read_to_string(&config_path).unwrap();
     assert!(config_yaml.contains("version: 1"));
     assert!(config_yaml.contains("api_key_env: BRAZE_DEV_API_KEY"));
@@ -56,10 +50,7 @@ fn init_refuses_to_overwrite_config_without_force() {
         .failure();
 
     let content = fs::read_to_string(&config_path).unwrap();
-    assert!(
-        content.contains("hand-tuned"),
-        "existing config must be preserved"
-    );
+    assert!(content.contains("hand-tuned"));
 }
 
 #[test]
@@ -102,10 +93,7 @@ fn init_is_idempotent_for_directories_and_gitignore() {
         .success();
 
     let gitignore_after_second = fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
-    assert_eq!(
-        gitignore_after_first, gitignore_after_second,
-        ".gitignore should be idempotent across runs"
-    );
+    assert_eq!(gitignore_after_first, gitignore_after_second);
 }
 
 #[test]
@@ -125,14 +113,9 @@ fn init_creates_parent_directories_for_nested_config_path() {
     assert!(tmp.path().join("braze/.gitignore").exists());
 }
 
-/// `--from-existing` wires init → export. Smoke-test with a single
-/// resource kind's worth of Braze mocks; the export path itself is
-/// covered in detail by tests/cli_export.rs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn init_from_existing_pulls_state_into_scaffold() {
     let server = MockServer::start().await;
-    // Empty-ish responses for every resource list endpoint so export
-    // can run without triggering 404s.
     Mock::given(method("GET"))
         .and(path("/catalogs"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -175,9 +158,8 @@ async fn init_from_existing_pulls_state_into_scaffold() {
     let tmp = tempfile::tempdir().unwrap();
     let config_path = tmp.path().join("braze-sync.config.yaml");
 
-    // Pre-write a config pointing at wiremock; `init --from-existing`
-    // uses OnExisting::Keep so this endpoint survives instead of being
-    // replaced by the default template's production URL.
+    // `init --from-existing` keeps the existing config, so pre-writing one
+    // pointing at wiremock survives the scaffold step.
     let yaml = format!(
         "version: 1
 default_environment: test
@@ -206,8 +188,5 @@ environments:
 
     assert!(tmp_path.join("catalogs").is_dir());
     assert!(tmp_path.join(".gitignore").exists());
-    assert!(
-        tmp_path.join("catalogs/cardiology/schema.yaml").exists(),
-        "export should have written cardiology schema"
-    );
+    assert!(tmp_path.join("catalogs/cardiology/schema.yaml").exists());
 }
