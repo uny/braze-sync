@@ -57,19 +57,15 @@ pub async fn run(
     fs::create_dir_all(&config_dir)
         .with_context(|| format!("creating config directory {}", config_dir.display()))?;
 
-    // With `--from-existing`, an already-present config is assumed to
-    // be intentional (the operator configured endpoint/env vars before
-    // running init) — we keep it unless `--force` says otherwise.
-    // Without `--from-existing`, the presence of a config means the
-    // operator either already initialized or hand-wrote one; refusing
-    // without `--force` avoids silent clobber.
-    let config_written = write_config_file(config_path, args.force, args.from_existing)?;
-    let dirs_created = scaffold_resource_dirs(&config_dir)?;
+    let on_existing = match (args.force, args.from_existing) {
+        (true, _) => OnExisting::Overwrite,
+        (false, true) => OnExisting::Keep,
+        (false, false) => OnExisting::Fail,
+    };
+    let config_written = write_config_file(config_path, on_existing)?;
+    let (dirs_created, dirs_total) = scaffold_resource_dirs(&config_dir)?;
     let gitignore_updated = update_gitignore(&config_dir)?;
 
-    // Report what happened so the operator sees whether any step was a
-    // no-op. `init` being idempotent is a feature — we want it to be safe
-    // to re-run — but silent no-ops would hide misconfiguration.
     eprintln!(
         "✓ config:     {} ({})",
         config_path.display(),
@@ -81,7 +77,7 @@ pub async fn run(
     );
     eprintln!(
         "✓ directories: {dirs_created} created, {} kept",
-        4 - dirs_created
+        dirs_total - dirs_created
     );
     eprintln!(
         "✓ .gitignore: {}",
@@ -93,7 +89,7 @@ pub async fn run(
     );
 
     if args.from_existing {
-        eprintln!("→ --from-existing: loading config and pulling Braze state…");
+        eprintln!("✓ --from-existing: loading config and pulling Braze state…");
         run_from_existing(config_path, &config_dir, env_override).await?;
     } else {
         eprintln!();
@@ -106,27 +102,32 @@ pub async fn run(
     Ok(())
 }
 
+/// Policy for what to do when the config file already exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OnExisting {
+    /// Operator asked for `--force`: clobber the existing file.
+    Overwrite,
+    /// Operator asked for `--from-existing`: assume the file is
+    /// intentionally pre-edited (endpoint/env vars) and keep it.
+    Keep,
+    /// Neither flag: refuse and tell the operator to pass `--force`.
+    Fail,
+}
+
 /// Write the scaffolded config. Returns `true` if a new file was
-/// written, `false` if an existing one was kept.
-///
-/// Policy:
-/// - Config missing → always write.
-/// - Config exists + `force` → overwrite (with a warning).
-/// - Config exists + `allow_keep` (i.e. `--from-existing`) → keep it.
-/// - Config exists, neither flag → hard error instructing the operator
-///   to pass `--force`.
-fn write_config_file(config_path: &Path, force: bool, allow_keep: bool) -> anyhow::Result<bool> {
+/// written, `false` if an existing one was kept. See [`OnExisting`]
+/// for the policy applied when the file already exists.
+fn write_config_file(config_path: &Path, on_existing: OnExisting) -> anyhow::Result<bool> {
     if config_path.exists() {
-        if force {
-            eprintln!("⚠ {} exists; overwriting (--force)", config_path.display());
-            // fall through to write
-        } else if allow_keep {
-            return Ok(false);
-        } else {
-            bail!(
+        match on_existing {
+            OnExisting::Overwrite => {
+                eprintln!("⚠ {} exists; overwriting (--force)", config_path.display());
+            }
+            OnExisting::Keep => return Ok(false),
+            OnExisting::Fail => bail!(
                 "{} already exists; pass --force to overwrite",
                 config_path.display()
-            );
+            ),
         }
     }
     fs::write(config_path, CONFIG_TEMPLATE)
@@ -134,19 +135,20 @@ fn write_config_file(config_path: &Path, force: bool, allow_keep: bool) -> anyho
     Ok(true)
 }
 
-/// Creates the four resource directories as siblings of the config file.
-/// Returns the count of directories that didn't already exist — purely
-/// for the summary message.
-fn scaffold_resource_dirs(config_dir: &Path) -> anyhow::Result<usize> {
-    // These match the default `ResourcesConfig` paths; any operator who
-    // edits the config to point elsewhere is expected to create those
-    // directories themselves.
-    const SUBDIRS: [&str; 4] = [
-        "catalogs",
-        "content_blocks",
-        "email_templates",
-        "custom_attributes",
-    ];
+/// Default resource subdirectories matching `ResourcesConfig` defaults.
+/// An operator who edits the config to point elsewhere is expected to
+/// create those directories themselves.
+const SUBDIRS: [&str; 4] = [
+    "catalogs",
+    "content_blocks",
+    "email_templates",
+    "custom_attributes",
+];
+
+/// Creates the resource directories as siblings of the config file.
+/// Returns `(created, total)` — the counts are purely for the summary
+/// message.
+fn scaffold_resource_dirs(config_dir: &Path) -> anyhow::Result<(usize, usize)> {
     let mut created = 0;
     for sub in SUBDIRS {
         let dir = config_dir.join(sub);
@@ -156,7 +158,7 @@ fn scaffold_resource_dirs(config_dir: &Path) -> anyhow::Result<usize> {
             created += 1;
         }
     }
-    Ok(created)
+    Ok((created, SUBDIRS.len()))
 }
 
 /// Ensures `.gitignore` contains lines for `.env` and `.env.*`. Appends
@@ -187,17 +189,12 @@ fn update_gitignore(config_dir: &Path) -> anyhow::Result<bool> {
         .open(&path)
         .with_context(|| format!("opening {} for append", path.display()))?;
 
-    // Insert a leading newline only if the existing file doesn't already
-    // end with one, so we don't glue our section onto the last existing
-    // entry.
-    if !existing.is_empty() && !existing.ends_with('\n') {
-        f.write_all(b"\n")?;
-    }
-    if !existing.is_empty() {
-        f.write_all(b"\n# braze-sync\n")?;
-    } else {
-        f.write_all(b"# braze-sync\n")?;
-    }
+    let prefix = match (existing.is_empty(), existing.ends_with('\n')) {
+        (true, _) => "# braze-sync\n",
+        (false, true) => "\n# braze-sync\n",
+        (false, false) => "\n\n# braze-sync\n",
+    };
+    f.write_all(prefix.as_bytes())?;
     for entry in missing {
         writeln!(f, "{entry}")?;
     }
@@ -209,21 +206,12 @@ async fn run_from_existing(
     config_dir: &Path,
     env_override: Option<&str>,
 ) -> anyhow::Result<()> {
-    // Reload dotenv now that the user may have edited the just-written
-    // config or dropped a .env. The initial call in cli::run already
-    // happened, but re-running it is cheap and harmless.
-    if let Err(e) = crate::config::load_dotenv() {
-        tracing::warn!("dotenv: {e}");
-    }
-
     let cfg = ConfigFile::load(config_path)
         .with_context(|| format!("reloading config from {}", config_path.display()))?;
     let resolved = cfg
         .resolve(env_override)
         .context("resolving environment for --from-existing")?;
 
-    // Delegate to the same code path as `braze-sync export` (no filter
-    // — pull everything that's enabled in the config).
     let export_args = super::export::ExportArgs {
         resource: None,
         name: None,
@@ -351,14 +339,10 @@ mod tests {
     #[test]
     fn scaffold_creates_all_four_dirs() {
         let tmp = tempfile::tempdir().unwrap();
-        let n = scaffold_resource_dirs(tmp.path()).unwrap();
-        assert_eq!(n, 4);
-        for sub in [
-            "catalogs",
-            "content_blocks",
-            "email_templates",
-            "custom_attributes",
-        ] {
+        let (created, total) = scaffold_resource_dirs(tmp.path()).unwrap();
+        assert_eq!(created, 4);
+        assert_eq!(total, 4);
+        for sub in SUBDIRS {
             assert!(tmp.path().join(sub).is_dir(), "{sub} should exist");
         }
     }
@@ -367,8 +351,8 @@ mod tests {
     fn scaffold_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         scaffold_resource_dirs(tmp.path()).unwrap();
-        let second = scaffold_resource_dirs(tmp.path()).unwrap();
-        assert_eq!(second, 0, "second run creates nothing");
+        let (created, _) = scaffold_resource_dirs(tmp.path()).unwrap();
+        assert_eq!(created, 0, "second run creates nothing");
     }
 
     #[test]
@@ -376,9 +360,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("braze-sync.config.yaml");
         fs::write(&path, "version: 1\n# user edits\n").unwrap();
-        let err = write_config_file(&path, false, false).unwrap_err();
+        let err = write_config_file(&path, OnExisting::Fail).unwrap_err();
         assert!(err.to_string().contains("--force"));
-        // Original content preserved.
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("user edits"));
     }
@@ -388,44 +371,29 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("braze-sync.config.yaml");
         fs::write(&path, "# old\n").unwrap();
-        let written = write_config_file(&path, true, false).unwrap();
+        let written = write_config_file(&path, OnExisting::Overwrite).unwrap();
         assert!(written);
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("braze-sync configuration"));
     }
 
     #[test]
-    fn write_config_keeps_existing_with_allow_keep() {
-        // --from-existing path: existing config is kept, not overwritten.
+    fn write_config_keeps_existing_on_keep() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("braze-sync.config.yaml");
         fs::write(&path, "# operator-tuned\nversion: 1\n").unwrap();
-        let written = write_config_file(&path, false, true).unwrap();
+        let written = write_config_file(&path, OnExisting::Keep).unwrap();
         assert!(!written, "existing config should be kept");
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("operator-tuned"));
     }
 
     #[test]
-    fn write_config_writes_fresh_when_allow_keep_and_no_existing() {
-        // --from-existing in an empty dir still needs to scaffold the config.
+    fn write_config_writes_fresh_on_keep_when_no_existing() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("braze-sync.config.yaml");
-        let written = write_config_file(&path, false, true).unwrap();
+        let written = write_config_file(&path, OnExisting::Keep).unwrap();
         assert!(written);
         assert!(path.exists());
-    }
-
-    #[test]
-    fn write_config_force_overrides_allow_keep() {
-        // If the operator explicitly says --force, overwrite even if
-        // --from-existing would otherwise keep the file.
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("braze-sync.config.yaml");
-        fs::write(&path, "# old\n").unwrap();
-        let written = write_config_file(&path, true, true).unwrap();
-        assert!(written);
-        let content = fs::read_to_string(&path).unwrap();
-        assert!(content.contains("braze-sync configuration"));
     }
 }
