@@ -1,26 +1,8 @@
 //! `braze-sync init` — scaffold a new braze-sync workspace.
 //!
-//! Writes:
-//! - `braze-sync.config.yaml` at the `--config` path (with commented
-//!   guidance so the user can edit in place).
-//! - Resource directories (`catalogs/`, `content_blocks/`,
-//!   `email_templates/`, `custom_attributes/`) as siblings of the config
-//!   file, matching the default paths in [`ResourcesConfig`].
-//! - `.gitignore` entries for `.env` and `.env.*` (appended if absent;
-//!   never deduped through rewrite).
-//!
-//! Runs **before** config loading in [`crate::cli::run`], so a missing
-//! config file is the normal case rather than exit code 3.
-//!
-//! `--force` is the only gate on overwriting an existing config file.
-//! Directories and `.gitignore` are always idempotent: creating an
-//! existing directory is a no-op, and `.gitignore` entries are added
-//! only if not already present.
-//!
-//! With `--from-existing`, init additionally loads the scaffolded (or
-//! pre-existing) config, resolves the environment, and runs the same
-//! code path as `braze-sync export` with no filter — so the operator
-//! ends up with a fully populated layout in one command.
+//! `.gitignore` entries are appended (not rewritten) so any operator
+//! edits to that file survive. `--force` only gates the config file;
+//! directories and `.gitignore` are always idempotent.
 
 use crate::config::ConfigFile;
 use anyhow::{bail, Context as _};
@@ -63,7 +45,7 @@ pub async fn run(
         (false, false) => OnExisting::Fail,
     };
     let config_written = write_config_file(config_path, on_existing)?;
-    let dirs_created = scaffold_resource_dirs(&config_dir)?;
+    scaffold_resource_dirs(&config_dir)?;
     let gitignore_updated = update_gitignore(&config_dir)?;
 
     eprintln!(
@@ -75,10 +57,7 @@ pub async fn run(
             "exists, kept"
         }
     );
-    eprintln!(
-        "✓ directories: {dirs_created} created, {} kept",
-        SUBDIRS.len() - dirs_created
-    );
+    eprintln!("✓ directories: ensured");
     eprintln!(
         "✓ .gitignore: {}",
         if gitignore_updated {
@@ -102,15 +81,10 @@ pub async fn run(
     Ok(())
 }
 
-/// Policy for what to do when the config file already exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OnExisting {
-    /// Operator asked for `--force`: clobber the existing file.
     Overwrite,
-    /// Operator asked for `--from-existing`: assume the file is
-    /// intentionally pre-edited (endpoint/env vars) and keep it.
     Keep,
-    /// Neither flag: refuse and tell the operator to pass `--force`.
     Fail,
 }
 
@@ -135,9 +109,9 @@ fn write_config_file(config_path: &Path, on_existing: OnExisting) -> anyhow::Res
     Ok(true)
 }
 
-/// Default resource subdirectories matching `ResourcesConfig` defaults.
-/// An operator who edits the config to point elsewhere is expected to
-/// create those directories themselves.
+/// Matches the resource paths in `CONFIG_TEMPLATE` (and thus
+/// `ResourcesConfig` defaults). An operator who edits the config to
+/// point elsewhere is expected to create those directories themselves.
 const SUBDIRS: [&str; 4] = [
     "catalogs",
     "content_blocks",
@@ -145,19 +119,13 @@ const SUBDIRS: [&str; 4] = [
     "custom_attributes",
 ];
 
-/// Creates the resource directories as siblings of the config file.
-/// Returns the number newly created (for the summary line).
-fn scaffold_resource_dirs(config_dir: &Path) -> anyhow::Result<usize> {
-    let mut created = 0;
+fn scaffold_resource_dirs(config_dir: &Path) -> anyhow::Result<()> {
     for sub in SUBDIRS {
         let dir = config_dir.join(sub);
-        if !dir.exists() {
-            fs::create_dir_all(&dir)
-                .with_context(|| format!("creating directory {}", dir.display()))?;
-            created += 1;
-        }
+        fs::create_dir_all(&dir)
+            .with_context(|| format!("creating directory {}", dir.display()))?;
     }
-    Ok(created)
+    Ok(())
 }
 
 /// Ensures `.gitignore` contains lines for `.env` and `.env.*`. Appends
@@ -218,9 +186,6 @@ async fn run_from_existing(
     super::export::run(&export_args, resolved, config_dir).await
 }
 
-/// Commented config template — mirrors IMPLEMENTATION.md §10. Kept in
-/// the binary so `init` works offline and so the comments stay in sync
-/// with the deserializer.
 pub(crate) const CONFIG_TEMPLATE: &str = r#"# braze-sync configuration (v1 schema, frozen at v1.0).
 # Reference: https://github.com/uny/braze-sync#configuration
 
@@ -338,8 +303,7 @@ mod tests {
     #[test]
     fn scaffold_creates_all_four_dirs() {
         let tmp = tempfile::tempdir().unwrap();
-        let created = scaffold_resource_dirs(tmp.path()).unwrap();
-        assert_eq!(created, 4);
+        scaffold_resource_dirs(tmp.path()).unwrap();
         for sub in SUBDIRS {
             assert!(tmp.path().join(sub).is_dir(), "{sub} should exist");
         }
@@ -349,8 +313,7 @@ mod tests {
     fn scaffold_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         scaffold_resource_dirs(tmp.path()).unwrap();
-        let created = scaffold_resource_dirs(tmp.path()).unwrap();
-        assert_eq!(created, 0, "second run creates nothing");
+        scaffold_resource_dirs(tmp.path()).expect("second run should succeed");
     }
 
     #[test]

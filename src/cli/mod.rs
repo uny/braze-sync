@@ -110,10 +110,8 @@ pub async fn run() -> i32 {
         tracing::warn!("dotenv: {e}");
     }
 
-    // `init` runs BEFORE config load: its whole job is to create the
-    // config, so refusing on a missing file would be a catch-22. It
-    // also handles its own env resolution internally when `--from-existing`
-    // is set, so it bypasses both stages below.
+    // `init` runs before config load (its job is to create the config)
+    // and handles its own env resolution for `--from-existing`.
     if let Command::Init(args) = &cli.command {
         return finish(init::run(args, &cli.config, cli.env.as_deref()).await);
     }
