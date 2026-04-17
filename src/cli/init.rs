@@ -63,7 +63,7 @@ pub async fn run(
         (false, false) => OnExisting::Fail,
     };
     let config_written = write_config_file(config_path, on_existing)?;
-    let (dirs_created, dirs_total) = scaffold_resource_dirs(&config_dir)?;
+    let dirs_created = scaffold_resource_dirs(&config_dir)?;
     let gitignore_updated = update_gitignore(&config_dir)?;
 
     eprintln!(
@@ -77,7 +77,7 @@ pub async fn run(
     );
     eprintln!(
         "✓ directories: {dirs_created} created, {} kept",
-        dirs_total - dirs_created
+        SUBDIRS.len() - dirs_created
     );
     eprintln!(
         "✓ .gitignore: {}",
@@ -146,9 +146,8 @@ const SUBDIRS: [&str; 4] = [
 ];
 
 /// Creates the resource directories as siblings of the config file.
-/// Returns `(created, total)` — the counts are purely for the summary
-/// message.
-fn scaffold_resource_dirs(config_dir: &Path) -> anyhow::Result<(usize, usize)> {
+/// Returns the number newly created (for the summary line).
+fn scaffold_resource_dirs(config_dir: &Path) -> anyhow::Result<usize> {
     let mut created = 0;
     for sub in SUBDIRS {
         let dir = config_dir.join(sub);
@@ -158,7 +157,7 @@ fn scaffold_resource_dirs(config_dir: &Path) -> anyhow::Result<(usize, usize)> {
             created += 1;
         }
     }
-    Ok((created, SUBDIRS.len()))
+    Ok(created)
 }
 
 /// Ensures `.gitignore` contains lines for `.env` and `.env.*`. Appends
@@ -339,9 +338,8 @@ mod tests {
     #[test]
     fn scaffold_creates_all_four_dirs() {
         let tmp = tempfile::tempdir().unwrap();
-        let (created, total) = scaffold_resource_dirs(tmp.path()).unwrap();
+        let created = scaffold_resource_dirs(tmp.path()).unwrap();
         assert_eq!(created, 4);
-        assert_eq!(total, 4);
         for sub in SUBDIRS {
             assert!(tmp.path().join(sub).is_dir(), "{sub} should exist");
         }
@@ -351,7 +349,7 @@ mod tests {
     fn scaffold_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         scaffold_resource_dirs(tmp.path()).unwrap();
-        let (created, _) = scaffold_resource_dirs(tmp.path()).unwrap();
+        let created = scaffold_resource_dirs(tmp.path()).unwrap();
         assert_eq!(created, 0, "second run creates nothing");
     }
 
