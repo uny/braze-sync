@@ -216,6 +216,13 @@ The JSON shape is **frozen at v1.0** with an explicit `version: 1`
 field on the root. Future schema bumps will increment `version`, so
 CI consumers can branch on it.
 
+## Further reading
+
+- [Configuration reference](docs/configuration.md) — every field in `braze-sync.config.yaml`.
+- [CI integration](docs/integration.md) — drift detection and apply-on-merge workflows.
+- [Orphan tracking](docs/orphan-tracking.md) — how Content Blocks and Email Templates are handled when Braze has no DELETE.
+- [Custom Attribute registry mode](docs/registry-mode.md) — why attributes work differently and what `apply` actually does.
+
 ## License
 
 [MIT](LICENSE)
