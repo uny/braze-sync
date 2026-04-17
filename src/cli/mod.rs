@@ -110,8 +110,7 @@ pub async fn run() -> i32 {
         tracing::warn!("dotenv: {e}");
     }
 
-    // `init` runs before config load (its job is to create the config)
-    // and handles its own env resolution for `--from-existing`.
+    // init runs before config load — its job is to create the config.
     if let Command::Init(args) = &cli.command {
         return finish(init::run(args, &cli.config, cli.env.as_deref()).await);
     }
