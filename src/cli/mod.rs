@@ -22,6 +22,7 @@
 pub mod apply;
 pub mod diff;
 pub mod export;
+pub mod init;
 pub mod validate;
 
 /// Maximum concurrent in-flight Braze GET requests for fan-out fetches.
@@ -73,6 +74,8 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Scaffold a new braze-sync workspace (config, directories, .gitignore)
+    Init(init::InitArgs),
     /// Pull state from Braze into local files
     Export(export::ExportArgs),
     /// Show drift between local files and Braze
@@ -105,6 +108,11 @@ pub async fn run() -> i32 {
         // dotenv failures are non-fatal — config resolution will surface
         // any actually missing vars with a clearer error.
         tracing::warn!("dotenv: {e}");
+    }
+
+    // init runs before config load — its job is to create the config.
+    if let Command::Init(args) = &cli.command {
+        return finish(init::run(args, &cli.config, cli.env.as_deref()).await);
     }
 
     // Stage 1: parse + structurally validate the config file. No env
@@ -178,6 +186,9 @@ async fn dispatch(cli: &Cli, resolved: ResolvedConfig, config_dir: &Path) -> any
         }
         Command::Validate(_) => {
             unreachable!("validate is dispatched in cli::run before env resolution")
+        }
+        Command::Init(_) => {
+            unreachable!("init is dispatched in cli::run before config load")
         }
     }
 }

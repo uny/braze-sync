@@ -13,7 +13,7 @@ use std::path::Path;
 use super::diff::resolve_catalog_names;
 use super::{selected_kinds, FETCH_CONCURRENCY};
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Default)]
 pub struct ExportArgs {
     /// Limit export to a specific resource kind. Omit to export every
     /// enabled resource kind in turn.
