@@ -112,9 +112,6 @@ fn init_is_idempotent_for_directories_and_gitignore() {
 
 #[test]
 fn init_creates_parent_directories_for_nested_config_path() {
-    // `braze-sync init --config braze/braze-sync.config.yaml` should
-    // create the `braze/` directory too — this is the nested-workspace
-    // pattern from IMPLEMENTATION.md §9.1.
     let tmp = tempfile::tempdir().unwrap();
     let config_path = tmp.path().join("braze").join("braze-sync.config.yaml");
 
@@ -209,11 +206,8 @@ environments:
     .await
     .unwrap();
 
-    // Scaffolding still ran alongside export, so directories and
-    // .gitignore must exist.
     assert!(tmp_path.join("catalogs").is_dir());
     assert!(tmp_path.join(".gitignore").exists());
-    // Export produced the one catalog schema we mocked.
     assert!(
         tmp_path.join("catalogs/cardiology/schema.yaml").exists(),
         "export should have written cardiology schema"
