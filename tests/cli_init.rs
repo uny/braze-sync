@@ -5,8 +5,6 @@
 //! `--from-existing` test additionally stands up a wiremock server so
 //! the export phase has something to pull.
 
-mod common;
-
 use assert_cmd::Command;
 use serde_json::json;
 use std::fs;
