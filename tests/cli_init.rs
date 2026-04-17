@@ -54,6 +54,19 @@ fn init_refuses_to_overwrite_config_without_force() {
 }
 
 #[test]
+fn init_rejects_force_with_from_existing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = tmp.path().join("braze-sync.config.yaml");
+
+    Command::cargo_bin("braze-sync")
+        .unwrap()
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["init", "--force", "--from-existing"])
+        .assert()
+        .failure();
+}
+
+#[test]
 fn init_force_overwrites_existing_config() {
     let tmp = tempfile::tempdir().unwrap();
     let config_path = tmp.path().join("braze-sync.config.yaml");

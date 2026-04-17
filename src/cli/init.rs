@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 pub struct InitArgs {
     /// Overwrite an existing `braze-sync.config.yaml`. Directories and
     /// `.gitignore` are updated idempotently regardless.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "from_existing")]
     pub force: bool,
 
     /// After scaffolding, pull the current state from Braze into the new
@@ -35,6 +35,8 @@ pub async fn run(
     fs::create_dir_all(&config_dir)
         .with_context(|| format!("creating config directory {}", config_dir.display()))?;
 
+    // --force and --from-existing are mutually exclusive (clap-enforced)
+    // to prevent silently discarding operator edits.
     let on_existing = match (args.force, args.from_existing) {
         (true, _) => OnExisting::Overwrite,
         (false, true) => OnExisting::Keep,
@@ -64,6 +66,14 @@ pub async fn run(
     );
 
     if args.from_existing {
+        if config_written {
+            eprintln!(
+                "⚠ --from-existing is using the freshly-scaffolded config — \
+                 the template's default endpoint will be hit. \
+                 Edit {} first if your Braze instance is elsewhere.",
+                config_path.display()
+            );
+        }
         eprintln!("✓ --from-existing: loading config and pulling Braze state…");
         run_from_existing(config_path, &config_dir, env_override).await?;
     } else {
