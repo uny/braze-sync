@@ -88,9 +88,6 @@ enum OnExisting {
     Fail,
 }
 
-/// Write the scaffolded config. Returns `true` if a new file was
-/// written, `false` if an existing one was kept. See [`OnExisting`]
-/// for the policy applied when the file already exists.
 fn write_config_file(config_path: &Path, on_existing: OnExisting) -> anyhow::Result<bool> {
     if config_path.exists() {
         match on_existing {
@@ -119,6 +116,8 @@ const SUBDIRS: [&str; 4] = [
     "custom_attributes",
 ];
 
+const GITIGNORE_ENTRIES: [&str; 2] = [".env", ".env.*"];
+
 fn scaffold_resource_dirs(config_dir: &Path) -> anyhow::Result<()> {
     for sub in SUBDIRS {
         let dir = config_dir.join(sub);
@@ -128,13 +127,10 @@ fn scaffold_resource_dirs(config_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Ensures `.gitignore` contains lines for `.env` and `.env.*`. Appends
-/// missing entries under a clearly-labeled braze-sync section so the
-/// operator can tell where they came from. Returns `true` if any entry
-/// was added.
+/// Missing entries are appended under a labeled section so the operator
+/// can tell where they came from; existing file content is preserved.
 fn update_gitignore(config_dir: &Path) -> anyhow::Result<bool> {
     let path = config_dir.join(".gitignore");
-    const ENTRIES: [&str; 2] = [".env", ".env.*"];
 
     let existing = match fs::read_to_string(&path) {
         Ok(s) => s,
@@ -145,7 +141,11 @@ fn update_gitignore(config_dir: &Path) -> anyhow::Result<bool> {
     };
 
     let has_line = |needle: &str| existing.lines().any(|l| l.trim() == needle);
-    let missing: Vec<&str> = ENTRIES.iter().copied().filter(|e| !has_line(e)).collect();
+    let missing: Vec<&str> = GITIGNORE_ENTRIES
+        .iter()
+        .copied()
+        .filter(|e| !has_line(e))
+        .collect();
     if missing.is_empty() {
         return Ok(false);
     }

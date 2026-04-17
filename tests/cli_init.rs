@@ -85,7 +85,6 @@ fn init_is_idempotent_for_directories_and_gitignore() {
     let tmp = tempfile::tempdir().unwrap();
     let config_path = tmp.path().join("braze-sync.config.yaml");
 
-    // First run creates everything.
     Command::cargo_bin("braze-sync")
         .unwrap()
         .args(["--config", config_path.to_str().unwrap()])
@@ -95,8 +94,8 @@ fn init_is_idempotent_for_directories_and_gitignore() {
 
     let gitignore_after_first = fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
 
-    // Second run (with --force since the config now exists) must not
-    // duplicate gitignore entries or fail on existing directories.
+    // --force on the second run because the config now exists; directories
+    // and .gitignore must remain idempotent regardless.
     Command::cargo_bin("braze-sync")
         .unwrap()
         .args(["--config", config_path.to_str().unwrap()])
@@ -181,9 +180,9 @@ async fn init_from_existing_pulls_state_into_scaffold() {
     let tmp = tempfile::tempdir().unwrap();
     let config_path = tmp.path().join("braze-sync.config.yaml");
 
-    // Pre-write a config that points at wiremock so --from-existing has
-    // a reachable endpoint. `init --force` keeps directories/gitignore
-    // consistent without clobbering our test-specific endpoint.
+    // Pre-write a config pointing at wiremock; `init --from-existing`
+    // uses OnExisting::Keep so this endpoint survives instead of being
+    // replaced by the default template's production URL.
     let yaml = format!(
         "version: 1
 default_environment: test
@@ -203,9 +202,6 @@ environments:
             .unwrap()
             .env("BRAZE_DEV_API_KEY", "test-key")
             .args(["--config", config_path_cmd.to_str().unwrap()])
-            // --from-existing keeps the pre-written config (which points
-            // at the mock server). Without this we'd get the default
-            // template, which points at production Braze.
             .args(["init", "--from-existing"])
             .assert()
             .success();
