@@ -9,6 +9,16 @@ file formats, JSON output, exit codes) for the full v1.x line.
 
 ## [Unreleased]
 
+### Added
+
+- Public documentation under `docs/` for configuration, CI integration,
+  orphan tracking, and Custom Attribute registry mode. README now links
+  to each page under "Further reading".
+- `cargo-deny` wired into CI with a conservative `deny.toml`: permissive
+  OSS license allow-list, wildcard-dependency ban, and
+  allowed-registry enforcement. Complements the existing `cargo audit`
+  job.
+
 ## [0.6.0] — 2026-04-17
 
 ### Added

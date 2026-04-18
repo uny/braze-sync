@@ -1,0 +1,76 @@
+# cargo-deny configuration for braze-sync.
+#
+# Run locally with `cargo deny check`. CI runs the same command via
+# `.github/workflows/ci.yml` → `deny` job. Keep this file conservative:
+# the goal is to catch license drift and supply-chain surprises before
+# v1.0 freeze, not to block legitimate dependency bumps.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+# Fail on any unfixed advisory. `cargo audit` already runs in a separate
+# job; this keeps the check in the same pipeline when advisory data
+# moves between sources.
+yanked = "deny"
+ignore = [
+    # Transitive via indicatif 0.17 → number_prefix 0.4. Upstream has
+    # no safe upgrade yet; revisit when indicatif switches to unit-prefix.
+    { id = "RUSTSEC-2025-0119", reason = "transitive via indicatif, no upgrade path" },
+]
+
+[licenses]
+version = 2
+# Permissive OSS licenses compatible with MIT distribution of
+# braze-sync itself. Anything outside this set must be reviewed before
+# being added — open an issue and update this list explicitly.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "0BSD",
+    "Unlicense",
+    "MIT-0",
+    "CDLA-Permissive-2.0",
+    "BSL-1.0",
+]
+confidence-threshold = 0.93
+
+[[licenses.clarify]]
+# `ring` ships a custom LICENSE that confuses SPDX parsers. The
+# project has been on the same multi-license terms for years; pin an
+# explicit expression so the check is deterministic.
+#
+# `license-files` is required by cargo-deny's schema. The hash below
+# is tied to the exact LICENSE bytes of the ring version currently in
+# Cargo.lock — when ring bumps and the file changes, cargo-deny will
+# fail with a mismatch. Re-compute it (not remove this block): the
+# error message from `cargo deny check licenses` prints the expected
+# hash, so paste that value back in after verifying the LICENSE text
+# hasn't materially changed.
+crate = "ring"
+expression = "ISC AND MIT AND OpenSSL"
+license-files = [
+    { path = "LICENSE", hash = 0xbd0eed23 },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Known duplicates come from transitive deps (windows-sys versions,
+# syn 1/2 straddle, etc.). Revisit periodically but don't block PRs.
+
+[sources]
+# Only crates.io and first-party git sources are allowed. Any new
+# registry or fork URL is a deliberate decision, not an accident.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
