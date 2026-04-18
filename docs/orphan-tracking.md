@@ -46,8 +46,15 @@ individual diff entry and in the `summary.orphan` count:
   "version": 1,
   "summary": { "changed": 0, "in_sync": 4, "destructive": 0, "orphan": 2 },
   "diffs": [
-    { "kind": "content_block",  "name": "legacy_promo",  "orphan": true },
-    { "kind": "email_template", "name": "old_welcome",   "orphan": true }
+    {
+      "kind": "content_block", "op": "unchanged",
+      "name": "legacy_promo", "orphan": true
+    },
+    {
+      "kind": "email_template", "op": "unchanged",
+      "name": "old_welcome", "orphan": true,
+      "subject_changed": false, "metadata_changed": false
+    }
   ]
 }
 ```

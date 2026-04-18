@@ -56,7 +56,7 @@ Fields:
 |:---|:---|:---|
 | `name` | string | Attribute name as seen by Braze and the SDK. |
 | `type` | enum | One of `string`, `number`, `boolean`, `time`, `array`. Reported by Braze; not something `apply` can change. |
-| `description` | string | Free-text documentation. Local-only annotation — Braze does not expose a description API, so `apply` ignores changes. |
+| `description` | string | Free-text documentation. Braze returns it on read but has no write endpoint, so this is effectively a local-only annotation and `apply` ignores changes. |
 | `deprecated` | bool | The only field `apply` can actually write back to Braze. |
 
 ## What `diff` reports

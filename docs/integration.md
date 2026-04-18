@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: uny/braze-sync/install-action@v1  # or: cargo install braze-sync
+      - uses: uny/setup-braze-sync@v1  # or: cargo install braze-sync
       - run: braze-sync validate
 
   drift:
@@ -43,7 +43,7 @@ jobs:
     if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v4
-      - uses: uny/braze-sync/install-action@v1
+      - uses: uny/setup-braze-sync@v1
       - run: braze-sync diff --env prod --fail-on-drift
         env:
           BRAZE_PROD_API_KEY: ${{ secrets.BRAZE_PROD_API_KEY }}
@@ -84,7 +84,7 @@ jobs:
     environment: braze-prod  # require manual approval
     steps:
       - uses: actions/checkout@v4
-      - uses: uny/braze-sync/install-action@v1
+      - uses: uny/setup-braze-sync@v1
       - run: braze-sync apply --env prod --confirm --format json | tee apply.json
         env:
           BRAZE_PROD_API_KEY: ${{ secrets.BRAZE_PROD_API_KEY }}
