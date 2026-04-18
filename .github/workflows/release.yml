@@ -206,7 +206,6 @@ jobs:
           LINUX_INTEL: ${{ steps.sha.outputs.linux_intel }}
         run: |
           set -euo pipefail
-          # Strip leading "v" from the tag for Formula `version`.
           v="${VERSION#v}"
           cat > tap/Formula/braze-sync.rb <<EOF
           class BrazeSync < Formula
@@ -256,7 +255,6 @@ jobs:
         run: |
           set -euo pipefail
           git config user.name "uny-release-bot[bot]"
-          # Numeric ID keeps the author stable across App renames.
           git config user.email "uny-release-bot[bot]@users.noreply.github.com"
           if git diff --quiet Formula/braze-sync.rb; then
             echo "Formula already up to date; nothing to commit."
