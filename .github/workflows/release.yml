@@ -147,3 +147,121 @@ jobs:
       - run: cargo publish --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # Updates uny/homebrew-tap/Formula/braze-sync.rb to point at the new
+  # release artifacts. Runs only on stable tags (no pre-release suffix)
+  # so `brew install` never picks up an RC. Uses a GitHub App
+  # (uny-release-bot) to mint a short-lived installation token scoped
+  # to the tap repository — avoids long-lived PATs.
+  homebrew:
+    needs: release
+    # Skip pre-release tags like v0.9.0-rc.1. `contains('-')` is a
+    # simple gate that matches every semver pre-release identifier.
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Compute SHA256 for each target
+        id: sha
+        run: |
+          set -euo pipefail
+          cd artifacts
+          # release.yml generates "<sha>  <filename>" sidecar files.
+          sha_of() {
+            awk '{print $1}' "braze-sync-$1.tar.gz.sha256"
+          }
+          {
+            echo "mac_arm=$(sha_of aarch64-apple-darwin)"
+            echo "mac_intel=$(sha_of x86_64-apple-darwin)"
+            echo "linux_arm=$(sha_of aarch64-unknown-linux-musl)"
+            echo "linux_intel=$(sha_of x86_64-unknown-linux-musl)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Mint tap token (uny-release-bot App)
+        id: app-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          app-id: ${{ secrets.UNY_RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.UNY_RELEASE_BOT_PRIVATE_KEY }}
+          owner: uny
+          repositories: homebrew-tap
+
+      - name: Checkout tap
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: uny/homebrew-tap
+          token: ${{ steps.app-token.outputs.token }}
+          path: tap
+
+      - name: Write Formula
+        env:
+          VERSION: ${{ github.ref_name }}
+          MAC_ARM: ${{ steps.sha.outputs.mac_arm }}
+          MAC_INTEL: ${{ steps.sha.outputs.mac_intel }}
+          LINUX_ARM: ${{ steps.sha.outputs.linux_arm }}
+          LINUX_INTEL: ${{ steps.sha.outputs.linux_intel }}
+        run: |
+          set -euo pipefail
+          # Strip leading "v" from the tag for Formula `version`.
+          v="${VERSION#v}"
+          cat > tap/Formula/braze-sync.rb <<EOF
+          class BrazeSync < Formula
+            desc "GitOps CLI for managing Braze configuration as code"
+            homepage "https://github.com/uny/braze-sync"
+            version "${v}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/uny/braze-sync/releases/download/v#{version}/braze-sync-aarch64-apple-darwin.tar.gz"
+                sha256 "${MAC_ARM}"
+              end
+
+              on_intel do
+                url "https://github.com/uny/braze-sync/releases/download/v#{version}/braze-sync-x86_64-apple-darwin.tar.gz"
+                sha256 "${MAC_INTEL}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/uny/braze-sync/releases/download/v#{version}/braze-sync-aarch64-unknown-linux-musl.tar.gz"
+                sha256 "${LINUX_ARM}"
+              end
+
+              on_intel do
+                url "https://github.com/uny/braze-sync/releases/download/v#{version}/braze-sync-x86_64-unknown-linux-musl.tar.gz"
+                sha256 "${LINUX_INTEL}"
+              end
+            end
+
+            def install
+              bin.install "braze-sync"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/braze-sync --version")
+            end
+          end
+          EOF
+
+      - name: Commit and push
+        working-directory: tap
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git config user.name "uny-release-bot[bot]"
+          # Numeric ID keeps the author stable across App renames.
+          git config user.email "uny-release-bot[bot]@users.noreply.github.com"
+          if git diff --quiet Formula/braze-sync.rb; then
+            echo "Formula already up to date; nothing to commit."
+            exit 0
+          fi
+          git add Formula/braze-sync.rb
+          git commit -m "braze-sync ${VERSION}"
+          git push
