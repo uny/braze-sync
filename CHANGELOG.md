@@ -9,6 +9,8 @@ file formats, JSON output, exit codes) for the full v1.x line.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-04-19
+
 ### Added
 
 - Public documentation under `docs/` for configuration, CI integration,
@@ -22,6 +24,12 @@ file formats, JSON output, exit codes) for the full v1.x line.
   mode. Each `.tar.gz` / `.zip` ships alongside a `.cosign.bundle`
   verifiable against the release workflow's OIDC identity. See
   README → "Verifying release artifacts".
+- Release workflow now updates `uny/homebrew-tap/Formula/braze-sync.rb`
+  automatically on stable tags (pre-release tags like `vX.Y.Z-rc.N` are
+  skipped). Authentication uses a dedicated GitHub App
+  (`uny-release-bot`) with `Contents: Write` scoped to the tap repo,
+  minting a short-lived installation token per run instead of a
+  long-lived PAT.
 
 ### Changed
 
