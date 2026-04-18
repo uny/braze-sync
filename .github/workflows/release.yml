@@ -35,9 +35,9 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
+          - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
           - target: x86_64-apple-darwin
             os: macos-latest
@@ -57,13 +57,19 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      # Cross-compilation toolchain for aarch64-linux
-      - name: Install cross-compilation tools
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+      # musl toolchain for fully static Linux binaries. x86_64-musl is
+      # provided by the image; aarch64 needs an explicit cross-linker.
+      - name: Install musl tooling (x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install musl tooling (aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
@@ -94,6 +100,12 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    # `id-token: write` lets cosign exchange a short-lived OIDC token
+    # with Sigstore's Fulcio CA for keyless signing. `contents: write`
+    # is required to create the GitHub Release.
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -101,6 +113,30 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+
+      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+
+      # Keyless sign each release archive. Emits
+      # `<file>.sig` (detached signature) and `<file>.pem` (Fulcio
+      # certificate bound to this workflow's OIDC identity), plus a
+      # Sigstore `.cosign.bundle` that carries both together for easy
+      # verification via `cosign verify-blob --bundle`. See
+      # README.md → "Verifying release artifacts" for the identity
+      # predicates to pass to `cosign verify-blob`.
+      - name: Sign release artifacts (cosign keyless)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for f in artifacts/braze-sync-*.tar.gz artifacts/braze-sync-*.zip; do
+            cosign sign-blob \
+              --output-signature "${f}.sig" \
+              --output-certificate "${f}.pem" \
+              --bundle "${f}.cosign.bundle" \
+              "${f}"
+          done
+          ls -la artifacts/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1

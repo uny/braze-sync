@@ -216,6 +216,28 @@ The JSON shape is **frozen at v1.0** with an explicit `version: 1`
 field on the root. Future schema bumps will increment `version`, so
 CI consumers can branch on it.
 
+## Verifying release artifacts
+
+Release archives from [GitHub Releases](https://github.com/uny/braze-sync/releases)
+are signed with [Sigstore cosign](https://github.com/sigstore/cosign)
+in keyless mode — the signing identity is the release workflow itself,
+not a long-lived key. Each `.tar.gz` / `.zip` ships with a companion
+`.cosign.bundle` that carries the signature and Fulcio certificate
+together. To verify, download both and run:
+
+```bash
+cosign verify-blob \
+  --bundle braze-sync-<target>.tar.gz.cosign.bundle \
+  --certificate-identity 'https://github.com/uny/braze-sync/.github/workflows/release.yml@refs/tags/v<version>' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  braze-sync-<target>.tar.gz
+```
+
+A successful run prints `Verified OK`. Any mismatch — tampering,
+wrong repo, or a build from a different workflow — fails. The
+SHA-256 digests (`.sha256`) are still published for consumers that
+only need a content hash.
+
 ## Further reading
 
 - [Configuration reference](docs/configuration.md) — every field in `braze-sync.config.yaml`.
