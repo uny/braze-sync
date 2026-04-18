@@ -47,6 +47,14 @@ confidence-threshold = 0.93
 # `ring` ships a custom LICENSE that confuses SPDX parsers. The
 # project has been on the same multi-license terms for years; pin an
 # explicit expression so the check is deterministic.
+#
+# `license-files` is required by cargo-deny's schema. The hash below
+# is tied to the exact LICENSE bytes of the ring version currently in
+# Cargo.lock — when ring bumps and the file changes, cargo-deny will
+# fail with a mismatch. Re-compute it (not remove this block): the
+# error message from `cargo deny check licenses` prints the expected
+# hash, so paste that value back in after verifying the LICENSE text
+# hasn't materially changed.
 crate = "ring"
 expression = "ISC AND MIT AND OpenSSL"
 license-files = [

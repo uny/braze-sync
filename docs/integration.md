@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: uny/setup-braze-sync@v1  # or: cargo install braze-sync
+      - uses: uny/setup-braze-sync@v1
       - run: braze-sync validate
 
   drift:
@@ -54,10 +54,12 @@ Exit-code contract:
 | Code | Meaning | CI action |
 |:---:|:---|:---|
 | `0` | In sync | Pass |
+| `1` | Generic failure (I/O, parse, unmapped error) | Fail the build |
 | `2` | Drift detected | Fail the build |
 | `3` | `validate` caught a local issue | Fail the build |
 | `4` | API key is invalid | Fail & page the operator |
 | `5` | Rate limit retries exhausted | Retry the job |
+| `6` | Destructive change blocked (see `apply --allow-destructive`) | Fail the build / block merge |
 
 ## Apply on merge
 
@@ -110,12 +112,10 @@ on:
         default: false
 
 # ...
-      - run: |
-          if ${{ inputs.allow_destructive }}; then
-            braze-sync apply --env prod --confirm --allow-destructive
-          else
-            braze-sync apply --env prod --confirm
-          fi
+      - if: ${{ inputs.allow_destructive }}
+        run: braze-sync apply --env prod --confirm --allow-destructive
+      - if: ${{ !inputs.allow_destructive }}
+        run: braze-sync apply --env prod --confirm
 ```
 
 ## Consuming `--format json`

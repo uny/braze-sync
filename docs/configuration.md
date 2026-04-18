@@ -144,8 +144,11 @@ A single-file registry — see [registry-mode.md](registry-mode.md).
 ### `naming` (optional)
 
 Optional name validators enforced by `braze-sync validate`. Each entry
-is a regex (RE2-style, Rust `regex` crate). Omitted patterns mean "no
-check".
+is a regex evaluated by the [`regex-lite`](https://docs.rs/regex-lite)
+crate — a subset of the full `regex` crate with no Unicode classes
+(`\p{…}`), limited `\d`/`\w` behavior, and no look-around. Consult the
+`regex-lite` syntax reference when writing patterns. Omitted patterns
+mean "no check".
 
 | Field | Applies to |
 |:---|:---|
