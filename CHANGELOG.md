@@ -18,6 +18,18 @@ file formats, JSON output, exit codes) for the full v1.x line.
   OSS license allow-list, wildcard-dependency ban, and
   allowed-registry enforcement. Complements the existing `cargo audit`
   job.
+- Release artifacts are now signed with Sigstore cosign in keyless
+  mode. Each `.tar.gz` / `.zip` ships alongside a `.cosign.bundle`
+  verifiable against the release workflow's OIDC identity. See
+  README → "Verifying release artifacts".
+
+### Changed
+
+- Linux release builds switched from `*-unknown-linux-gnu` to
+  `*-unknown-linux-musl` for fully static binaries. Matches the
+  target list in IMPLEMENTATION.md §13 Phase C6 and removes the
+  runtime glibc floor. rustls-only TLS means no openssl dependency
+  to pull in.
 
 ## [0.6.0] — 2026-04-17
 
