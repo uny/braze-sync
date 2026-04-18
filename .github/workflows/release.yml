@@ -61,7 +61,10 @@ jobs:
       # provided by the image; aarch64 needs an explicit cross-linker.
       - name: Install musl tooling (x86_64)
         if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" >> "$GITHUB_ENV"
 
       - name: Install musl tooling (aarch64)
         if: matrix.target == 'aarch64-unknown-linux-musl'
@@ -116,27 +119,15 @@ jobs:
 
       - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
 
-      # Keyless sign each release archive. Emits
-      # `<file>.sig` (detached signature) and `<file>.pem` (Fulcio
-      # certificate bound to this workflow's OIDC identity), plus a
-      # Sigstore `.cosign.bundle` that carries both together for easy
-      # verification via `cosign verify-blob --bundle`. See
-      # README.md → "Verifying release artifacts" for the identity
-      # predicates to pass to `cosign verify-blob`.
+      # Sigstore keyless signing. See README → "Verifying release artifacts".
       - name: Sign release artifacts (cosign keyless)
         env:
           COSIGN_YES: "true"
         run: |
           set -euo pipefail
-          shopt -s nullglob
           for f in artifacts/braze-sync-*.tar.gz artifacts/braze-sync-*.zip; do
-            cosign sign-blob \
-              --output-signature "${f}.sig" \
-              --output-certificate "${f}.pem" \
-              --bundle "${f}.cosign.bundle" \
-              "${f}"
+            cosign sign-blob --bundle "${f}.cosign.bundle" "${f}"
           done
-          ls -la artifacts/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1

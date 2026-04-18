@@ -221,9 +221,9 @@ CI consumers can branch on it.
 Release archives from [GitHub Releases](https://github.com/uny/braze-sync/releases)
 are signed with [Sigstore cosign](https://github.com/sigstore/cosign)
 in keyless mode — the signing identity is the release workflow itself,
-not a long-lived key. Each `.tar.gz` / `.zip` ships with a companion
-`.cosign.bundle` that carries the signature and Fulcio certificate
-together. To verify, download both and run:
+not a long-lived key. Each `.tar.gz` / `.zip` ships with a `.cosign.bundle`
+carrying the signature and Fulcio certificate. To verify, download both
+and run:
 
 ```bash
 cosign verify-blob \

@@ -20,8 +20,8 @@ file formats, JSON output, exit codes) for the full v1.x line.
   job.
 - Release artifacts are now signed with Sigstore cosign in keyless
   mode. Each `.tar.gz` / `.zip` ships alongside a `.cosign.bundle`
-  (plus standalone `.sig` / `.pem`) verifiable against the release
-  workflow's OIDC identity. See README → "Verifying release artifacts".
+  verifiable against the release workflow's OIDC identity. See
+  README → "Verifying release artifacts".
 
 ### Changed
 
