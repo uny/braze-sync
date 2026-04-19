@@ -16,9 +16,10 @@
 //! `deprecated` is derived from `status == STATUS_BLOCKLISTED`.
 
 use crate::braze::error::BrazeApiError;
-use crate::braze::{check_duplicate_names, parse_next_link, BrazeClient};
+use crate::braze::{parse_next_link, BrazeClient};
 use crate::resource::{CustomAttribute, CustomAttributeType};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 /// At Braze's fixed 50 items/page this covers 10k attributes.
 const SAFETY_CAP_PAGES: usize = 200;
@@ -32,6 +33,7 @@ impl BrazeClient {
     /// `rel="next"`.
     pub async fn list_custom_attributes(&self) -> Result<Vec<CustomAttribute>, BrazeApiError> {
         let mut all: Vec<CustomAttribute> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
         let mut next_url: Option<String> = None;
 
         for _ in 0..SAFETY_CAP_PAGES {
@@ -42,15 +44,27 @@ impl BrazeClient {
             let (resp, headers): (CustomAttributeListResponse, _) =
                 self.send_json_with_headers(req).await?;
 
-            check_duplicate_names(
-                resp.attributes.iter().map(|w| w.name.as_str()),
-                resp.attributes.len(),
-                "/custom_attributes",
-            )?;
-
-            all.extend(resp.attributes.into_iter().map(wire_to_domain));
+            // Dedup across pages — per-page checks would miss a name that
+            // recurs on a later cursor page.
+            for w in resp.attributes {
+                if !seen.insert(w.name.clone()) {
+                    return Err(BrazeApiError::DuplicateNameInListResponse {
+                        endpoint: "/custom_attributes",
+                        name: w.name,
+                    });
+                }
+                all.push(wire_to_domain(w));
+            }
 
             match parse_next_link(&headers) {
+                // Guard against a server that echoes the same cursor —
+                // without this the safety-cap is the only exit.
+                Some(url) if Some(&url) == next_url.as_ref() => {
+                    return Err(BrazeApiError::PaginationNotImplemented {
+                        endpoint: "/custom_attributes",
+                        detail: format!("server returned same next link twice: {url}"),
+                    });
+                }
                 Some(url) => next_url = Some(url),
                 None => return Ok(all),
             }
@@ -392,6 +406,76 @@ mod tests {
             }
             other => panic!("expected DuplicateNameInListResponse, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn list_errors_on_duplicate_name_across_pages() {
+        // Same name appears on page 1 and page 2 — must be detected even
+        // though each individual page is internally unique.
+        let server = MockServer::start().await;
+        let base = server.uri();
+        let page_2_link = format!("<{base}/custom_attributes?cursor=p2>; rel=\"next\"");
+
+        Mock::given(method("GET"))
+            .and(path("/custom_attributes"))
+            .and(wiremock::matchers::query_param("cursor", "p2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "attributes": [
+                    {"name": "dup", "data_type": "String", "status": "Active"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/custom_attributes"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("link", page_2_link.as_str())
+                    .set_body_json(json!({
+                        "attributes": [
+                            {"name": "dup", "data_type": "String", "status": "Active"}
+                        ]
+                    })),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let err = client.list_custom_attributes().await.unwrap_err();
+        match err {
+            BrazeApiError::DuplicateNameInListResponse { endpoint, name } => {
+                assert_eq!(endpoint, "/custom_attributes");
+                assert_eq!(name, "dup");
+            }
+            other => panic!("expected DuplicateNameInListResponse, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_errors_when_cursor_repeats() {
+        // Server echoes the same `rel="next"` cursor forever — without
+        // cycle detection we'd loop to SAFETY_CAP_PAGES.
+        let server = MockServer::start().await;
+        let base = server.uri();
+        let self_link = format!("<{base}/custom_attributes?cursor=loop>; rel=\"next\"");
+
+        Mock::given(method("GET"))
+            .and(path("/custom_attributes"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("link", self_link.as_str())
+                    .set_body_json(json!({ "attributes": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let err = client.list_custom_attributes().await.unwrap_err();
+        assert!(
+            matches!(err, BrazeApiError::PaginationNotImplemented { .. }),
+            "got {err:?}"
+        );
     }
 
     #[tokio::test]

@@ -259,18 +259,16 @@ fn parse_retry_after(resp: &reqwest::Response) -> Option<Duration> {
     // HTTP-date. `parse_from_rfc2822` accepts IMF-fixdate (which is a
     // strict subset). Negative deltas (date already past) collapse to 0.
     let dt = chrono::DateTime::parse_from_rfc2822(raw).ok()?;
-    let delta = dt.timestamp().saturating_sub(chrono::Utc::now().timestamp());
+    let delta = dt
+        .timestamp()
+        .saturating_sub(chrono::Utc::now().timestamp());
     Some(Duration::from_secs(delta.max(0) as u64))
 }
 
 /// Compute the sleep duration before the next retry. Clamped to
 /// `remaining_budget` so a degenerate server can't push a single sleep
 /// past the retry budget.
-fn compute_backoff(
-    resp: &reqwest::Response,
-    attempt: u32,
-    remaining_budget: Duration,
-) -> Duration {
+fn compute_backoff(resp: &reqwest::Response, attempt: u32, remaining_budget: Duration) -> Duration {
     let wait = match parse_retry_after(resp) {
         Some(ra) => ra,
         None => {
@@ -293,29 +291,40 @@ fn compute_backoff(
 /// `rel="next"`, if present. Braze uses this for cursor-style pagination
 /// on `/custom_attributes`; the response body does not carry the cursor.
 pub(crate) fn parse_next_link(headers: &reqwest::header::HeaderMap) -> Option<String> {
-    let raw = headers.get(reqwest::header::LINK)?.to_str().ok()?;
-    for part in raw.split(',') {
-        let part = part.trim();
-        let Some((url_part, params)) = part.split_once(';') else {
-            continue;
-        };
-        let has_next = params.split(';').map(str::trim).any(|p| {
-            let Some((k, v)) = p.split_once('=') else {
-                return false;
+    // Servers may emit multiple `Link` header fields (one value per field)
+    // instead of comma-joining into one — iterate `get_all` so we don't
+    // miss a `rel="next"` in a later field. Braze cursors are opaque
+    // tokens without commas, so splitting each field on `,` is safe in
+    // practice.
+    for hv in headers.get_all(reqwest::header::LINK) {
+        let Ok(raw) = hv.to_str() else { continue };
+        for part in raw.split(',') {
+            let part = part.trim();
+            let Some((url_part, params)) = part.split_once(';') else {
+                continue;
             };
-            if !k.trim().eq_ignore_ascii_case("rel") {
-                return false;
+            let has_next = params.split(';').map(str::trim).any(|p| {
+                let Some((k, v)) = p.split_once('=') else {
+                    return false;
+                };
+                if !k.trim().eq_ignore_ascii_case("rel") {
+                    return false;
+                }
+                // `rel` may be a space-delimited list (e.g. `"prev next"`).
+                v.trim()
+                    .trim_matches('"')
+                    .split_ascii_whitespace()
+                    .any(|tok| tok.eq_ignore_ascii_case("next"))
+            });
+            if !has_next {
+                continue;
             }
-            v.trim()
-                .trim_matches('"')
-                .split_ascii_whitespace()
-                .any(|tok| tok.eq_ignore_ascii_case("next"))
-        });
-        if !has_next {
-            continue;
+            let url = url_part
+                .trim()
+                .trim_start_matches('<')
+                .trim_end_matches('>');
+            return Some(url.to_string());
         }
-        let url = url_part.trim().trim_start_matches('<').trim_end_matches('>');
-        return Some(url.to_string());
     }
     None
 }
@@ -539,6 +548,47 @@ mod retry_tests {
                 .unwrap(),
         );
         assert_eq!(parse_next_link(&h), None);
+    }
+
+    #[test]
+    fn parse_next_link_scans_multiple_link_header_fields() {
+        // Some servers emit multiple `Link:` header fields rather than
+        // comma-joining into one. `HeaderMap::get` only returns the first
+        // value; we must iterate `get_all` so a later `rel="next"` still
+        // wins.
+        let mut h = reqwest::header::HeaderMap::new();
+        h.append(
+            reqwest::header::LINK,
+            r#"<https://rest.example/?cursor=prev>; rel="prev""#
+                .parse()
+                .unwrap(),
+        );
+        h.append(
+            reqwest::header::LINK,
+            r#"<https://rest.example/?cursor=next>; rel="next""#
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            parse_next_link(&h),
+            Some("https://rest.example/?cursor=next".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_next_link_matches_space_delimited_rel_list() {
+        // RFC 5988 allows a space-delimited list of rel tokens.
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert(
+            reqwest::header::LINK,
+            r#"<https://rest.example/?cursor=n>; rel="prev next""#
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            parse_next_link(&h),
+            Some("https://rest.example/?cursor=n".to_string())
+        );
     }
 
     #[tokio::test]
