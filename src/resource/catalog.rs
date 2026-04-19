@@ -160,5 +160,4 @@ fields:
         assert_eq!(n.fields[0].name, "a");
         assert_eq!(n.fields[1].name, "z");
     }
-
 }

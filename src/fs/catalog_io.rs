@@ -32,8 +32,8 @@ const SCHEMA_FILE_NAME: &str = "schema.yaml";
 /// - Missing root → `Ok(vec![])`. A fresh project with no catalogs yet is a
 ///   valid state.
 /// - Root exists but is a file → `Err(InvalidFormat)`.
-/// - Subdirectory without `schema.yaml` → silently skipped (e.g. a
-///   future-Phase-B layout where items exist but schema is being added).
+/// - Subdirectory without `schema.yaml` → silently skipped (auxiliary files
+///   outside braze-sync's scope don't break the load).
 /// - `schema.yaml` whose `name:` field doesn't match its directory name →
 ///   `Err(InvalidFormat)`. Stopping here makes diff / apply correctness
 ///   trivially debuggable.
@@ -391,5 +391,4 @@ fields:
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].fields.len(), 2);
     }
-
 }

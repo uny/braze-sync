@@ -261,6 +261,24 @@ environments:
     }
 
     #[test]
+    fn rejects_legacy_catalog_items_resource_section() {
+        let yaml = r#"
+version: 1
+default_environment: dev
+environments:
+  dev:
+    api_endpoint: https://rest.fra-02.braze.eu
+    api_key_env: BRAZE_DEV_API_KEY
+resources:
+  catalog_items:
+    enabled: true
+"#;
+        let f = write_config(yaml);
+        let err = ConfigFile::load(f.path()).unwrap_err();
+        assert!(matches!(err, Error::YamlParse { .. }), "got: {err:?}");
+    }
+
+    #[test]
     fn rejects_non_http_endpoint_scheme() {
         let yaml = r#"
 version: 1

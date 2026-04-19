@@ -317,7 +317,6 @@ fn validate_email_templates(
     Ok(())
 }
 
-
 fn validate_custom_attributes(
     registry_path: &Path,
     name_pattern: Option<&str>,

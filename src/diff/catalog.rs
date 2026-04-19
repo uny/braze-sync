@@ -253,5 +253,4 @@ mod tests {
         assert!(d.field_diffs.is_empty());
         assert!(!d.has_changes());
     }
-
 }

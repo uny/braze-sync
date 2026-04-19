@@ -11,8 +11,8 @@ mod common;
 use assert_cmd::Command;
 use common::{
     write_config_for_validate as write_config, write_content_block_raw, write_local_content_block,
-    write_local_custom_attribute_registry, write_local_email_template,
-    write_schema_raw, ValidateNaming,
+    write_local_custom_attribute_registry, write_local_email_template, write_schema_raw,
+    ValidateNaming,
 };
 
 #[test]

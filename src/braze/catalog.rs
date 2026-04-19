@@ -114,7 +114,6 @@ impl BrazeClient {
         let req = self.delete(&["catalogs", catalog_name, "fields", field_name]);
         self.send_ok(req).await
     }
-
 }
 
 #[derive(Serialize)]
@@ -529,5 +528,4 @@ mod tests {
             other => panic!("expected Http, got {other:?}"),
         }
     }
-
 }
