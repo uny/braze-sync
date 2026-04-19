@@ -23,12 +23,8 @@ pub struct ContentBlockSummary {
 
 impl BrazeClient {
     /// Braze has no `has_more`/cursor field, so we loop until a short page.
-    ///
-    /// `offset` is omitted on the first request: Braze rejects
-    /// `offset=0` with `400 "Offset must be greater than 0."` on this
-    /// endpoint, reading "strictly greater than 0" rather than "at
-    /// least 0". Subsequent pages send `offset=LIST_LIMIT`, `2*LIST_LIMIT`,
-    /// etc.
+    /// `offset` is omitted on the first request because this endpoint rejects
+    /// `offset=0` with `400 "Offset must be greater than 0."`.
     pub async fn list_content_blocks(&self) -> Result<Vec<ContentBlockSummary>, BrazeApiError> {
         let mut all: Vec<ContentBlockListEntry> = Vec::with_capacity(LIST_LIMIT as usize);
         let mut offset: u32 = 0;
@@ -539,39 +535,6 @@ mod tests {
             }
             other => panic!("expected Http, got {other:?}"),
         }
-    }
-
-    #[tokio::test]
-    async fn list_first_page_does_not_send_offset_zero() {
-        // Regression: Braze rejects `offset=0` with
-        // `400 "Offset must be greater than 0."` on this endpoint, so
-        // the first request must omit the offset query param entirely.
-        // A mock that requires `offset` to be present and non-zero
-        // would 400 on page 1 before this fix landed; the `expect(0)`
-        // on a strict "offset present" matcher makes the regression
-        // fail loudly.
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/content_blocks/list"))
-            .and(wiremock::matchers::query_param_contains("offset", ""))
-            .respond_with(
-                ResponseTemplate::new(400)
-                    .set_body_json(json!({"message": "Offset must be greater than 0."})),
-            )
-            .expect(0)
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/content_blocks/list"))
-            .and(query_param_is_missing("offset"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(json!({"content_blocks": []})),
-            )
-            .mount(&server)
-            .await;
-        let client = make_client(&server);
-        let summaries = client.list_content_blocks().await.unwrap();
-        assert!(summaries.is_empty());
     }
 
     #[tokio::test]

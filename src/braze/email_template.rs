@@ -30,11 +30,8 @@ pub struct EmailTemplateSummary {
 
 impl BrazeClient {
     /// Braze has no `has_more`/cursor field, so we loop until a short page.
-    ///
-    /// `offset` is omitted on the first request: Braze rejects
-    /// `offset=0` with `400 "Offset must be greater than 0."` on this
-    /// endpoint (same wording as `/content_blocks/list`), reading
-    /// "strictly greater than 0" rather than "at least 0".
+    /// `offset` is omitted on the first request because this endpoint rejects
+    /// `offset=0` with `400 "Offset must be greater than 0."`.
     pub async fn list_email_templates(&self) -> Result<Vec<EmailTemplateSummary>, BrazeApiError> {
         let mut all: Vec<EmailTemplateListEntry> = Vec::with_capacity(LIST_LIMIT as usize);
         let mut offset: u32 = 0;
