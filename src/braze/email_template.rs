@@ -15,15 +15,12 @@
 use crate::braze::error::BrazeApiError;
 use crate::braze::{
     check_duplicate_names, classify_info_message, BrazeClient, InfoMessageClass,
+    LIST_SAFETY_CAP_ITEMS,
 };
 use crate::resource::EmailTemplate;
 use serde::{Deserialize, Serialize};
 
-/// Page size (Braze documented max is 1000).
 const LIST_LIMIT: u32 = 1000;
-
-/// Hard cap on total items; mirrors the one in `content_block.rs`.
-const SAFETY_CAP_ITEMS: usize = 100_000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EmailTemplateSummary {
@@ -32,10 +29,9 @@ pub struct EmailTemplateSummary {
 }
 
 impl BrazeClient {
-    /// List every email template using offset pagination. Loops until
-    /// a page returns fewer than [`LIST_LIMIT`] entries.
+    /// Braze has no `has_more`/cursor field, so we loop until a short page.
     pub async fn list_email_templates(&self) -> Result<Vec<EmailTemplateSummary>, BrazeApiError> {
-        let mut all: Vec<EmailTemplateListEntry> = Vec::new();
+        let mut all: Vec<EmailTemplateListEntry> = Vec::with_capacity(LIST_LIMIT as usize);
         let mut offset: u32 = 0;
         loop {
             let req = self.get(&["templates", "email", "list"]).query(&[
@@ -43,19 +39,19 @@ impl BrazeClient {
                 ("offset", offset.to_string()),
             ]);
             let resp: EmailTemplateListResponse = self.send_json(req).await?;
-            let got = resp.templates.len();
+            let page_len = resp.templates.len();
             all.extend(resp.templates);
 
-            if got < LIST_LIMIT as usize {
+            if page_len < LIST_LIMIT as usize {
                 break;
             }
-            if all.len() >= SAFETY_CAP_ITEMS {
+            if all.len() >= LIST_SAFETY_CAP_ITEMS {
                 return Err(BrazeApiError::PaginationNotImplemented {
                     endpoint: "/templates/email/list",
-                    detail: format!("exceeded {SAFETY_CAP_ITEMS} item safety cap"),
+                    detail: format!("exceeded {LIST_SAFETY_CAP_ITEMS} item safety cap"),
                 });
             }
-            offset = offset.saturating_add(LIST_LIMIT);
+            offset += LIST_LIMIT;
         }
 
         check_duplicate_names(

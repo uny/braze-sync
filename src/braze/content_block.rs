@@ -8,18 +8,12 @@
 use crate::braze::error::BrazeApiError;
 use crate::braze::{
     check_duplicate_names, classify_info_message, BrazeClient, InfoMessageClass,
+    LIST_SAFETY_CAP_ITEMS,
 };
 use crate::resource::{ContentBlock, ContentBlockState};
 use serde::{Deserialize, Serialize};
 
-/// Page size (Braze documented max is 1000). Hitting this lets a
-/// typical workspace finish in a single request.
 const LIST_LIMIT: u32 = 1000;
-
-/// Hard cap on total items to protect against a degenerate server that
-/// keeps returning a full page. At 1000/page this is 100 pages, far
-/// beyond any realistic workspace.
-const SAFETY_CAP_ITEMS: usize = 100_000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContentBlockSummary {
@@ -28,10 +22,9 @@ pub struct ContentBlockSummary {
 }
 
 impl BrazeClient {
-    /// List every content block in the workspace using offset pagination.
-    /// Loops until a page returns fewer than [`LIST_LIMIT`] entries.
+    /// Braze has no `has_more`/cursor field, so we loop until a short page.
     pub async fn list_content_blocks(&self) -> Result<Vec<ContentBlockSummary>, BrazeApiError> {
-        let mut all: Vec<ContentBlockListEntry> = Vec::new();
+        let mut all: Vec<ContentBlockListEntry> = Vec::with_capacity(LIST_LIMIT as usize);
         let mut offset: u32 = 0;
         loop {
             let req = self.get(&["content_blocks", "list"]).query(&[
@@ -39,19 +32,19 @@ impl BrazeClient {
                 ("offset", offset.to_string()),
             ]);
             let resp: ContentBlockListResponse = self.send_json(req).await?;
-            let got = resp.content_blocks.len();
+            let page_len = resp.content_blocks.len();
             all.extend(resp.content_blocks);
 
-            if got < LIST_LIMIT as usize {
+            if page_len < LIST_LIMIT as usize {
                 break;
             }
-            if all.len() >= SAFETY_CAP_ITEMS {
+            if all.len() >= LIST_SAFETY_CAP_ITEMS {
                 return Err(BrazeApiError::PaginationNotImplemented {
                     endpoint: "/content_blocks/list",
-                    detail: format!("exceeded {SAFETY_CAP_ITEMS} item safety cap"),
+                    detail: format!("exceeded {LIST_SAFETY_CAP_ITEMS} item safety cap"),
                 });
             }
-            offset = offset.saturating_add(LIST_LIMIT);
+            offset += LIST_LIMIT;
         }
 
         check_duplicate_names(
@@ -540,8 +533,6 @@ mod tests {
 
     #[tokio::test]
     async fn list_short_page_is_treated_as_complete() {
-        // Partial page (under LIST_LIMIT) is terminal — the loop stops
-        // without a second request.
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/content_blocks/list"))
@@ -561,7 +552,6 @@ mod tests {
 
     #[tokio::test]
     async fn list_offset_pagination_across_three_pages() {
-        // Full-page × 2 then a short page → three requests, all entries merged.
         let server = MockServer::start().await;
         let page1: Vec<serde_json::Value> = (0..1000)
             .map(|i| {

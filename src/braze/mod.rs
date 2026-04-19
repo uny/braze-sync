@@ -313,6 +313,11 @@ pub(crate) fn parse_next_link(headers: &reqwest::header::HeaderMap) -> Option<St
     None
 }
 
+/// Hard cap on items fetched via offset pagination. At a 1000/page
+/// limit this is 100 pages — beyond any realistic workspace and
+/// guards against a server that keeps returning a full page.
+pub(crate) const LIST_SAFETY_CAP_ITEMS: usize = 100_000;
+
 /// Check that no two items in a list response share the same name.
 /// Shared by every list endpoint that indexes resources by name.
 pub(crate) fn check_duplicate_names<'a>(
