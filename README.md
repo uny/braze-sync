@@ -49,13 +49,19 @@ brew install uny/tap/braze-sync
 **cargo install** (requires Rust toolchain):
 
 ```bash
-cargo install braze-sync
+cargo install braze-sync --locked
 ```
+
+`--locked` is recommended. Without it, `cargo install` ignores the
+published `Cargo.lock` and resolves transitive dependencies to the
+newest semver-compatible versions, some of which bump their MSRV
+beyond this crate's (currently 1.86) and fail to build on older
+toolchains.
 
 **Build from source:**
 
 ```bash
-cargo install --path .
+cargo install --path . --locked
 ```
 
 ## Quick start
