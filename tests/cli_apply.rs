@@ -990,7 +990,6 @@ async fn apply_custom_attribute_deprecation_toggle_with_confirm() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1,
             "attributes": [
                 {
                     "name": "legacy_field",
@@ -1038,7 +1037,6 @@ async fn apply_custom_attribute_dry_run_makes_no_write_call() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1,
             "attributes": [
                 {
                     "name": "legacy_field",
@@ -1126,7 +1124,6 @@ async fn apply_custom_attribute_metadata_only_is_informational_no_op() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1,
             "attributes": [
                 {
                     "name": "drift",
@@ -1183,7 +1180,6 @@ async fn apply_custom_attribute_batches_both_directions() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 2,
             "attributes": [
                 {
                     "name": "to_deprecate",

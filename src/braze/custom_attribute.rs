@@ -10,26 +10,21 @@
 //!
 //! ## Wire contract
 //!
-//! Verified against Dev workspace (2026-04). The response body uses
-//! `attributes` (not `custom_attributes`) and attributes carry `name`
-//! (not `custom_attribute_name`). Pagination is cursor-based via the
-//! RFC 5988 `Link: rel="next"` header; the response body does not carry
-//! the cursor. `limit` is not a supported query parameter. Page size is
-//! fixed at 50 server-side.
-//!
-//! `data_type` arrives with a human-readable suffix like
-//! `"String (Automatically Detected)"`, so we match on the leading
-//! whitespace-delimited token. `deprecated` is derived from
-//! `status == "Blocklisted"`.
+//! Pagination is cursor-based via the RFC 5988 `Link: rel="next"` header;
+//! the response body does not carry the cursor. `limit` is not a
+//! supported query parameter — page size is fixed at 50 server-side.
+//! `deprecated` is derived from `status == STATUS_BLOCKLISTED`.
 
 use crate::braze::error::BrazeApiError;
 use crate::braze::{check_duplicate_names, parse_next_link, BrazeClient};
 use crate::resource::{CustomAttribute, CustomAttributeType};
 use serde::{Deserialize, Serialize};
 
-/// Hard cap on pagination. At Braze's fixed 50 items/page this covers
-/// 10k attributes, well above any realistic workspace.
+/// At Braze's fixed 50 items/page this covers 10k attributes.
 const SAFETY_CAP_PAGES: usize = 200;
+
+/// Wire value of the `status` field that indicates a deprecated attribute.
+const STATUS_BLOCKLISTED: &str = "Blocklisted";
 
 impl BrazeClient {
     /// List all Custom Attributes from Braze. Follows RFC 5988 `Link`
@@ -92,7 +87,7 @@ fn wire_to_domain(w: CustomAttributeWire) -> CustomAttribute {
         deprecated: w
             .status
             .as_deref()
-            .map(|s| s.eq_ignore_ascii_case("Blocklisted"))
+            .map(|s| s.eq_ignore_ascii_case(STATUS_BLOCKLISTED))
             .unwrap_or(false),
     }
 }
@@ -103,23 +98,16 @@ fn wire_to_domain(w: CustomAttributeWire) -> CustomAttribute {
 /// match on the **leading whitespace-delimited token** (case-insensitive)
 /// to ignore the suffix. Unknown values default to `String` with a warn.
 fn wire_data_type_to_domain(raw: Option<&str>) -> CustomAttributeType {
-    let normalized = raw
-        .unwrap_or("")
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let lowered = raw.unwrap_or("").to_ascii_lowercase();
 
     // `object_array` and `object array` are both observed in practice.
     // Check the two-token form first so "object" doesn't eat "object array".
-    if let Some(r) = raw {
-        let lower = r.to_ascii_lowercase();
-        if lower.starts_with("object array") || lower.starts_with("object_array") {
-            return CustomAttributeType::ObjectArray;
-        }
+    if lowered.starts_with("object array") || lowered.starts_with("object_array") {
+        return CustomAttributeType::ObjectArray;
     }
 
-    match normalized.as_str() {
+    let leading = lowered.split_whitespace().next().unwrap_or("");
+    match leading {
         "string" => CustomAttributeType::String,
         "number" | "integer" | "float" => CustomAttributeType::Number,
         "boolean" | "bool" => CustomAttributeType::Boolean,
@@ -141,10 +129,6 @@ fn wire_data_type_to_domain(raw: Option<&str>) -> CustomAttributeType {
     }
 }
 
-// =====================================================================
-// Wire types — Braze API response shapes (verified against Dev 2026-04).
-// =====================================================================
-
 #[derive(Debug, Deserialize)]
 struct CustomAttributeListResponse {
     #[serde(default)]
@@ -159,14 +143,10 @@ struct CustomAttributeWire {
     description: Option<String>,
     #[serde(default)]
     data_type: Option<String>,
-    /// `"Active"` or `"Blocklisted"` (observed). Absent for some
-    /// endpoints or older workspaces — treated as not blocklisted.
+    /// `"Active"` or `"Blocklisted"`. Absent for older workspaces —
+    /// treated as not blocklisted.
     #[serde(default)]
     status: Option<String>,
-    // Other fields present on the wire but unused by braze-sync today:
-    //   array_length: Option<u32>
-    //   tag_names: Vec<String>
-    // Deserialization tolerates them via the default `deny_unknown_fields = false`.
 }
 
 #[derive(Debug, Serialize)]
@@ -185,7 +165,6 @@ mod tests {
 
     #[tokio::test]
     async fn list_happy_path() {
-        // Verified-realistic response shape from Dev workspace.
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/custom_attributes"))

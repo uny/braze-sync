@@ -190,10 +190,6 @@ version: 1
 # Environment picked when --env is not passed.
 default_environment: dev
 
-defaults:
-  # Requests/minute cap applied via governor. Lower if you hit 429s.
-  rate_limit_per_minute: 40
-
 environments:
   dev:
     # Braze REST endpoint for your instance. See:
@@ -205,7 +201,6 @@ environments:
   # prod:
   #   api_endpoint: https://rest.fra-02.braze.eu
   #   api_key_env: BRAZE_PROD_API_KEY
-  #   rate_limit_per_minute: 30
 
 resources:
   catalog_schema:

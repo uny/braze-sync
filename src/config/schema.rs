@@ -27,24 +27,9 @@ pub struct ConfigFile {
     pub naming: NamingConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Defaults {
-    #[serde(default = "default_rate_limit")]
-    pub rate_limit_per_minute: u32,
-}
-
-impl Default for Defaults {
-    fn default() -> Self {
-        Self {
-            rate_limit_per_minute: default_rate_limit(),
-        }
-    }
-}
-
-fn default_rate_limit() -> u32 {
-    40
-}
+pub struct Defaults {}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -53,9 +38,6 @@ pub struct EnvironmentConfig {
     /// Name of the environment variable holding the Braze API key. The key
     /// itself MUST NOT live in this file (§2.3 / §10).
     pub api_key_env: String,
-    /// Per-environment override of `defaults.rate_limit_per_minute`.
-    #[serde(default)]
-    pub rate_limit_per_minute: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -559,7 +559,6 @@ async fn diff_custom_attribute_deprecation_toggle() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1,
             "attributes": [
                 {
                     "name": "legacy_field",
@@ -610,7 +609,6 @@ async fn diff_custom_attribute_unregistered_in_git() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1,
             "attributes": [
                 {"name": "new_remote", "data_type": "string"}
             ]
@@ -648,7 +646,6 @@ async fn diff_custom_attribute_no_drift_when_identical() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1,
             "attributes": [
                 {
                     "name": "stable",
@@ -692,7 +689,6 @@ async fn diff_custom_attribute_no_local_file_all_unregistered() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1,
             "attributes": [
                 {"name": "orphan_attr", "data_type": "string"}
             ]
@@ -730,7 +726,6 @@ async fn diff_custom_attribute_name_filter_narrows_output() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 2,
             "attributes": [
                 {
                     "name": "legacy_field",

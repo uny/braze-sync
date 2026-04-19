@@ -434,7 +434,6 @@ async fn export_custom_attributes_writes_registry_yaml() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 3,
             "attributes": [
                 {
                     "name": "last_visit_date",

@@ -15,9 +15,6 @@ version: 1
 
 default_environment: dev
 
-defaults:
-  rate_limit_per_minute: 40
-
 environments:
   dev:
     api_endpoint: https://rest.fra-02.braze.eu
@@ -25,7 +22,6 @@ environments:
   prod:
     api_endpoint: https://rest.fra-02.braze.eu
     api_key_env: BRAZE_PROD_API_KEY
-    rate_limit_per_minute: 30
 
 resources:
   catalog_schema:
@@ -62,14 +58,6 @@ Config schema version. Must be exactly `1` for every v1.x release of
 Name of the environment used when `--env` is not passed on the command
 line. Must match a key under `environments`.
 
-### `defaults` (optional)
-
-Workspace-wide defaults applied to every environment unless overridden.
-
-| Field | Type | Default | Notes |
-|:---|:---|:---|:---|
-| `rate_limit_per_minute` | integer | `40` | Request cap enforced client-side by a token-bucket limiter. Lower this if you see 429s, raise it if Braze has approved a higher quota for your workspace. |
-
 ### `environments` (required, at least one entry)
 
 Map of environment name → settings. Pick the active one with
@@ -79,12 +67,19 @@ Map of environment name → settings. Pick the active one with
 |:---|:---|:---|:---|
 | `api_endpoint` | URL | yes | Braze REST endpoint for your instance (see [Braze API endpoints](https://www.braze.com/docs/api/basics/#endpoints)). The scaffold defaults to the EU `fra-02` cluster — change it if your instance lives elsewhere. |
 | `api_key_env` | string | yes | Name of the **environment variable** holding the API key. The key itself must never appear in this file. |
-| `rate_limit_per_minute` | integer | no | Per-environment override of `defaults.rate_limit_per_minute`. |
 
 API keys are loaded into `secrecy::SecretString` at startup and never
 appear in `Debug` output, tracing, or panic messages. A `.env` file in
 the current working directory is loaded via `dotenvy` (no recursive
 parent-directory search).
+
+### Rate limiting
+
+braze-sync does not carry a client-side rate limiter. The HTTP client
+reacts to 429 responses by honoring `Retry-After` when present and
+falling back to exponential backoff with jitter otherwise. Total retry
+sleep is bounded by an internal budget; beyond that a
+`RateLimitExhausted` error surfaces to the caller.
 
 ### `resources` (optional)
 
@@ -110,8 +105,7 @@ Directory holding one `<catalog>/schema.yaml` per catalog.
 
 Items are read from `<catalogs.path>/<catalog>/items.csv`, streamed, and
 uploaded in batches of up to 50 rows (Braze API limit). `parallel_batches`
-caps how many batches are in flight at once; the overall request rate is
-still bounded by `rate_limit_per_minute`.
+caps how many batches are in flight at once.
 
 #### `content_block`
 

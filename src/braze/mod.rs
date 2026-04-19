@@ -299,10 +299,18 @@ pub(crate) fn parse_next_link(headers: &reqwest::header::HeaderMap) -> Option<St
         let Some((url_part, params)) = part.split_once(';') else {
             continue;
         };
-        let has_next = params
-            .split(';')
-            .map(str::trim)
-            .any(|p| p.eq_ignore_ascii_case(r#"rel="next""#));
+        let has_next = params.split(';').map(str::trim).any(|p| {
+            let Some((k, v)) = p.split_once('=') else {
+                return false;
+            };
+            if !k.trim().eq_ignore_ascii_case("rel") {
+                return false;
+            }
+            v.trim()
+                .trim_matches('"')
+                .split_ascii_whitespace()
+                .any(|tok| tok.eq_ignore_ascii_case("next"))
+        });
         if !has_next {
             continue;
         }
