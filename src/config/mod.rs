@@ -17,8 +17,7 @@
 pub mod schema;
 
 pub use schema::{
-    CatalogItemsConfig, ConfigFile, Defaults, EnvironmentConfig, NamingConfig, ResourceConfig,
-    ResourcesConfig,
+    ConfigFile, Defaults, EnvironmentConfig, NamingConfig, ResourceConfig, ResourcesConfig,
 };
 
 use crate::error::{Error, Result};
@@ -185,7 +184,6 @@ environments:
             cfg.resources.catalog_schema.path,
             std::path::PathBuf::from("catalogs/")
         );
-        assert_eq!(cfg.resources.catalog_items.parallel_batches, 4);
         assert_eq!(
             cfg.resources.custom_attribute.path,
             std::path::PathBuf::from("custom_attributes/registry.yaml")
@@ -208,9 +206,6 @@ resources:
   catalog_schema:
     enabled: true
     path: catalogs/
-  catalog_items:
-    enabled: true
-    parallel_batches: 8
   content_block:
     enabled: true
     path: content_blocks/
@@ -226,7 +221,6 @@ naming:
         let f = write_config(FULL);
         let cfg = ConfigFile::load(f.path()).unwrap();
         assert_eq!(cfg.environments.len(), 2);
-        assert_eq!(cfg.resources.catalog_items.parallel_batches, 8);
         assert!(!cfg.resources.email_template.enabled);
         assert_eq!(
             cfg.naming.catalog_name_pattern.as_deref(),

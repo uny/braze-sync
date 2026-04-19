@@ -55,10 +55,6 @@ pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> an
                     &mut issues,
                 )?;
             }
-            ResourceKind::CatalogItems => {
-                let catalogs_root = config_dir.join(&cfg.resources.catalog_schema.path);
-                validate_catalog_items(&catalogs_root, &mut issues)?;
-            }
             ResourceKind::EmailTemplate => {
                 let email_templates_root = config_dir.join(&cfg.resources.email_template.path);
                 validate_email_templates(&email_templates_root, &mut issues)?;
@@ -321,82 +317,6 @@ fn validate_email_templates(
     Ok(())
 }
 
-fn validate_catalog_items(
-    catalogs_root: &Path,
-    issues: &mut Vec<ValidationIssue>,
-) -> anyhow::Result<()> {
-    let Some(read_dir) = open_resource_dir(catalogs_root, "catalogs", issues)? else {
-        return Ok(());
-    };
-
-    for entry in read_dir {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-        let dir = entry.path();
-        let items_path = dir.join(catalog_io::ITEMS_FILE_NAME);
-        if !items_path.is_file() {
-            continue;
-        }
-
-        // Read only the CSV header — avoids materializing all rows.
-        let (catalog_name, csv_columns) = match catalog_io::read_item_csv_columns(&items_path) {
-            Ok(result) => result,
-            Err(e) => {
-                issues.push(ValidationIssue {
-                    path: items_path.clone(),
-                    message: format!("parse error: {e}"),
-                });
-                continue;
-            }
-        };
-
-        // Cross-check CSV header columns against sibling schema.yaml, if present.
-        let schema_path = dir.join("schema.yaml");
-        if schema_path.is_file() {
-            let schema = match catalog_io::read_schema_file(&schema_path) {
-                Ok(s) => s,
-                Err(e) => {
-                    issues.push(ValidationIssue {
-                        path: schema_path.clone(),
-                        message: format!("cannot parse schema.yaml: {e}"),
-                    });
-                    continue;
-                }
-            };
-            let schema_field_names: std::collections::BTreeSet<&str> =
-                schema.fields.iter().map(|f| f.name.as_str()).collect();
-            let csv_field_names: std::collections::BTreeSet<&str> =
-                csv_columns.iter().map(String::as_str).collect();
-
-            for col in &csv_field_names {
-                if !schema_field_names.contains(col) {
-                    issues.push(ValidationIssue {
-                        path: items_path.clone(),
-                        message: format!(
-                            "CSV column '{}' is not in schema for catalog '{}'",
-                            col, catalog_name
-                        ),
-                    });
-                }
-            }
-            for field in &schema_field_names {
-                if !csv_field_names.contains(field) {
-                    issues.push(ValidationIssue {
-                        path: items_path.clone(),
-                        message: format!(
-                            "schema field '{}' is missing from CSV for catalog '{}'",
-                            field, catalog_name
-                        ),
-                    });
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
 
 fn validate_custom_attributes(
     registry_path: &Path,

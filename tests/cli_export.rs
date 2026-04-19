@@ -374,56 +374,6 @@ async fn export_email_templates_writes_directory_layout() {
     assert_eq!(txt, "Hello");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn export_catalog_items_writes_csv() {
-    let server = MockServer::start().await;
-    // list_catalogs to discover names
-    Mock::given(method("GET"))
-        .and(path("/catalogs"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "catalogs": [
-                {"name": "cardiology", "fields": [{"name": "id", "type": "string"}]}
-            ]
-        })))
-        .mount(&server)
-        .await;
-    // list_catalog_items
-    Mock::given(method("GET"))
-        .and(path("/catalogs/cardiology/items"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "items": [
-                {"id": "af001", "name": "atrial", "order": 1},
-                {"id": "af002", "name": "ventricular", "order": 2}
-            ],
-            "message": "success"
-        })))
-        .mount(&server)
-        .await;
-
-    let tmp = tempfile::tempdir().unwrap();
-    let config_path = write_config(tmp.path(), &server.uri());
-    let tmp_path = tmp.path().to_path_buf();
-
-    tokio::task::spawn_blocking(move || {
-        Command::cargo_bin("braze-sync")
-            .unwrap()
-            .env("BRAZE_API_KEY", "test-key")
-            .args(["--config", config_path.to_str().unwrap()])
-            .args(["export", "--resource", "catalog_items"])
-            .assert()
-            .success();
-    })
-    .await
-    .unwrap();
-
-    let items_csv = tmp_path.join("catalogs/cardiology/items.csv");
-    assert!(items_csv.exists(), "items.csv should exist");
-    let csv = fs::read_to_string(&items_csv).unwrap();
-    assert!(csv.contains("id,"));
-    assert!(csv.contains("af001"));
-    assert!(csv.contains("af002"));
-}
-
 // =====================================================================
 // Custom Attribute
 // =====================================================================

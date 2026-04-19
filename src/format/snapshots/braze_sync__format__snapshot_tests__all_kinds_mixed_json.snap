@@ -5,7 +5,7 @@ expression: "JsonFormatter.format(&fixtures::all_kinds_mixed())"
 {
   "version": 1,
   "summary": {
-    "changed": 5,
+    "changed": 4,
     "in_sync": 0,
     "destructive": 0,
     "orphan": 0
@@ -24,14 +24,6 @@ expression: "JsonFormatter.format(&fixtures::all_kinds_mixed())"
           }
         }
       ]
-    },
-    {
-      "kind": "catalog_items",
-      "catalog_name": "cardiology",
-      "added": 1,
-      "modified": 0,
-      "removed": 0,
-      "unchanged": 100
     },
     {
       "kind": "content_block",

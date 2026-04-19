@@ -1,8 +1,7 @@
-//! Catalog Schema and Catalog Items diff. See IMPLEMENTATION.md §11.1 / §11.2.
+//! Catalog Schema diff. See IMPLEMENTATION.md §11.1.
 
 use crate::diff::DiffOp;
 use crate::resource::{Catalog, CatalogField};
-use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct CatalogSchemaDiff {
@@ -91,69 +90,6 @@ fn diff_fields(local: &[CatalogField], remote: &[CatalogField]) -> Vec<DiffOp<Ca
         }
     }
     ops
-}
-
-#[derive(Debug, Clone)]
-pub struct CatalogItemsDiff {
-    pub catalog_name: String,
-    pub added_ids: Vec<String>,
-    pub modified_ids: Vec<String>,
-    pub removed_ids: Vec<String>,
-    pub unchanged_count: usize,
-}
-
-impl CatalogItemsDiff {
-    pub fn has_changes(&self) -> bool {
-        !self.added_ids.is_empty() || !self.modified_ids.is_empty() || !self.removed_ids.is_empty()
-    }
-
-    pub fn has_destructive(&self) -> bool {
-        !self.removed_ids.is_empty()
-    }
-}
-
-/// Diff catalog items by comparing their content hashes. Only the hash
-/// maps are needed — the actual row data is not loaded or compared.
-///
-/// `catalog_name` is passed explicitly so the caller controls which name
-/// appears in the diff — the local map may be empty when the catalog
-/// only exists remotely.
-///
-/// Output id lists are sorted for deterministic display and test assertions.
-pub fn diff_items(
-    catalog_name: &str,
-    local_hashes: &HashMap<String, String>,
-    remote_hashes: &HashMap<String, String>,
-) -> CatalogItemsDiff {
-    let mut added = Vec::new();
-    let mut modified = Vec::new();
-    let mut removed = Vec::new();
-    let mut unchanged: usize = 0;
-
-    for (id, lhash) in local_hashes {
-        match remote_hashes.get(id) {
-            None => added.push(id.clone()),
-            Some(rhash) if rhash != lhash => modified.push(id.clone()),
-            Some(_) => unchanged += 1,
-        }
-    }
-    for id in remote_hashes.keys() {
-        if !local_hashes.contains_key(id) {
-            removed.push(id.clone());
-        }
-    }
-
-    added.sort();
-    modified.sort();
-    removed.sort();
-
-    CatalogItemsDiff {
-        catalog_name: catalog_name.to_string(),
-        added_ids: added,
-        modified_ids: modified,
-        removed_ids: removed,
-        unchanged_count: unchanged,
-    }
 }
 
 #[cfg(test)]
@@ -318,89 +254,4 @@ mod tests {
         assert!(!d.has_changes());
     }
 
-    #[test]
-    fn items_diff_stub_destructive_when_removed() {
-        let d = CatalogItemsDiff {
-            catalog_name: "c".into(),
-            added_ids: vec![],
-            modified_ids: vec![],
-            removed_ids: vec!["x".into()],
-            unchanged_count: 0,
-        };
-        assert!(d.has_changes());
-        assert!(d.has_destructive());
-    }
-
-    fn hashes(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(id, h)| (id.to_string(), h.to_string()))
-            .collect()
-    }
-
-    #[test]
-    fn diff_items_both_empty() {
-        let d = diff_items("c", &hashes(&[]), &hashes(&[]));
-        assert!(!d.has_changes());
-        assert_eq!(d.unchanged_count, 0);
-    }
-
-    #[test]
-    fn diff_items_all_added() {
-        let local = hashes(&[("a", "h1"), ("b", "h2")]);
-        let remote = hashes(&[]);
-        let d = diff_items("c", &local, &remote);
-        assert_eq!(d.added_ids, vec!["a", "b"]);
-        assert!(d.modified_ids.is_empty());
-        assert!(d.removed_ids.is_empty());
-        assert_eq!(d.unchanged_count, 0);
-    }
-
-    #[test]
-    fn diff_items_all_removed() {
-        let local = hashes(&[]);
-        let remote = hashes(&[("a", "h1"), ("b", "h2")]);
-        let d = diff_items("c", &local, &remote);
-        assert!(d.added_ids.is_empty());
-        assert!(d.modified_ids.is_empty());
-        assert_eq!(d.removed_ids, vec!["a", "b"]);
-        assert!(d.has_destructive());
-    }
-
-    #[test]
-    fn diff_items_all_unchanged() {
-        let local = hashes(&[("a", "h1"), ("b", "h2")]);
-        let remote = hashes(&[("a", "h1"), ("b", "h2")]);
-        let d = diff_items("c", &local, &remote);
-        assert!(!d.has_changes());
-        assert_eq!(d.unchanged_count, 2);
-    }
-
-    #[test]
-    fn diff_items_mixed() {
-        let local = hashes(&[("a", "h1"), ("b", "h2_new"), ("d", "h4")]);
-        let remote = hashes(&[("a", "h1"), ("b", "h2_old"), ("c", "h3")]);
-        let d = diff_items("c", &local, &remote);
-        assert_eq!(d.added_ids, vec!["d"]);
-        assert_eq!(d.modified_ids, vec!["b"]);
-        assert_eq!(d.removed_ids, vec!["c"]);
-        assert_eq!(d.unchanged_count, 1);
-    }
-
-    #[test]
-    fn diff_items_ids_are_sorted() {
-        let local = hashes(&[("z", "h"), ("a", "h"), ("m", "h")]);
-        let remote = hashes(&[]);
-        let d = diff_items("c", &local, &remote);
-        assert_eq!(d.added_ids, vec!["a", "m", "z"]);
-    }
-
-    #[test]
-    fn diff_items_uses_explicit_catalog_name() {
-        let local = hashes(&[]);
-        let remote = hashes(&[("a", "h1")]);
-        let d = diff_items("remote_only", &local, &remote);
-        assert_eq!(d.catalog_name, "remote_only");
-        assert_eq!(d.removed_ids, vec!["a"]);
-    }
 }

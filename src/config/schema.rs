@@ -45,8 +45,6 @@ pub struct EnvironmentConfig {
 pub struct ResourcesConfig {
     #[serde(default = "default_catalog_schema")]
     pub catalog_schema: ResourceConfig,
-    #[serde(default = "default_catalog_items")]
-    pub catalog_items: CatalogItemsConfig,
     #[serde(default = "default_content_block")]
     pub content_block: ResourceConfig,
     #[serde(default = "default_email_template")]
@@ -60,7 +58,6 @@ impl ResourcesConfig {
         use crate::resource::ResourceKind;
         match kind {
             ResourceKind::CatalogSchema => self.catalog_schema.enabled,
-            ResourceKind::CatalogItems => self.catalog_items.enabled,
             ResourceKind::ContentBlock => self.content_block.enabled,
             ResourceKind::EmailTemplate => self.email_template.enabled,
             ResourceKind::CustomAttribute => self.custom_attribute.enabled,
@@ -72,7 +69,6 @@ impl Default for ResourcesConfig {
     fn default() -> Self {
         Self {
             catalog_schema: default_catalog_schema(),
-            catalog_items: default_catalog_items(),
             content_block: default_content_block(),
             email_template: default_email_template(),
             custom_attribute: default_custom_attribute(),
@@ -88,34 +84,14 @@ pub struct ResourceConfig {
     pub path: PathBuf,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CatalogItemsConfig {
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-    #[serde(default = "default_parallel_batches")]
-    pub parallel_batches: u32,
-}
-
 fn default_enabled() -> bool {
     true
-}
-
-fn default_parallel_batches() -> u32 {
-    4
 }
 
 fn default_catalog_schema() -> ResourceConfig {
     ResourceConfig {
         enabled: true,
         path: PathBuf::from("catalogs/"),
-    }
-}
-
-fn default_catalog_items() -> CatalogItemsConfig {
-    CatalogItemsConfig {
-        enabled: true,
-        parallel_batches: 4,
     }
 }
 
