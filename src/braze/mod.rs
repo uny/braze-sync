@@ -313,28 +313,10 @@ pub(crate) fn parse_next_link(headers: &reqwest::header::HeaderMap) -> Option<St
     None
 }
 
-/// Check whether a list response was truncated and return a
-/// `PaginationNotImplemented` error if so.  Shared by every list
-/// endpoint that uses the fail-closed pagination guard.
-pub(crate) fn check_pagination(
-    count: Option<usize>,
-    returned: usize,
-    limit: usize,
-    endpoint: &'static str,
-) -> Result<(), BrazeApiError> {
-    let truncation_detail: Option<String> = match count {
-        Some(total) if total > returned => Some(format!("got {returned} of {total} results")),
-        None if returned >= limit => Some(format!(
-            "got a full page of {returned} result(s) with no total reported; \
-             cannot verify whether more exist"
-        )),
-        _ => None,
-    };
-    if let Some(detail) = truncation_detail {
-        return Err(BrazeApiError::PaginationNotImplemented { endpoint, detail });
-    }
-    Ok(())
-}
+/// Hard cap on items fetched via offset pagination. At a 1000/page
+/// limit this is 100 pages — beyond any realistic workspace and
+/// guards against a server that keeps returning a full page.
+pub(crate) const LIST_SAFETY_CAP_ITEMS: usize = 100_000;
 
 /// Check that no two items in a list response share the same name.
 /// Shared by every list endpoint that indexes resources by name.
