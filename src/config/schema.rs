@@ -54,14 +54,18 @@ pub struct ResourcesConfig {
 }
 
 impl ResourcesConfig {
-    pub fn is_enabled(&self, kind: crate::resource::ResourceKind) -> bool {
+    pub fn for_kind(&self, kind: crate::resource::ResourceKind) -> &ResourceConfig {
         use crate::resource::ResourceKind;
         match kind {
-            ResourceKind::CatalogSchema => self.catalog_schema.enabled,
-            ResourceKind::ContentBlock => self.content_block.enabled,
-            ResourceKind::EmailTemplate => self.email_template.enabled,
-            ResourceKind::CustomAttribute => self.custom_attribute.enabled,
+            ResourceKind::CatalogSchema => &self.catalog_schema,
+            ResourceKind::ContentBlock => &self.content_block,
+            ResourceKind::EmailTemplate => &self.email_template,
+            ResourceKind::CustomAttribute => &self.custom_attribute,
         }
+    }
+
+    pub fn is_enabled(&self, kind: crate::resource::ResourceKind) -> bool {
+        self.for_kind(kind).enabled
     }
 }
 

@@ -41,10 +41,7 @@ pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> an
         match kind {
             ResourceKind::CatalogSchema => {
                 let catalogs_root = config_dir.join(&cfg.resources.catalog_schema.path);
-                let excludes = crate::config::compile_exclude_patterns(
-                    &cfg.resources.catalog_schema.exclude_patterns,
-                    "catalog_schema",
-                )?;
+                let excludes = compile_kind_excludes(cfg, kind)?;
                 validate_catalog_schemas(
                     &catalogs_root,
                     cfg.naming.catalog_name_pattern.as_deref(),
@@ -54,10 +51,7 @@ pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> an
             }
             ResourceKind::ContentBlock => {
                 let content_blocks_root = config_dir.join(&cfg.resources.content_block.path);
-                let excludes = crate::config::compile_exclude_patterns(
-                    &cfg.resources.content_block.exclude_patterns,
-                    "content_block",
-                )?;
+                let excludes = compile_kind_excludes(cfg, kind)?;
                 validate_content_blocks(
                     &content_blocks_root,
                     cfg.naming.content_block_name_pattern.as_deref(),
@@ -67,18 +61,12 @@ pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> an
             }
             ResourceKind::EmailTemplate => {
                 let email_templates_root = config_dir.join(&cfg.resources.email_template.path);
-                let excludes = crate::config::compile_exclude_patterns(
-                    &cfg.resources.email_template.exclude_patterns,
-                    "email_template",
-                )?;
+                let excludes = compile_kind_excludes(cfg, kind)?;
                 validate_email_templates(&email_templates_root, &excludes, &mut issues)?;
             }
             ResourceKind::CustomAttribute => {
                 let registry_path = config_dir.join(&cfg.resources.custom_attribute.path);
-                let excludes = crate::config::compile_exclude_patterns(
-                    &cfg.resources.custom_attribute.exclude_patterns,
-                    "custom_attribute",
-                )?;
+                let excludes = compile_kind_excludes(cfg, kind)?;
                 validate_custom_attributes(
                     &registry_path,
                     cfg.naming.custom_attribute_name_pattern.as_deref(),
@@ -100,6 +88,13 @@ pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> an
     }
 
     Err(Error::Config(format!("{} validation issue(s) found", issues.len())).into())
+}
+
+fn compile_kind_excludes(cfg: &ConfigFile, kind: ResourceKind) -> anyhow::Result<Vec<Regex>> {
+    Ok(crate::config::compile_exclude_patterns(
+        &cfg.resources.for_kind(kind).exclude_patterns,
+        kind.as_str(),
+    )?)
 }
 
 /// Try to open a resource root directory. Returns `None` (and pushes an

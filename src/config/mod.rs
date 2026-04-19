@@ -21,7 +21,10 @@ pub use schema::{
 };
 
 use crate::error::{Error, Result};
+use crate::resource::ResourceKind;
+use regex_lite::Regex;
 use secrecy::SecretString;
+use std::collections::HashMap;
 use std::path::Path;
 use url::Url;
 
@@ -37,6 +40,18 @@ pub struct ResolvedConfig {
     pub api_key: SecretString,
     pub resources: ResourcesConfig,
     pub naming: NamingConfig,
+    /// Compiled `exclude_patterns` per resource kind. Populated by
+    /// [`ConfigFile::resolve_with`] so callers can look up a `&[Regex]`
+    /// without recompiling on every invocation.
+    pub excludes: HashMap<ResourceKind, Vec<Regex>>,
+}
+
+impl ResolvedConfig {
+    /// Compiled exclude patterns for `kind`. Returns an empty slice when
+    /// no patterns are configured.
+    pub fn excludes_for(&self, kind: ResourceKind) -> &[Regex] {
+        self.excludes.get(&kind).map(Vec::as_slice).unwrap_or(&[])
+    }
 }
 
 impl ConfigFile {
@@ -88,13 +103,9 @@ impl ConfigFile {
         }
         // Compile every resource's exclude_patterns at load time so
         // malformed regexes fail fast instead of at first use.
-        for (kind, rc) in [
-            ("catalog_schema", &self.resources.catalog_schema),
-            ("content_block", &self.resources.content_block),
-            ("email_template", &self.resources.email_template),
-            ("custom_attribute", &self.resources.custom_attribute),
-        ] {
-            compile_exclude_patterns(&rc.exclude_patterns, kind)?;
+        for kind in ResourceKind::all() {
+            let rc = self.resources.for_kind(*kind);
+            compile_exclude_patterns(&rc.exclude_patterns, kind.as_str())?;
         }
         Ok(())
     }
@@ -137,12 +148,22 @@ impl ConfigFile {
             )));
         }
 
+        let mut excludes: HashMap<ResourceKind, Vec<Regex>> = HashMap::new();
+        for kind in ResourceKind::all() {
+            let rc = self.resources.for_kind(*kind);
+            excludes.insert(
+                *kind,
+                compile_exclude_patterns(&rc.exclude_patterns, kind.as_str())?,
+            );
+        }
+
         Ok(ResolvedConfig {
             environment_name: env_name,
             api_endpoint: env_cfg.api_endpoint,
             api_key: SecretString::from(api_key_str),
             resources: self.resources,
             naming: self.naming,
+            excludes,
         })
     }
 }
@@ -150,15 +171,12 @@ impl ConfigFile {
 /// Compile a list of raw regex patterns from a resource's
 /// `exclude_patterns` into `Regex` values. The `context` label is used
 /// in error messages (e.g. `"custom_attribute"`).
-pub fn compile_exclude_patterns(
-    patterns: &[String],
-    context: &str,
-) -> Result<Vec<regex_lite::Regex>> {
+pub fn compile_exclude_patterns(patterns: &[String], context: &str) -> Result<Vec<Regex>> {
     patterns
         .iter()
         .enumerate()
         .map(|(i, p)| {
-            regex_lite::Regex::new(p).map_err(|e| {
+            Regex::new(p).map_err(|e| {
                 Error::Config(format!(
                     "{context}.exclude_patterns[{i}]: invalid regex {p:?}: {e}"
                 ))
@@ -168,7 +186,7 @@ pub fn compile_exclude_patterns(
 }
 
 /// Return `true` if `name` matches any of the compiled patterns.
-pub fn is_excluded(name: &str, patterns: &[regex_lite::Regex]) -> bool {
+pub fn is_excluded(name: &str, patterns: &[Regex]) -> bool {
     patterns.iter().any(|r| r.is_match(name))
 }
 

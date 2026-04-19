@@ -78,30 +78,22 @@ pub async fn run(
     for kind in kinds {
         match kind {
             ResourceKind::CatalogSchema => {
-                let excludes = crate::config::compile_exclude_patterns(
-                    &resolved.resources.catalog_schema.exclude_patterns,
-                    "catalog_schema",
-                )?;
                 let diffs = compute_catalog_schema_diffs(
                     &client,
                     &catalogs_root,
                     args.name.as_deref(),
-                    &excludes,
+                    resolved.excludes_for(ResourceKind::CatalogSchema),
                 )
                 .await
                 .context("computing catalog_schema plan")?;
                 summary.diffs.extend(diffs);
             }
             ResourceKind::ContentBlock => {
-                let excludes = crate::config::compile_exclude_patterns(
-                    &resolved.resources.content_block.exclude_patterns,
-                    "content_block",
-                )?;
                 let (diffs, idx) = compute_content_block_plan(
                     &client,
                     &content_blocks_root,
                     args.name.as_deref(),
-                    &excludes,
+                    resolved.excludes_for(ResourceKind::ContentBlock),
                 )
                 .await
                 .context("computing content_block plan")?;
@@ -109,15 +101,11 @@ pub async fn run(
                 content_block_id_index = Some(idx);
             }
             ResourceKind::EmailTemplate => {
-                let excludes = crate::config::compile_exclude_patterns(
-                    &resolved.resources.email_template.exclude_patterns,
-                    "email_template",
-                )?;
                 let (diffs, idx) = compute_email_template_plan(
                     &client,
                     &email_templates_root,
                     args.name.as_deref(),
-                    &excludes,
+                    resolved.excludes_for(ResourceKind::EmailTemplate),
                 )
                 .await
                 .context("computing email_template plan")?;
@@ -125,15 +113,11 @@ pub async fn run(
                 email_template_id_index = Some(idx);
             }
             ResourceKind::CustomAttribute => {
-                let excludes = crate::config::compile_exclude_patterns(
-                    &resolved.resources.custom_attribute.exclude_patterns,
-                    "custom_attribute",
-                )?;
                 let diffs = compute_custom_attribute_diffs(
                     &client,
                     &custom_attributes_path,
                     args.name.as_deref(),
-                    &excludes,
+                    resolved.excludes_for(ResourceKind::CustomAttribute),
                 )
                 .await
                 .context("computing custom_attribute plan")?;
