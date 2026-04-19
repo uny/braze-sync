@@ -279,6 +279,42 @@ resources:
     }
 
     #[test]
+    fn rejects_legacy_defaults_rate_limit_per_minute() {
+        // v0.8.0: client-side rate limiter was removed. Leftover
+        // `rate_limit_per_minute` keys must hard-error so users notice
+        // they need to delete them, rather than silently ignoring.
+        let yaml = r#"
+version: 1
+default_environment: dev
+defaults:
+  rate_limit_per_minute: 40
+environments:
+  dev:
+    api_endpoint: https://rest.fra-02.braze.eu
+    api_key_env: BRAZE_DEV_API_KEY
+"#;
+        let f = write_config(yaml);
+        let err = ConfigFile::load(f.path()).unwrap_err();
+        assert!(matches!(err, Error::YamlParse { .. }), "got: {err:?}");
+    }
+
+    #[test]
+    fn rejects_legacy_environment_rate_limit_per_minute() {
+        let yaml = r#"
+version: 1
+default_environment: dev
+environments:
+  dev:
+    api_endpoint: https://rest.fra-02.braze.eu
+    api_key_env: BRAZE_DEV_API_KEY
+    rate_limit_per_minute: 30
+"#;
+        let f = write_config(yaml);
+        let err = ConfigFile::load(f.path()).unwrap_err();
+        assert!(matches!(err, Error::YamlParse { .. }), "got: {err:?}");
+    }
+
+    #[test]
     fn rejects_non_http_endpoint_scheme() {
         let yaml = r#"
 version: 1
