@@ -6,7 +6,7 @@
 
 use crate::braze::error::BrazeApiError;
 use crate::braze::BrazeClient;
-use crate::config::ResolvedConfig;
+use crate::config::{compile_exclude_patterns, is_excluded, ResolvedConfig};
 use crate::diff::catalog::diff_schema;
 use crate::diff::content_block::{
     diff as diff_content_block, ContentBlockDiff, ContentBlockIdIndex,
@@ -61,34 +61,60 @@ pub async fn run(
     for kind in kinds {
         match kind {
             ResourceKind::CatalogSchema => {
-                let diffs =
-                    compute_catalog_schema_diffs(&client, &catalogs_root, args.name.as_deref())
-                        .await
-                        .context("computing catalog_schema diff")?;
+                let excludes = compile_exclude_patterns(
+                    &resolved.resources.catalog_schema.exclude_patterns,
+                    "catalog_schema",
+                )?;
+                let diffs = compute_catalog_schema_diffs(
+                    &client,
+                    &catalogs_root,
+                    args.name.as_deref(),
+                    &excludes,
+                )
+                .await
+                .context("computing catalog_schema diff")?;
                 summary.diffs.extend(diffs);
             }
             ResourceKind::ContentBlock => {
-                let (diffs, _idx) =
-                    compute_content_block_plan(&client, &content_blocks_root, args.name.as_deref())
-                        .await
-                        .context("computing content_block diff")?;
+                let excludes = compile_exclude_patterns(
+                    &resolved.resources.content_block.exclude_patterns,
+                    "content_block",
+                )?;
+                let (diffs, _idx) = compute_content_block_plan(
+                    &client,
+                    &content_blocks_root,
+                    args.name.as_deref(),
+                    &excludes,
+                )
+                .await
+                .context("computing content_block diff")?;
                 summary.diffs.extend(diffs);
             }
             ResourceKind::EmailTemplate => {
+                let excludes = compile_exclude_patterns(
+                    &resolved.resources.email_template.exclude_patterns,
+                    "email_template",
+                )?;
                 let (diffs, _idx) = compute_email_template_plan(
                     &client,
                     &email_templates_root,
                     args.name.as_deref(),
+                    &excludes,
                 )
                 .await
                 .context("computing email_template diff")?;
                 summary.diffs.extend(diffs);
             }
             ResourceKind::CustomAttribute => {
+                let excludes = compile_exclude_patterns(
+                    &resolved.resources.custom_attribute.exclude_patterns,
+                    "custom_attribute",
+                )?;
                 let diffs = compute_custom_attribute_diffs(
                     &client,
                     &custom_attributes_path,
                     args.name.as_deref(),
+                    &excludes,
                 )
                 .await
                 .context("computing custom_attribute diff")?;
@@ -116,13 +142,15 @@ pub(crate) async fn compute_catalog_schema_diffs(
     client: &BrazeClient,
     catalogs_root: &Path,
     name_filter: Option<&str>,
+    excludes: &[regex_lite::Regex],
 ) -> anyhow::Result<Vec<ResourceDiff>> {
     let mut local = catalog_io::load_all_schemas(catalogs_root)?;
     if let Some(name) = name_filter {
         local.retain(|c| c.name == name);
     }
+    local.retain(|c| !is_excluded(&c.name, excludes));
 
-    let remote: Vec<Catalog> = match name_filter {
+    let mut remote: Vec<Catalog> = match name_filter {
         Some(name) => match client.get_catalog(name).await {
             Ok(c) => vec![c],
             // NotFound on a filtered fetch just means "no remote"; the
@@ -132,6 +160,7 @@ pub(crate) async fn compute_catalog_schema_diffs(
         },
         None => client.list_catalogs().await?,
     };
+    remote.retain(|c| !is_excluded(&c.name, excludes));
 
     let local_by_name: BTreeMap<&str, &Catalog> =
         local.iter().map(|c| (c.name.as_str(), c)).collect();
@@ -161,16 +190,19 @@ pub(crate) async fn compute_content_block_plan(
     client: &BrazeClient,
     content_blocks_root: &Path,
     name_filter: Option<&str>,
+    excludes: &[regex_lite::Regex],
 ) -> anyhow::Result<(Vec<ResourceDiff>, ContentBlockIdIndex)> {
     let mut local = content_block_io::load_all_content_blocks(content_blocks_root)?;
     if let Some(name) = name_filter {
         local.retain(|c| c.name == name);
     }
+    local.retain(|c| !is_excluded(&c.name, excludes));
 
     let mut summaries = client.list_content_blocks().await?;
     if let Some(name) = name_filter {
         summaries.retain(|s| s.name == name);
     }
+    summaries.retain(|s| !is_excluded(&s.name, excludes));
 
     let id_index: ContentBlockIdIndex = summaries
         .into_iter()
@@ -244,16 +276,19 @@ pub(crate) async fn compute_email_template_plan(
     client: &BrazeClient,
     email_templates_root: &Path,
     name_filter: Option<&str>,
+    excludes: &[regex_lite::Regex],
 ) -> anyhow::Result<(Vec<ResourceDiff>, EmailTemplateIdIndex)> {
     let mut local = email_template_io::load_all_email_templates(email_templates_root)?;
     if let Some(name) = name_filter {
         local.retain(|t| t.name == name);
     }
+    local.retain(|t| !is_excluded(&t.name, excludes));
 
     let mut summaries = client.list_email_templates().await?;
     if let Some(name) = name_filter {
         summaries.retain(|s| s.name == name);
     }
+    summaries.retain(|s| !is_excluded(&s.name, excludes));
 
     let id_index: EmailTemplateIdIndex = summaries
         .into_iter()
@@ -323,6 +358,7 @@ pub(crate) async fn compute_custom_attribute_diffs(
     client: &BrazeClient,
     registry_path: &Path,
     name_filter: Option<&str>,
+    excludes: &[regex_lite::Regex],
 ) -> anyhow::Result<Vec<ResourceDiff>> {
     let mut local = custom_attribute_io::load_registry(registry_path)?;
     let mut remote = client.list_custom_attributes().await?;
@@ -332,6 +368,10 @@ pub(crate) async fn compute_custom_attribute_diffs(
         }
         remote.retain(|a| a.name == name);
     }
+    if let Some(r) = local.as_mut() {
+        r.attributes.retain(|a| !is_excluded(&a.name, excludes));
+    }
+    remote.retain(|a| !is_excluded(&a.name, excludes));
     let attr_diffs = diff_custom_attributes(local.as_ref(), &remote);
     Ok(attr_diffs
         .into_iter()

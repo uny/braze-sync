@@ -86,6 +86,16 @@ impl ConfigFile {
                 }
             }
         }
+        // Compile every resource's exclude_patterns at load time so
+        // malformed regexes fail fast instead of at first use.
+        for (kind, rc) in [
+            ("catalog_schema", &self.resources.catalog_schema),
+            ("content_block", &self.resources.content_block),
+            ("email_template", &self.resources.email_template),
+            ("custom_attribute", &self.resources.custom_attribute),
+        ] {
+            compile_exclude_patterns(&rc.exclude_patterns, kind)?;
+        }
         Ok(())
     }
 
@@ -135,6 +145,31 @@ impl ConfigFile {
             naming: self.naming,
         })
     }
+}
+
+/// Compile a list of raw regex patterns from a resource's
+/// `exclude_patterns` into `Regex` values. The `context` label is used
+/// in error messages (e.g. `"custom_attribute"`).
+pub fn compile_exclude_patterns(
+    patterns: &[String],
+    context: &str,
+) -> Result<Vec<regex_lite::Regex>> {
+    patterns
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            regex_lite::Regex::new(p).map_err(|e| {
+                Error::Config(format!(
+                    "{context}.exclude_patterns[{i}]: invalid regex {p:?}: {e}"
+                ))
+            })
+        })
+        .collect()
+}
+
+/// Return `true` if `name` matches any of the compiled patterns.
+pub fn is_excluded(name: &str, patterns: &[regex_lite::Regex]) -> bool {
+    patterns.iter().any(|r| r.is_match(name))
 }
 
 /// Load `.env` from the current working directory only — no parent
@@ -312,6 +347,67 @@ environments:
         let f = write_config(yaml);
         let err = ConfigFile::load(f.path()).unwrap_err();
         assert!(matches!(err, Error::YamlParse { .. }), "got: {err:?}");
+    }
+
+    #[test]
+    fn accepts_exclude_patterns_on_resource_config() {
+        let yaml = r#"
+version: 1
+default_environment: dev
+environments:
+  dev:
+    api_endpoint: https://rest.fra-02.braze.eu
+    api_key_env: BRAZE_DEV_API_KEY
+resources:
+  custom_attribute:
+    path: custom_attributes/registry.yaml
+    exclude_patterns:
+      - "^_"
+      - "^(hoge|hack)$"
+"#;
+        let f = write_config(yaml);
+        let cfg = ConfigFile::load(f.path()).unwrap();
+        assert_eq!(
+            cfg.resources.custom_attribute.exclude_patterns,
+            vec!["^_".to_string(), "^(hoge|hack)$".to_string()]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_exclude_pattern_at_load_time() {
+        // Unbalanced paren — invalid regex should hard-error at load,
+        // not at first use.
+        let yaml = r#"
+version: 1
+default_environment: dev
+environments:
+  dev:
+    api_endpoint: https://rest.fra-02.braze.eu
+    api_key_env: BRAZE_DEV_API_KEY
+resources:
+  custom_attribute:
+    path: custom_attributes/registry.yaml
+    exclude_patterns:
+      - "("
+"#;
+        let f = write_config(yaml);
+        let err = ConfigFile::load(f.path()).unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("custom_attribute"), "msg: {msg}");
+                assert!(msg.contains("exclude_patterns[0]"), "msg: {msg}");
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn is_excluded_matches_any_pattern() {
+        let patterns =
+            compile_exclude_patterns(&["^_".to_string(), "^test_".to_string()], "test").unwrap();
+        assert!(is_excluded("_unset", &patterns));
+        assert!(is_excluded("test_foo", &patterns));
+        assert!(!is_excluded("regular_attr", &patterns));
     }
 
     #[test]

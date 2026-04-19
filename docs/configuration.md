@@ -84,12 +84,17 @@ Toggles and paths for each v1.0 resource kind. Every sub-block is
 optional — omitted entries fall back to the defaults shown below. To
 skip a resource entirely in a workspace, set `enabled: false`.
 
+Every resource sub-block also accepts an optional
+`exclude_patterns: [<regex>, …]` list; see
+[§ exclude_patterns](#exclude_patterns) below.
+
 #### `catalog_schema`
 
 | Field | Type | Default |
 |:---|:---|:---|
 | `enabled` | bool | `true` |
 | `path` | path | `catalogs/` |
+| `exclude_patterns` | list of regex strings | `[]` |
 
 Directory holding one `<catalog>/schema.yaml` per catalog.
 
@@ -99,6 +104,7 @@ Directory holding one `<catalog>/schema.yaml` per catalog.
 |:---|:---|:---|
 | `enabled` | bool | `true` |
 | `path` | path | `content_blocks/` |
+| `exclude_patterns` | list of regex strings | `[]` |
 
 Directory of `<name>.liquid` files.
 
@@ -108,6 +114,7 @@ Directory of `<name>.liquid` files.
 |:---|:---|:---|
 | `enabled` | bool | `true` |
 | `path` | path | `email_templates/` |
+| `exclude_patterns` | list of regex strings | `[]` |
 
 Directory holding one `<template>/` subdirectory per email template, each
 containing `template.yaml`, `body.html`, and `body.txt`.
@@ -118,8 +125,40 @@ containing `template.yaml`, `body.html`, and `body.txt`.
 |:---|:---|:---|
 | `enabled` | bool | `true` |
 | `path` | path | `custom_attributes/registry.yaml` |
+| `exclude_patterns` | list of regex strings | `[]` |
 
 A single-file registry — see [registry-mode.md](registry-mode.md).
+
+### `exclude_patterns`
+
+`exclude_patterns` is a list of regular expressions — when a resource's
+`name` matches any pattern, it is treated as **managed out of band**
+and is skipped by every command:
+
+- `export` does not write it to disk
+- `diff` / `apply` ignore it on both sides (so a locally-excluded
+  resource will not surface as "missing from Braze" or "orphaned")
+- `validate` skips its structural and naming-pattern checks
+
+This is the recommended way to cohabit with Braze reserved attributes
+(`_unset`), developer debugging leftovers (`hoge`, `hack`, `test_*`),
+or legacy camelCase duplicates that a dashboard operator introduced
+and cannot be renamed without disrupting downstream pipelines.
+
+Syntax is the [`regex-lite`](https://docs.rs/regex-lite) dialect (same
+subset as `naming.*_name_pattern`). Bad regexes hard-error at config
+load time — not at first use — so a typo in a pattern does not
+silently become "matches nothing".
+
+```yaml
+custom_attribute:
+  enabled: true
+  path: custom_attributes/registry.yaml
+  exclude_patterns:
+    - "^_"              # Braze reserved attributes like _unset
+    - "^(hoge|hack)$"   # developer leftovers
+    - "^test_"          # anything prefixed test_
+```
 
 ### `naming` (optional)
 

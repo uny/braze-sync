@@ -82,6 +82,13 @@ pub struct ResourceConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     pub path: PathBuf,
+    /// Regex patterns (matched against resource `name`) that mark a
+    /// resource as **managed out of band**. Names matching any pattern
+    /// are skipped by `export`, `diff`, `apply`, and `validate` so
+    /// Braze reserved attributes (`_unset`) or camelCase duplicates
+    /// don't produce noise. See `docs/configuration.md §exclude_patterns`.
+    #[serde(default)]
+    pub exclude_patterns: Vec<String>,
 }
 
 fn default_enabled() -> bool {
@@ -92,6 +99,7 @@ fn default_catalog_schema() -> ResourceConfig {
     ResourceConfig {
         enabled: true,
         path: PathBuf::from("catalogs/"),
+        exclude_patterns: Vec::new(),
     }
 }
 
@@ -99,6 +107,7 @@ fn default_content_block() -> ResourceConfig {
     ResourceConfig {
         enabled: true,
         path: PathBuf::from("content_blocks/"),
+        exclude_patterns: Vec::new(),
     }
 }
 
@@ -106,6 +115,7 @@ fn default_email_template() -> ResourceConfig {
     ResourceConfig {
         enabled: true,
         path: PathBuf::from("email_templates/"),
+        exclude_patterns: Vec::new(),
     }
 }
 
@@ -113,6 +123,7 @@ fn default_custom_attribute() -> ResourceConfig {
     ResourceConfig {
         enabled: true,
         path: PathBuf::from("custom_attributes/registry.yaml"),
+        exclude_patterns: Vec::new(),
     }
 }
 
