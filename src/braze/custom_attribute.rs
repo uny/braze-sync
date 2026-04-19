@@ -7,54 +7,73 @@
 //! Braze creates Custom Attributes implicitly when `/users/track`
 //! receives data containing a previously-unseen attribute name. There
 //! is no declarative "create attribute" API.
+//!
+//! ## Wire contract
+//!
+//! Pagination is cursor-based via the RFC 5988 `Link: rel="next"` header;
+//! the response body does not carry the cursor. `limit` is not a
+//! supported query parameter — page size is fixed at 50 server-side.
+//! `deprecated` is derived from `status == STATUS_BLOCKLISTED`.
 
 use crate::braze::error::BrazeApiError;
-use crate::braze::{check_duplicate_names, check_pagination, BrazeClient};
+use crate::braze::BrazeClient;
 use crate::resource::{CustomAttribute, CustomAttributeType};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
-const LIST_LIMIT: u32 = 100;
+/// At Braze's fixed 50 items/page this covers 10k attributes.
+const SAFETY_CAP_PAGES: usize = 200;
+
+/// Wire value of the `status` field that indicates a deprecated attribute.
+const STATUS_BLOCKLISTED: &str = "Blocklisted";
 
 impl BrazeClient {
-    /// List all Custom Attributes from Braze. Fail-closed on pagination:
-    /// if the response indicates more attributes exist beyond the first
-    /// page, returns `PaginationNotImplemented` rather than silently
-    /// truncating.
+    /// List all Custom Attributes from Braze. Follows RFC 5988 `Link`
+    /// headers through every page until the server stops returning
+    /// `rel="next"`.
     pub async fn list_custom_attributes(&self) -> Result<Vec<CustomAttribute>, BrazeApiError> {
-        let req = self
-            .get(&["custom_attributes"])
-            .query(&[("limit", LIST_LIMIT.to_string())]);
-        let resp: CustomAttributeListResponse = self.send_json(req).await?;
-        let returned = resp.custom_attributes.len();
+        let mut all: Vec<CustomAttribute> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut next_url: Option<String> = None;
 
-        // Fail closed when the page is or might be truncated.
-        check_pagination(
-            resp.count,
-            returned,
-            LIST_LIMIT as usize,
-            "/custom_attributes",
-        )?;
+        for _ in 0..SAFETY_CAP_PAGES {
+            let req = match &next_url {
+                None => self.get(&["custom_attributes"]),
+                Some(url) => self.get_absolute(url)?,
+            };
+            let (resp, next): (CustomAttributeListResponse, _) =
+                self.send_json_with_next_link(req).await?;
 
-        check_duplicate_names(
-            resp.custom_attributes
-                .iter()
-                .map(|e| e.custom_attribute_name.as_str()),
-            returned,
-            "/custom_attributes",
-        )?;
+            // Dedup across pages — per-page checks would miss a name that
+            // recurs on a later cursor page.
+            for w in resp.attributes {
+                if !seen.insert(w.name.clone()) {
+                    return Err(BrazeApiError::DuplicateNameInListResponse {
+                        endpoint: "/custom_attributes",
+                        name: w.name,
+                    });
+                }
+                all.push(wire_to_domain(w));
+            }
 
-        Ok(resp
-            .custom_attributes
-            .into_iter()
-            .map(|w| CustomAttribute {
-                name: w.custom_attribute_name,
-                attribute_type: wire_data_type_to_domain(w.data_type.as_deref()),
-                description: w.description,
-                // Braze omits `blocklisted` for non-blocklisted attributes;
-                // treat absent as active (not deprecated).
-                deprecated: w.blocklisted.unwrap_or(false),
-            })
-            .collect())
+            match next {
+                // Guard against a server that echoes the same cursor —
+                // without this the safety-cap is the only exit.
+                Some(url) if Some(&url) == next_url.as_ref() => {
+                    return Err(BrazeApiError::PaginationNotImplemented {
+                        endpoint: "/custom_attributes",
+                        detail: format!("server returned same next link twice: {url}"),
+                    });
+                }
+                Some(url) => next_url = Some(url),
+                None => return Ok(all),
+            }
+        }
+
+        Err(BrazeApiError::PaginationNotImplemented {
+            endpoint: "/custom_attributes",
+            detail: format!("exceeded {SAFETY_CAP_PAGES} page safety cap"),
+        })
     }
 
     /// Toggle the `blocklisted` (deprecated) flag on one or more Custom
@@ -74,53 +93,76 @@ impl BrazeClient {
     }
 }
 
+fn wire_to_domain(w: CustomAttributeWire) -> CustomAttribute {
+    CustomAttribute {
+        name: w.name,
+        attribute_type: wire_data_type_to_domain(w.data_type.as_deref()),
+        description: w.description,
+        deprecated: w
+            .status
+            .as_deref()
+            .map(|s| s.eq_ignore_ascii_case(STATUS_BLOCKLISTED))
+            .unwrap_or(false),
+    }
+}
+
 /// Map the Braze wire `data_type` string to our domain enum.
-/// Unknown types default to `String` — forward-compat for types Braze
-/// may add in the future. `"number"` and `"bool"` aliases are undocumented
-/// but guarded defensively in case the API ever returns them.
-fn wire_data_type_to_domain(data_type: Option<&str>) -> CustomAttributeType {
-    match data_type {
-        Some("string") => CustomAttributeType::String,
-        Some("integer") | Some("float") | Some("number") => CustomAttributeType::Number,
-        Some("boolean") | Some("bool") => CustomAttributeType::Boolean,
-        Some("date") | Some("time") => CustomAttributeType::Time,
-        Some("array") => CustomAttributeType::Array,
-        Some(unknown) => {
-            tracing::warn!(
-                data_type = unknown,
-                "unknown Braze data_type, defaulting to string"
-            );
+///
+/// Braze returns values like `"String (Automatically Detected)"` — we
+/// match on the **leading whitespace-delimited token** (case-insensitive)
+/// to ignore the suffix. Unknown values default to `String` with a warn.
+fn wire_data_type_to_domain(raw: Option<&str>) -> CustomAttributeType {
+    let lowered = raw.unwrap_or("").to_ascii_lowercase();
+
+    // `"object array"` must be checked before the leading-token match:
+    // `split_whitespace().next()` would return `"object"` alone and
+    // mis-classify Object-Array attributes as Object.
+    if lowered.starts_with("object array") {
+        return CustomAttributeType::ObjectArray;
+    }
+
+    let leading = lowered.split_whitespace().next().unwrap_or("");
+    match leading {
+        "string" => CustomAttributeType::String,
+        "number" | "integer" | "float" => CustomAttributeType::Number,
+        "boolean" | "bool" => CustomAttributeType::Boolean,
+        "time" | "date" => CustomAttributeType::Time,
+        "array" => CustomAttributeType::Array,
+        "object" => CustomAttributeType::Object,
+        "object_array" => CustomAttributeType::ObjectArray,
+        "" => {
+            tracing::debug!("Braze data_type is absent, defaulting to string");
             CustomAttributeType::String
         }
-        None => {
-            tracing::debug!("Braze data_type is absent, defaulting to string");
+        unknown => {
+            tracing::warn!(
+                data_type = unknown,
+                raw = ?raw,
+                "unknown Braze data_type, defaulting to string"
+            );
             CustomAttributeType::String
         }
     }
 }
 
-// =====================================================================
-// Wire types — Braze API response shapes.
-// =====================================================================
-
 #[derive(Debug, Deserialize)]
 struct CustomAttributeListResponse {
     #[serde(default)]
-    custom_attributes: Vec<CustomAttributeWire>,
-    #[serde(default)]
-    count: Option<usize>,
+    attributes: Vec<CustomAttributeWire>,
 }
 
 #[derive(Debug, Deserialize)]
 struct CustomAttributeWire {
     #[serde(default)]
-    custom_attribute_name: String,
-    #[serde(default)]
-    data_type: Option<String>,
+    name: String,
     #[serde(default)]
     description: Option<String>,
     #[serde(default)]
-    blocklisted: Option<bool>,
+    data_type: Option<String>,
+    /// `"Active"` or `"Blocklisted"`. Absent for older workspaces —
+    /// treated as not blocklisted.
+    #[serde(default)]
+    status: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -134,7 +176,7 @@ mod tests {
     use super::*;
     use crate::braze::test_client as make_client;
     use serde_json::json;
-    use wiremock::matchers::{body_json, header, method, path, query_param};
+    use wiremock::matchers::{body_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
@@ -143,20 +185,23 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/custom_attributes"))
             .and(header("authorization", "Bearer test-key"))
-            .and(query_param("limit", "100"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "count": 2,
-                "custom_attributes": [
+                "attributes": [
                     {
-                        "custom_attribute_name": "last_visit_date",
-                        "data_type": "date",
+                        "name": "last_visit_date",
                         "description": "Most recent visit",
-                        "blocklisted": false
+                        "data_type": "Date (Automatically Detected)",
+                        "array_length": null,
+                        "status": "Active",
+                        "tag_names": []
                     },
                     {
-                        "custom_attribute_name": "legacy_segment",
-                        "data_type": "string",
-                        "blocklisted": true
+                        "name": "legacy_segment",
+                        "description": null,
+                        "data_type": "String",
+                        "array_length": null,
+                        "status": "Blocklisted",
+                        "tag_names": []
                     }
                 ],
                 "message": "success"
@@ -180,9 +225,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/custom_attributes"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(json!({"custom_attributes": []})),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"attributes": []})))
             .mount(&server)
             .await;
         let client = make_client(&server);
@@ -195,9 +238,9 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/custom_attributes"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "custom_attributes": [{
-                    "custom_attribute_name": "foo",
-                    "data_type": "string",
+                "attributes": [{
+                    "name": "foo",
+                    "data_type": "String",
                     "future_field": "ignored"
                 }]
             })))
@@ -223,75 +266,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_errors_when_count_exceeds_returned() {
+    async fn list_follows_link_header_through_pages() {
         let server = MockServer::start().await;
-        let entries: Vec<serde_json::Value> = (0..50)
-            .map(|i| {
-                json!({
-                    "custom_attribute_name": format!("attr_{i}"),
-                    "data_type": "string"
-                })
-            })
-            .collect();
+        let base = server.uri();
+        let page_2_link = format!(
+            "<{base}/custom_attributes?cursor=p2>; rel=\"next\"",
+            base = base
+        );
+
+        // Page 2 (mounted first so cursor-bearing requests hit it).
         Mock::given(method("GET"))
             .and(path("/custom_attributes"))
+            .and(wiremock::matchers::query_param("cursor", "p2"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "count": 150,
-                "custom_attributes": entries,
+                "attributes": [
+                    {"name": "c", "data_type": "String", "status": "Active"}
+                ],
                 "message": "success"
             })))
             .mount(&server)
             .await;
-        let client = make_client(&server);
-        let err = client.list_custom_attributes().await.unwrap_err();
-        assert!(
-            matches!(err, BrazeApiError::PaginationNotImplemented { .. }),
-            "got {err:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn list_errors_on_full_page_with_no_count_field() {
-        let server = MockServer::start().await;
-        let entries: Vec<serde_json::Value> = (0..100)
-            .map(|i| {
-                json!({
-                    "custom_attribute_name": format!("attr_{i}"),
-                    "data_type": "string"
-                })
-            })
-            .collect();
+        // Page 1 — no cursor query param, carries a Link header to p2.
         Mock::given(method("GET"))
             .and(path("/custom_attributes"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(json!({ "custom_attributes": entries })),
+                ResponseTemplate::new(200)
+                    .insert_header("link", page_2_link.as_str())
+                    .set_body_json(json!({
+                        "attributes": [
+                            {"name": "a", "data_type": "String", "status": "Active"},
+                            {"name": "b", "data_type": "Number", "status": "Active"}
+                        ],
+                        "message": "success"
+                    })),
             )
+            .up_to_n_times(1)
             .mount(&server)
             .await;
-        let client = make_client(&server);
-        let err = client.list_custom_attributes().await.unwrap_err();
-        assert!(
-            matches!(err, BrazeApiError::PaginationNotImplemented { .. }),
-            "got {err:?}"
-        );
-    }
 
-    #[tokio::test]
-    async fn list_short_page_with_no_count_is_trusted_as_complete() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/custom_attributes"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "custom_attributes": [
-                    {"custom_attribute_name": "a", "data_type": "string"},
-                    {"custom_attribute_name": "b", "data_type": "number"}
-                ]
-            })))
-            .mount(&server)
-            .await;
         let client = make_client(&server);
         let attrs = client.list_custom_attributes().await.unwrap();
-        assert_eq!(attrs.len(), 2);
+        assert_eq!(attrs.len(), 3);
+        assert_eq!(attrs[0].name, "a");
+        assert_eq!(attrs[2].name, "c");
     }
 
     #[tokio::test]
@@ -300,13 +317,14 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/custom_attributes"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "count": 5,
-                "custom_attributes": [
-                    {"custom_attribute_name": "s", "data_type": "string"},
-                    {"custom_attribute_name": "n", "data_type": "integer"},
-                    {"custom_attribute_name": "b", "data_type": "boolean"},
-                    {"custom_attribute_name": "t", "data_type": "date"},
-                    {"custom_attribute_name": "a", "data_type": "array"}
+                "attributes": [
+                    {"name": "s", "data_type": "String (Automatically Detected)"},
+                    {"name": "n", "data_type": "Number"},
+                    {"name": "b", "data_type": "Boolean"},
+                    {"name": "t", "data_type": "Date"},
+                    {"name": "a", "data_type": "Array"},
+                    {"name": "o", "data_type": "Object"},
+                    {"name": "oa", "data_type": "Object Array"}
                 ]
             })))
             .mount(&server)
@@ -318,6 +336,29 @@ mod tests {
         assert_eq!(attrs[2].attribute_type, CustomAttributeType::Boolean);
         assert_eq!(attrs[3].attribute_type, CustomAttributeType::Time);
         assert_eq!(attrs[4].attribute_type, CustomAttributeType::Array);
+        assert_eq!(attrs[5].attribute_type, CustomAttributeType::Object);
+        assert_eq!(attrs[6].attribute_type, CustomAttributeType::ObjectArray);
+    }
+
+    #[tokio::test]
+    async fn deprecated_is_derived_from_status_blocklisted() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/custom_attributes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "attributes": [
+                    {"name": "active", "data_type": "String", "status": "Active"},
+                    {"name": "blocked", "data_type": "String", "status": "Blocklisted"},
+                    {"name": "missing", "data_type": "String"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let client = make_client(&server);
+        let attrs = client.list_custom_attributes().await.unwrap();
+        assert!(!attrs[0].deprecated);
+        assert!(attrs[1].deprecated);
+        assert!(!attrs[2].deprecated);
     }
 
     #[tokio::test]
@@ -350,11 +391,10 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/custom_attributes"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "count": 3,
-                "custom_attributes": [
-                    {"custom_attribute_name": "dup", "data_type": "string"},
-                    {"custom_attribute_name": "unique", "data_type": "number"},
-                    {"custom_attribute_name": "dup", "data_type": "string"}
+                "attributes": [
+                    {"name": "dup", "data_type": "String"},
+                    {"name": "unique", "data_type": "Number"},
+                    {"name": "dup", "data_type": "String"}
                 ]
             })))
             .mount(&server)
@@ -368,6 +408,76 @@ mod tests {
             }
             other => panic!("expected DuplicateNameInListResponse, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn list_errors_on_duplicate_name_across_pages() {
+        // Same name appears on page 1 and page 2 — must be detected even
+        // though each individual page is internally unique.
+        let server = MockServer::start().await;
+        let base = server.uri();
+        let page_2_link = format!("<{base}/custom_attributes?cursor=p2>; rel=\"next\"");
+
+        Mock::given(method("GET"))
+            .and(path("/custom_attributes"))
+            .and(wiremock::matchers::query_param("cursor", "p2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "attributes": [
+                    {"name": "dup", "data_type": "String", "status": "Active"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/custom_attributes"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("link", page_2_link.as_str())
+                    .set_body_json(json!({
+                        "attributes": [
+                            {"name": "dup", "data_type": "String", "status": "Active"}
+                        ]
+                    })),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let err = client.list_custom_attributes().await.unwrap_err();
+        match err {
+            BrazeApiError::DuplicateNameInListResponse { endpoint, name } => {
+                assert_eq!(endpoint, "/custom_attributes");
+                assert_eq!(name, "dup");
+            }
+            other => panic!("expected DuplicateNameInListResponse, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_errors_when_cursor_repeats() {
+        // Server echoes the same `rel="next"` cursor forever — without
+        // cycle detection we'd loop to SAFETY_CAP_PAGES.
+        let server = MockServer::start().await;
+        let base = server.uri();
+        let self_link = format!("<{base}/custom_attributes?cursor=loop>; rel=\"next\"");
+
+        Mock::given(method("GET"))
+            .and(path("/custom_attributes"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("link", self_link.as_str())
+                    .set_body_json(json!({ "attributes": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let err = client.list_custom_attributes().await.unwrap_err();
+        assert!(
+            matches!(err, BrazeApiError::PaginationNotImplemented { .. }),
+            "got {err:?}"
+        );
     }
 
     #[tokio::test]

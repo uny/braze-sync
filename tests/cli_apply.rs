@@ -990,12 +990,11 @@ async fn apply_custom_attribute_deprecation_toggle_with_confirm() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1,
-            "custom_attributes": [
+            "attributes": [
                 {
-                    "custom_attribute_name": "legacy_field",
+                    "name": "legacy_field",
                     "data_type": "string",
-                    "blocklisted": false
+                    "status": "Active"
                 }
             ]
         })))
@@ -1038,12 +1037,11 @@ async fn apply_custom_attribute_dry_run_makes_no_write_call() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1,
-            "custom_attributes": [
+            "attributes": [
                 {
-                    "custom_attribute_name": "legacy_field",
+                    "name": "legacy_field",
                     "data_type": "string",
-                    "blocklisted": false
+                    "status": "Active"
                 }
             ]
         })))
@@ -1083,7 +1081,7 @@ async fn apply_custom_attribute_present_in_git_only_rejects() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "custom_attributes": []
+            "attributes": []
         })))
         .mount(&server)
         .await;
@@ -1126,13 +1124,12 @@ async fn apply_custom_attribute_metadata_only_is_informational_no_op() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1,
-            "custom_attributes": [
+            "attributes": [
                 {
-                    "custom_attribute_name": "drift",
+                    "name": "drift",
                     "data_type": "string",
                     "description": "remote desc",
-                    "blocklisted": false
+                    "status": "Active"
                 }
             ]
         })))
@@ -1183,17 +1180,16 @@ async fn apply_custom_attribute_batches_both_directions() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 2,
-            "custom_attributes": [
+            "attributes": [
                 {
-                    "custom_attribute_name": "to_deprecate",
+                    "name": "to_deprecate",
                     "data_type": "string",
-                    "blocklisted": false
+                    "status": "Active"
                 },
                 {
-                    "custom_attribute_name": "to_reactivate",
+                    "name": "to_reactivate",
                     "data_type": "string",
-                    "blocklisted": true
+                    "status": "Blocklisted"
                 }
             ]
         })))

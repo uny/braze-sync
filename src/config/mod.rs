@@ -36,7 +36,6 @@ pub struct ResolvedConfig {
     /// site that needs the plaintext (typically only the BrazeClient
     /// constructor).
     pub api_key: SecretString,
-    pub rate_limit_per_minute: u32,
     pub resources: ResourcesConfig,
     pub naming: NamingConfig,
 }
@@ -129,15 +128,10 @@ impl ConfigFile {
             )));
         }
 
-        let rate_limit_per_minute = env_cfg
-            .rate_limit_per_minute
-            .unwrap_or(self.defaults.rate_limit_per_minute);
-
         Ok(ResolvedConfig {
             environment_name: env_name,
             api_endpoint: env_cfg.api_endpoint,
             api_key: SecretString::from(api_key_str),
-            rate_limit_per_minute,
             resources: self.resources,
             naming: self.naming,
         })
@@ -185,8 +179,6 @@ environments:
         assert_eq!(cfg.version, 1);
         assert_eq!(cfg.default_environment, "dev");
         assert_eq!(cfg.environments.len(), 1);
-        // defaults applied
-        assert_eq!(cfg.defaults.rate_limit_per_minute, 40);
         // resources defaulted in full
         assert!(cfg.resources.catalog_schema.enabled);
         assert_eq!(
@@ -205,8 +197,6 @@ environments:
         const FULL: &str = r#"
 version: 1
 default_environment: dev
-defaults:
-  rate_limit_per_minute: 50
 environments:
   dev:
     api_endpoint: https://rest.fra-02.braze.eu
@@ -214,7 +204,6 @@ environments:
   prod:
     api_endpoint: https://rest.fra-02.braze.eu
     api_key_env: BRAZE_PROD_API_KEY
-    rate_limit_per_minute: 30
 resources:
   catalog_schema:
     enabled: true
@@ -237,8 +226,6 @@ naming:
         let f = write_config(FULL);
         let cfg = ConfigFile::load(f.path()).unwrap();
         assert_eq!(cfg.environments.len(), 2);
-        assert_eq!(cfg.defaults.rate_limit_per_minute, 50);
-        assert_eq!(cfg.environments["prod"].rate_limit_per_minute, Some(30));
         assert_eq!(cfg.resources.catalog_items.parallel_batches, 8);
         assert!(!cfg.resources.email_template.enabled);
         assert_eq!(
@@ -325,7 +312,6 @@ environments:
             .unwrap();
         assert_eq!(resolved.environment_name, "dev");
         assert_eq!(resolved.api_key.expose_secret(), "token-abc");
-        assert_eq!(resolved.rate_limit_per_minute, 40);
     }
 
     #[test]
@@ -340,7 +326,6 @@ environments:
   prod:
     api_endpoint: https://rest.fra-02.braze.eu
     api_key_env: BRAZE_PROD_API_KEY
-    rate_limit_per_minute: 25
 "#;
         let f = write_config(TWO_ENVS);
         let cfg = ConfigFile::load(f.path()).unwrap();
@@ -351,7 +336,6 @@ environments:
             })
             .unwrap();
         assert_eq!(resolved.environment_name, "prod");
-        assert_eq!(resolved.rate_limit_per_minute, 25);
     }
 
     #[test]
@@ -384,47 +368,6 @@ environments:
         let err = cfg.resolve_with(None, |_| Some(String::new())).unwrap_err();
         assert!(matches!(err, Error::Config(_)));
         assert!(err.to_string().contains("empty"));
-    }
-
-    #[test]
-    fn env_rate_limit_overrides_defaults() {
-        const OVERRIDE: &str = r#"
-version: 1
-default_environment: prod
-defaults:
-  rate_limit_per_minute: 100
-environments:
-  prod:
-    api_endpoint: https://rest.fra-02.braze.eu
-    api_key_env: K
-    rate_limit_per_minute: 7
-"#;
-        let f = write_config(OVERRIDE);
-        let resolved = ConfigFile::load(f.path())
-            .unwrap()
-            .resolve_with(None, |_| Some("k".into()))
-            .unwrap();
-        assert_eq!(resolved.rate_limit_per_minute, 7);
-    }
-
-    #[test]
-    fn defaults_apply_when_environment_has_no_override() {
-        const NO_OVERRIDE: &str = r#"
-version: 1
-default_environment: dev
-defaults:
-  rate_limit_per_minute: 12
-environments:
-  dev:
-    api_endpoint: https://rest.fra-02.braze.eu
-    api_key_env: K
-"#;
-        let f = write_config(NO_OVERRIDE);
-        let resolved = ConfigFile::load(f.path())
-            .unwrap()
-            .resolve_with(None, |_| Some("k".into()))
-            .unwrap();
-        assert_eq!(resolved.rate_limit_per_minute, 12);
     }
 
     #[test]

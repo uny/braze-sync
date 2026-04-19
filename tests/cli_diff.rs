@@ -559,12 +559,11 @@ async fn diff_custom_attribute_deprecation_toggle() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1,
-            "custom_attributes": [
+            "attributes": [
                 {
-                    "custom_attribute_name": "legacy_field",
+                    "name": "legacy_field",
                     "data_type": "string",
-                    "blocklisted": false
+                    "status": "Active"
                 }
             ]
         })))
@@ -610,9 +609,8 @@ async fn diff_custom_attribute_unregistered_in_git() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1,
-            "custom_attributes": [
-                {"custom_attribute_name": "new_remote", "data_type": "string"}
+            "attributes": [
+                {"name": "new_remote", "data_type": "string"}
             ]
         })))
         .mount(&server)
@@ -648,13 +646,12 @@ async fn diff_custom_attribute_no_drift_when_identical() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1,
-            "custom_attributes": [
+            "attributes": [
                 {
-                    "custom_attribute_name": "stable",
+                    "name": "stable",
                     "data_type": "string",
                     "description": "A stable attribute",
-                    "blocklisted": false
+                    "status": "Active"
                 }
             ]
         })))
@@ -692,9 +689,8 @@ async fn diff_custom_attribute_no_local_file_all_unregistered() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1,
-            "custom_attributes": [
-                {"custom_attribute_name": "orphan_attr", "data_type": "string"}
+            "attributes": [
+                {"name": "orphan_attr", "data_type": "string"}
             ]
         })))
         .mount(&server)
@@ -730,17 +726,16 @@ async fn diff_custom_attribute_name_filter_narrows_output() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 2,
-            "custom_attributes": [
+            "attributes": [
                 {
-                    "custom_attribute_name": "legacy_field",
+                    "name": "legacy_field",
                     "data_type": "string",
-                    "blocklisted": false
+                    "status": "Active"
                 },
                 {
-                    "custom_attribute_name": "active_field",
+                    "name": "active_field",
                     "data_type": "string",
-                    "blocklisted": false
+                    "status": "Active"
                 }
             ]
         })))

@@ -434,24 +434,23 @@ async fn export_custom_attributes_writes_registry_yaml() {
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 3,
-            "custom_attributes": [
+            "attributes": [
                 {
-                    "custom_attribute_name": "last_visit_date",
+                    "name": "last_visit_date",
                     "data_type": "date",
                     "description": "Most recent visit",
-                    "blocklisted": false
+                    "status": "Active"
                 },
                 {
-                    "custom_attribute_name": "preferred_clinic_id",
+                    "name": "preferred_clinic_id",
                     "data_type": "string",
                     "description": "User's preferred clinic",
-                    "blocklisted": false
+                    "status": "Active"
                 },
                 {
-                    "custom_attribute_name": "legacy_segment",
+                    "name": "legacy_segment",
                     "data_type": "string",
-                    "blocklisted": true
+                    "status": "Blocklisted"
                 }
             ],
             "message": "success"
