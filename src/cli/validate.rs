@@ -41,29 +41,36 @@ pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> an
         match kind {
             ResourceKind::CatalogSchema => {
                 let catalogs_root = config_dir.join(&cfg.resources.catalog_schema.path);
+                let excludes = compile_kind_excludes(cfg, kind)?;
                 validate_catalog_schemas(
                     &catalogs_root,
                     cfg.naming.catalog_name_pattern.as_deref(),
+                    &excludes,
                     &mut issues,
                 )?;
             }
             ResourceKind::ContentBlock => {
                 let content_blocks_root = config_dir.join(&cfg.resources.content_block.path);
+                let excludes = compile_kind_excludes(cfg, kind)?;
                 validate_content_blocks(
                     &content_blocks_root,
                     cfg.naming.content_block_name_pattern.as_deref(),
+                    &excludes,
                     &mut issues,
                 )?;
             }
             ResourceKind::EmailTemplate => {
                 let email_templates_root = config_dir.join(&cfg.resources.email_template.path);
-                validate_email_templates(&email_templates_root, &mut issues)?;
+                let excludes = compile_kind_excludes(cfg, kind)?;
+                validate_email_templates(&email_templates_root, &excludes, &mut issues)?;
             }
             ResourceKind::CustomAttribute => {
                 let registry_path = config_dir.join(&cfg.resources.custom_attribute.path);
+                let excludes = compile_kind_excludes(cfg, kind)?;
                 validate_custom_attributes(
                     &registry_path,
                     cfg.naming.custom_attribute_name_pattern.as_deref(),
+                    &excludes,
                     &mut issues,
                 )?;
             }
@@ -81,6 +88,13 @@ pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> an
     }
 
     Err(Error::Config(format!("{} validation issue(s) found", issues.len())).into())
+}
+
+fn compile_kind_excludes(cfg: &ConfigFile, kind: ResourceKind) -> anyhow::Result<Vec<Regex>> {
+    Ok(crate::config::compile_exclude_patterns(
+        &cfg.resources.for_kind(kind).exclude_patterns,
+        kind.as_str(),
+    )?)
 }
 
 /// Try to open a resource root directory. Returns `None` (and pushes an
@@ -145,6 +159,7 @@ fn check_name_pattern(
 fn validate_catalog_schemas(
     catalogs_root: &Path,
     name_pattern: Option<&str>,
+    excludes: &[Regex],
     issues: &mut Vec<ValidationIssue>,
 ) -> anyhow::Result<()> {
     let Some(read_dir) = open_resource_dir(catalogs_root, "catalogs", issues)? else {
@@ -176,6 +191,14 @@ fn validate_catalog_schemas(
             }
         };
 
+        // Exclude is checked AFTER parse so a malformed file still
+        // surfaces — excludes mean "don't enforce rules on this name",
+        // not "silence this file". A broken YAML is a workspace problem
+        // regardless of whether the resource is managed out of band.
+        if crate::config::is_excluded(&cat.name, excludes) {
+            continue;
+        }
+
         // load_all_schemas treats dir/name mismatch as a hard error;
         // here we downgrade to a soft issue so a single run reports
         // every bad file.
@@ -206,6 +229,7 @@ fn validate_catalog_schemas(
 fn validate_content_blocks(
     content_blocks_root: &Path,
     name_pattern: Option<&str>,
+    excludes: &[Regex],
     issues: &mut Vec<ValidationIssue>,
 ) -> anyhow::Result<()> {
     let Some(read_dir) = open_resource_dir(content_blocks_root, "content_blocks", issues)? else {
@@ -241,6 +265,10 @@ fn validate_content_blocks(
             }
         };
 
+        if crate::config::is_excluded(&cb.name, excludes) {
+            continue;
+        }
+
         if cb.name != stem {
             issues.push(ValidationIssue {
                 path: path.clone(),
@@ -266,6 +294,7 @@ fn validate_content_blocks(
 
 fn validate_email_templates(
     email_templates_root: &Path,
+    excludes: &[Regex],
     issues: &mut Vec<ValidationIssue>,
 ) -> anyhow::Result<()> {
     let Some(read_dir) = open_resource_dir(email_templates_root, "email_templates", issues)? else {
@@ -296,6 +325,10 @@ fn validate_email_templates(
             }
         };
 
+        if crate::config::is_excluded(&et.name, excludes) {
+            continue;
+        }
+
         if et.name != dir_name {
             issues.push(ValidationIssue {
                 path: template_yaml_path.clone(),
@@ -320,6 +353,7 @@ fn validate_email_templates(
 fn validate_custom_attributes(
     registry_path: &Path,
     name_pattern: Option<&str>,
+    excludes: &[Regex],
     issues: &mut Vec<ValidationIssue>,
 ) -> anyhow::Result<()> {
     let registry = match custom_attribute_io::load_registry(registry_path) {
@@ -339,6 +373,9 @@ fn validate_custom_attributes(
 
     let mut seen = HashSet::with_capacity(registry.attributes.len());
     for attr in &registry.attributes {
+        if crate::config::is_excluded(&attr.name, excludes) {
+            continue;
+        }
         if !seen.insert(attr.name.as_str()) {
             issues.push(ValidationIssue {
                 path: registry_path.to_path_buf(),

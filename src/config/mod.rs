@@ -21,7 +21,10 @@ pub use schema::{
 };
 
 use crate::error::{Error, Result};
+use crate::resource::ResourceKind;
+use regex_lite::Regex;
 use secrecy::SecretString;
+use std::collections::HashMap;
 use std::path::Path;
 use url::Url;
 
@@ -37,6 +40,18 @@ pub struct ResolvedConfig {
     pub api_key: SecretString,
     pub resources: ResourcesConfig,
     pub naming: NamingConfig,
+    /// Compiled `exclude_patterns` per resource kind. Populated by
+    /// [`ConfigFile::resolve_with`] so callers can look up a `&[Regex]`
+    /// without recompiling on every invocation.
+    pub excludes: HashMap<ResourceKind, Vec<Regex>>,
+}
+
+impl ResolvedConfig {
+    /// Compiled exclude patterns for `kind`. Returns an empty slice when
+    /// no patterns are configured.
+    pub fn excludes_for(&self, kind: ResourceKind) -> &[Regex] {
+        self.excludes.get(&kind).map(Vec::as_slice).unwrap_or(&[])
+    }
 }
 
 impl ConfigFile {
@@ -86,6 +101,12 @@ impl ConfigFile {
                 }
             }
         }
+        // Compile every resource's exclude_patterns at load time so
+        // malformed regexes fail fast instead of at first use.
+        for kind in ResourceKind::all() {
+            let rc = self.resources.for_kind(*kind);
+            compile_exclude_patterns(&rc.exclude_patterns, kind.as_str())?;
+        }
         Ok(())
     }
 
@@ -127,14 +148,46 @@ impl ConfigFile {
             )));
         }
 
+        let mut excludes: HashMap<ResourceKind, Vec<Regex>> = HashMap::new();
+        for kind in ResourceKind::all() {
+            let rc = self.resources.for_kind(*kind);
+            excludes.insert(
+                *kind,
+                compile_exclude_patterns(&rc.exclude_patterns, kind.as_str())?,
+            );
+        }
+
         Ok(ResolvedConfig {
             environment_name: env_name,
             api_endpoint: env_cfg.api_endpoint,
             api_key: SecretString::from(api_key_str),
             resources: self.resources,
             naming: self.naming,
+            excludes,
         })
     }
+}
+
+/// Compile a list of raw regex patterns from a resource's
+/// `exclude_patterns` into `Regex` values. The `context` label is used
+/// in error messages (e.g. `"custom_attribute"`).
+pub fn compile_exclude_patterns(patterns: &[String], context: &str) -> Result<Vec<Regex>> {
+    patterns
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            Regex::new(p).map_err(|e| {
+                Error::Config(format!(
+                    "{context}.exclude_patterns[{i}]: invalid regex {p:?}: {e}"
+                ))
+            })
+        })
+        .collect()
+}
+
+/// Return `true` if `name` matches any of the compiled patterns.
+pub fn is_excluded(name: &str, patterns: &[Regex]) -> bool {
+    patterns.iter().any(|r| r.is_match(name))
 }
 
 /// Load `.env` from the current working directory only — no parent
@@ -312,6 +365,67 @@ environments:
         let f = write_config(yaml);
         let err = ConfigFile::load(f.path()).unwrap_err();
         assert!(matches!(err, Error::YamlParse { .. }), "got: {err:?}");
+    }
+
+    #[test]
+    fn accepts_exclude_patterns_on_resource_config() {
+        let yaml = r#"
+version: 1
+default_environment: dev
+environments:
+  dev:
+    api_endpoint: https://rest.fra-02.braze.eu
+    api_key_env: BRAZE_DEV_API_KEY
+resources:
+  custom_attribute:
+    path: custom_attributes/registry.yaml
+    exclude_patterns:
+      - "^_"
+      - "^(hoge|hack)$"
+"#;
+        let f = write_config(yaml);
+        let cfg = ConfigFile::load(f.path()).unwrap();
+        assert_eq!(
+            cfg.resources.custom_attribute.exclude_patterns,
+            vec!["^_".to_string(), "^(hoge|hack)$".to_string()]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_exclude_pattern_at_load_time() {
+        // Unbalanced paren — invalid regex should hard-error at load,
+        // not at first use.
+        let yaml = r#"
+version: 1
+default_environment: dev
+environments:
+  dev:
+    api_endpoint: https://rest.fra-02.braze.eu
+    api_key_env: BRAZE_DEV_API_KEY
+resources:
+  custom_attribute:
+    path: custom_attributes/registry.yaml
+    exclude_patterns:
+      - "("
+"#;
+        let f = write_config(yaml);
+        let err = ConfigFile::load(f.path()).unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("custom_attribute"), "msg: {msg}");
+                assert!(msg.contains("exclude_patterns[0]"), "msg: {msg}");
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn is_excluded_matches_any_pattern() {
+        let patterns =
+            compile_exclude_patterns(&["^_".to_string(), "^test_".to_string()], "test").unwrap();
+        assert!(is_excluded("_unset", &patterns));
+        assert!(is_excluded("test_foo", &patterns));
+        assert!(!is_excluded("regular_attr", &patterns));
     }
 
     #[test]

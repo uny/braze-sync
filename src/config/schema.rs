@@ -54,14 +54,18 @@ pub struct ResourcesConfig {
 }
 
 impl ResourcesConfig {
-    pub fn is_enabled(&self, kind: crate::resource::ResourceKind) -> bool {
+    pub fn for_kind(&self, kind: crate::resource::ResourceKind) -> &ResourceConfig {
         use crate::resource::ResourceKind;
         match kind {
-            ResourceKind::CatalogSchema => self.catalog_schema.enabled,
-            ResourceKind::ContentBlock => self.content_block.enabled,
-            ResourceKind::EmailTemplate => self.email_template.enabled,
-            ResourceKind::CustomAttribute => self.custom_attribute.enabled,
+            ResourceKind::CatalogSchema => &self.catalog_schema,
+            ResourceKind::ContentBlock => &self.content_block,
+            ResourceKind::EmailTemplate => &self.email_template,
+            ResourceKind::CustomAttribute => &self.custom_attribute,
         }
+    }
+
+    pub fn is_enabled(&self, kind: crate::resource::ResourceKind) -> bool {
+        self.for_kind(kind).enabled
     }
 }
 
@@ -82,6 +86,13 @@ pub struct ResourceConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     pub path: PathBuf,
+    /// Regex patterns (matched against resource `name`) that mark a
+    /// resource as **managed out of band**. Names matching any pattern
+    /// are skipped by `export`, `diff`, `apply`, and `validate` so
+    /// Braze reserved attributes (`_unset`) or camelCase duplicates
+    /// don't produce noise. See `docs/configuration.md §exclude_patterns`.
+    #[serde(default)]
+    pub exclude_patterns: Vec<String>,
 }
 
 fn default_enabled() -> bool {
@@ -92,6 +103,7 @@ fn default_catalog_schema() -> ResourceConfig {
     ResourceConfig {
         enabled: true,
         path: PathBuf::from("catalogs/"),
+        exclude_patterns: Vec::new(),
     }
 }
 
@@ -99,6 +111,7 @@ fn default_content_block() -> ResourceConfig {
     ResourceConfig {
         enabled: true,
         path: PathBuf::from("content_blocks/"),
+        exclude_patterns: Vec::new(),
     }
 }
 
@@ -106,6 +119,7 @@ fn default_email_template() -> ResourceConfig {
     ResourceConfig {
         enabled: true,
         path: PathBuf::from("email_templates/"),
+        exclude_patterns: Vec::new(),
     }
 }
 
@@ -113,6 +127,7 @@ fn default_custom_attribute() -> ResourceConfig {
     ResourceConfig {
         enabled: true,
         path: PathBuf::from("custom_attributes/registry.yaml"),
+        exclude_patterns: Vec::new(),
     }
 }
 

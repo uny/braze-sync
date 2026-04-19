@@ -28,7 +28,7 @@ use super::diff::{
     compute_catalog_schema_diffs, compute_content_block_plan, compute_custom_attribute_diffs,
     compute_email_template_plan,
 };
-use super::selected_kinds;
+use super::{selected_kinds, warn_if_name_excluded};
 
 #[derive(Args, Debug)]
 pub struct ApplyArgs {
@@ -76,19 +76,30 @@ pub async fn run(
     let mut content_block_id_index: Option<ContentBlockIdIndex> = None;
     let mut email_template_id_index: Option<EmailTemplateIdIndex> = None;
     for kind in kinds {
+        if warn_if_name_excluded(kind, args.name.as_deref(), resolved.excludes_for(kind)) {
+            continue;
+        }
         match kind {
             ResourceKind::CatalogSchema => {
-                let diffs =
-                    compute_catalog_schema_diffs(&client, &catalogs_root, args.name.as_deref())
-                        .await
-                        .context("computing catalog_schema plan")?;
+                let diffs = compute_catalog_schema_diffs(
+                    &client,
+                    &catalogs_root,
+                    args.name.as_deref(),
+                    resolved.excludes_for(ResourceKind::CatalogSchema),
+                )
+                .await
+                .context("computing catalog_schema plan")?;
                 summary.diffs.extend(diffs);
             }
             ResourceKind::ContentBlock => {
-                let (diffs, idx) =
-                    compute_content_block_plan(&client, &content_blocks_root, args.name.as_deref())
-                        .await
-                        .context("computing content_block plan")?;
+                let (diffs, idx) = compute_content_block_plan(
+                    &client,
+                    &content_blocks_root,
+                    args.name.as_deref(),
+                    resolved.excludes_for(ResourceKind::ContentBlock),
+                )
+                .await
+                .context("computing content_block plan")?;
                 summary.diffs.extend(diffs);
                 content_block_id_index = Some(idx);
             }
@@ -97,6 +108,7 @@ pub async fn run(
                     &client,
                     &email_templates_root,
                     args.name.as_deref(),
+                    resolved.excludes_for(ResourceKind::EmailTemplate),
                 )
                 .await
                 .context("computing email_template plan")?;
@@ -108,6 +120,7 @@ pub async fn run(
                     &client,
                     &custom_attributes_path,
                     args.name.as_deref(),
+                    resolved.excludes_for(ResourceKind::CustomAttribute),
                 )
                 .await
                 .context("computing custom_attribute plan")?;

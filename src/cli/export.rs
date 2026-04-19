@@ -2,15 +2,16 @@
 
 use crate::braze::error::BrazeApiError;
 use crate::braze::BrazeClient;
-use crate::config::ResolvedConfig;
+use crate::config::{is_excluded, ResolvedConfig};
 use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io};
 use crate::resource::{CustomAttributeRegistry, ResourceKind};
 use anyhow::Context as _;
 use clap::Args;
 use futures::stream::{StreamExt, TryStreamExt};
+use regex_lite::Regex;
 use std::path::Path;
 
-use super::{selected_kinds, FETCH_CONCURRENCY};
+use super::{selected_kinds, warn_if_name_excluded, FETCH_CONCURRENCY};
 
 #[derive(Args, Debug, Default)]
 pub struct ExportArgs {
@@ -39,26 +40,48 @@ pub async fn run(
 
     let mut total_written: usize = 0;
     for kind in kinds {
+        // `custom_attribute` ignores `--name` (registry is a single file),
+        // so skipping by exclude match before dispatching wouldn't fit —
+        // handle it per-arm alongside the existing --name warning.
+        if !matches!(kind, ResourceKind::CustomAttribute)
+            && warn_if_name_excluded(kind, args.name.as_deref(), resolved.excludes_for(kind))
+        {
+            continue;
+        }
         match kind {
             ResourceKind::CatalogSchema => {
-                let n = export_catalog_schemas(&client, &catalogs_root, args.name.as_deref())
-                    .await
-                    .context("exporting catalog_schema")?;
+                let n = export_catalog_schemas(
+                    &client,
+                    &catalogs_root,
+                    args.name.as_deref(),
+                    resolved.excludes_for(ResourceKind::CatalogSchema),
+                )
+                .await
+                .context("exporting catalog_schema")?;
                 eprintln!("✓ catalog_schema: exported {n} resource(s)");
                 total_written += n;
             }
             ResourceKind::ContentBlock => {
-                let n = export_content_blocks(&client, &content_blocks_root, args.name.as_deref())
-                    .await
-                    .context("exporting content_block")?;
+                let n = export_content_blocks(
+                    &client,
+                    &content_blocks_root,
+                    args.name.as_deref(),
+                    resolved.excludes_for(ResourceKind::ContentBlock),
+                )
+                .await
+                .context("exporting content_block")?;
                 eprintln!("✓ content_block: exported {n} resource(s)");
                 total_written += n;
             }
             ResourceKind::EmailTemplate => {
-                let n =
-                    export_email_templates(&client, &email_templates_root, args.name.as_deref())
-                        .await
-                        .context("exporting email_template")?;
+                let n = export_email_templates(
+                    &client,
+                    &email_templates_root,
+                    args.name.as_deref(),
+                    resolved.excludes_for(ResourceKind::EmailTemplate),
+                )
+                .await
+                .context("exporting email_template")?;
                 eprintln!("✓ email_template: exported {n} resource(s)");
                 total_written += n;
             }
@@ -69,9 +92,13 @@ pub async fn run(
                          (the registry is a single file); exporting all attributes"
                     );
                 }
-                let n = export_custom_attributes(&client, &custom_attributes_path)
-                    .await
-                    .context("exporting custom_attribute")?;
+                let n = export_custom_attributes(
+                    &client,
+                    &custom_attributes_path,
+                    resolved.excludes_for(ResourceKind::CustomAttribute),
+                )
+                .await
+                .context("exporting custom_attribute")?;
                 eprintln!("✓ custom_attribute: exported {n} attribute(s)");
                 total_written += n;
             }
@@ -86,6 +113,7 @@ async fn export_catalog_schemas(
     client: &BrazeClient,
     catalogs_root: &Path,
     name_filter: Option<&str>,
+    excludes: &[Regex],
 ) -> anyhow::Result<usize> {
     let catalogs = match name_filter {
         Some(name) => match client.get_catalog(name).await {
@@ -100,8 +128,12 @@ async fn export_catalog_schemas(
         None => client.list_catalogs().await?,
     };
 
-    let count = catalogs.len();
-    for cat in catalogs {
+    let filtered: Vec<_> = catalogs
+        .into_iter()
+        .filter(|c| !is_excluded(&c.name, excludes))
+        .collect();
+    let count = filtered.len();
+    for cat in filtered {
         catalog_io::save_schema(catalogs_root, &cat)?;
     }
     Ok(count)
@@ -114,12 +146,14 @@ async fn export_content_blocks(
     client: &BrazeClient,
     content_blocks_root: &Path,
     name_filter: Option<&str>,
+    excludes: &[Regex],
 ) -> anyhow::Result<usize> {
     let summaries = client.list_content_blocks().await?;
-    let targets: Vec<_> = match name_filter {
-        Some(name) => summaries.into_iter().filter(|s| s.name == name).collect(),
-        None => summaries,
-    };
+    let targets: Vec<_> = summaries
+        .into_iter()
+        .filter(|s| name_filter.is_none_or(|n| s.name == n))
+        .filter(|s| !is_excluded(&s.name, excludes))
+        .collect();
 
     if targets.is_empty() {
         if let Some(name) = name_filter {
@@ -154,12 +188,14 @@ async fn export_email_templates(
     client: &BrazeClient,
     email_templates_root: &Path,
     name_filter: Option<&str>,
+    excludes: &[Regex],
 ) -> anyhow::Result<usize> {
     let summaries = client.list_email_templates().await?;
-    let targets: Vec<_> = match name_filter {
-        Some(name) => summaries.into_iter().filter(|s| s.name == name).collect(),
-        None => summaries,
-    };
+    let targets: Vec<_> = summaries
+        .into_iter()
+        .filter(|s| name_filter.is_none_or(|n| s.name == n))
+        .filter(|s| !is_excluded(&s.name, excludes))
+        .collect();
 
     if targets.is_empty() {
         if let Some(name) = name_filter {
@@ -192,8 +228,14 @@ async fn export_email_templates(
 async fn export_custom_attributes(
     client: &BrazeClient,
     registry_path: &Path,
+    excludes: &[Regex],
 ) -> anyhow::Result<usize> {
-    let attrs = client.list_custom_attributes().await?;
+    let attrs: Vec<_> = client
+        .list_custom_attributes()
+        .await?
+        .into_iter()
+        .filter(|a| !is_excluded(&a.name, excludes))
+        .collect();
     let count = attrs.len();
     let registry = CustomAttributeRegistry { attributes: attrs };
     custom_attribute_io::save_registry(registry_path, &registry)?;
