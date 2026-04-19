@@ -49,9 +49,6 @@ pub enum Error {
     #[error("Rate limit exhausted after {retries} retries")]
     RateLimitExhausted { retries: u32 },
 
-    #[error("Catalog item field '{field}' is not in schema for catalog '{catalog}'")]
-    CatalogItemSchemaMismatch { catalog: String, field: String },
-
     #[error(
         "Custom Attribute '{name}' cannot be created via API; created implicitly via /users/track"
     )]

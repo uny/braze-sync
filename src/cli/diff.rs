@@ -181,7 +181,7 @@ pub(crate) async fn compute_content_block_plan(
         local.iter().map(|c| (c.name.as_str(), c)).collect();
 
     // Only names present on both sides need a /info fetch. Fan them out
-    // in parallel; the BrazeClient's rate limiter still governs RPM.
+    // in parallel, bounded by FETCH_CONCURRENCY.
     let shared_names: Vec<&str> = id_index
         .keys()
         .map(String::as_str)

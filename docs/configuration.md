@@ -27,9 +27,6 @@ resources:
   catalog_schema:
     enabled: true
     path: catalogs/
-  catalog_items:
-    enabled: true
-    parallel_batches: 4
   content_block:
     enabled: true
     path: content_blocks/
@@ -95,17 +92,6 @@ skip a resource entirely in a workspace, set `enabled: false`.
 | `path` | path | `catalogs/` |
 
 Directory holding one `<catalog>/schema.yaml` per catalog.
-
-#### `catalog_items`
-
-| Field | Type | Default |
-|:---|:---|:---|
-| `enabled` | bool | `true` |
-| `parallel_batches` | integer | `4` |
-
-Items are read from `<catalogs.path>/<catalog>/items.csv`, streamed, and
-uploaded in batches of up to 50 rows (Braze API limit). `parallel_batches`
-caps how many batches are in flight at once.
 
 #### `content_block`
 

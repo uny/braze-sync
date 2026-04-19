@@ -26,9 +26,9 @@ pub mod init;
 pub mod validate;
 
 /// Maximum concurrent in-flight Braze GET requests for fan-out fetches.
-/// The shared rate limiter still governs RPM; this just bounds peak
-/// concurrency so a workspace with hundreds of resources doesn't open
-/// hundreds of sockets at once.
+/// Bounds peak concurrency so a workspace with hundreds of resources
+/// doesn't open hundreds of sockets at once. 429s are handled per-request
+/// by the HTTP client's Retry-After / backoff logic.
 pub(crate) const FETCH_CONCURRENCY: usize = 8;
 
 use crate::braze::error::BrazeApiError;
@@ -257,7 +257,6 @@ fn exit_code_for(err: &anyhow::Error) -> i32 {
                 | Error::YamlParse { .. }
                 | Error::CsvParse { .. }
                 | Error::InvalidFormat { .. }
-                | Error::CatalogItemSchemaMismatch { .. }
                 | Error::CustomAttributeCreateNotSupported { .. } => return 1,
             }
         }
