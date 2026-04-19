@@ -30,14 +30,21 @@ pub struct EmailTemplateSummary {
 
 impl BrazeClient {
     /// Braze has no `has_more`/cursor field, so we loop until a short page.
+    ///
+    /// `offset` is omitted on the first request: Braze rejects
+    /// `offset=0` with `400 "Offset must be greater than 0."` on this
+    /// endpoint (same wording as `/content_blocks/list`), reading
+    /// "strictly greater than 0" rather than "at least 0".
     pub async fn list_email_templates(&self) -> Result<Vec<EmailTemplateSummary>, BrazeApiError> {
         let mut all: Vec<EmailTemplateListEntry> = Vec::with_capacity(LIST_LIMIT as usize);
         let mut offset: u32 = 0;
         loop {
-            let req = self.get(&["templates", "email", "list"]).query(&[
-                ("limit", LIST_LIMIT.to_string()),
-                ("offset", offset.to_string()),
-            ]);
+            let mut req = self
+                .get(&["templates", "email", "list"])
+                .query(&[("limit", LIST_LIMIT.to_string())]);
+            if offset > 0 {
+                req = req.query(&[("offset", offset.to_string())]);
+            }
             let resp: EmailTemplateListResponse = self.send_json(req).await?;
             let page_len = resp.templates.len();
             if all.len().saturating_add(page_len) > LIST_SAFETY_CAP_ITEMS {
@@ -207,7 +214,9 @@ mod tests {
     use super::*;
     use crate::braze::test_client as make_client;
     use serde_json::json;
-    use wiremock::matchers::{body_json, header, method, path, query_param};
+    use wiremock::matchers::{
+        body_json, header, method, path, query_param, query_param_is_missing,
+    };
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
@@ -217,7 +226,7 @@ mod tests {
             .and(path("/templates/email/list"))
             .and(header("authorization", "Bearer test-key"))
             .and(query_param("limit", "1000"))
-            .and(query_param("offset", "0"))
+            .and(query_param_is_missing("offset"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "templates": [
                     {"email_template_id": "id-1", "template_name": "welcome"},
@@ -530,7 +539,7 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/templates/email/list"))
-            .and(query_param("offset", "0"))
+            .and(query_param_is_missing("offset"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "templates": page1 })))
             .mount(&server)
             .await;
