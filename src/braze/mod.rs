@@ -110,29 +110,23 @@ impl BrazeClient {
         url
     }
 
+    /// Attach bearer auth + JSON Accept to a raw request builder.
+    fn authed(&self, rb: RequestBuilder) -> RequestBuilder {
+        rb.bearer_auth(self.api_key.expose_secret())
+            .header(reqwest::header::ACCEPT, "application/json")
+    }
+
     /// Pre-authenticated GET builder for the given path segments.
     pub(crate) fn get(&self, segments: &[&str]) -> RequestBuilder {
-        let url = self.url_for(segments);
-        self.http
-            .get(url)
-            .bearer_auth(self.api_key.expose_secret())
-            .header(reqwest::header::ACCEPT, "application/json")
+        self.authed(self.http.get(self.url_for(segments)))
     }
 
     pub(crate) fn post(&self, segments: &[&str]) -> RequestBuilder {
-        let url = self.url_for(segments);
-        self.http
-            .post(url)
-            .bearer_auth(self.api_key.expose_secret())
-            .header(reqwest::header::ACCEPT, "application/json")
+        self.authed(self.http.post(self.url_for(segments)))
     }
 
     pub(crate) fn delete(&self, segments: &[&str]) -> RequestBuilder {
-        let url = self.url_for(segments);
-        self.http
-            .delete(url)
-            .bearer_auth(self.api_key.expose_secret())
-            .header(reqwest::header::ACCEPT, "application/json")
+        self.authed(self.http.delete(self.url_for(segments)))
     }
 
     /// Pre-authenticated GET for an absolute URL that must share origin
@@ -157,11 +151,7 @@ impl BrazeClient {
                 ),
             });
         }
-        Ok(self
-            .http
-            .get(parsed)
-            .bearer_auth(self.api_key.expose_secret())
-            .header(reqwest::header::ACCEPT, "application/json"))
+        Ok(self.authed(self.http.get(parsed)))
     }
 
     /// Execute `builder` with 429 retry, returning the raw response on
@@ -221,16 +211,18 @@ impl BrazeClient {
         Ok(resp.json::<T>().await?)
     }
 
-    /// Like [`Self::send_json`] but also returns the response headers.
-    /// Used by pagination paths that need the `Link` header.
-    pub(crate) async fn send_json_with_headers<T: serde::de::DeserializeOwned>(
+    /// Like [`Self::send_json`] but also returns the `Link: rel="next"`
+    /// URL if present — the only header paginated endpoints care about.
+    /// Parsing it before body deserialization avoids cloning the full
+    /// `HeaderMap` on every paginated request.
+    pub(crate) async fn send_json_with_next_link<T: serde::de::DeserializeOwned>(
         &self,
         builder: RequestBuilder,
-    ) -> Result<(T, reqwest::header::HeaderMap), BrazeApiError> {
+    ) -> Result<(T, Option<String>), BrazeApiError> {
         let resp = self.send_with_retry(builder).await?;
-        let headers = resp.headers().clone();
+        let next = parse_next_link(resp.headers());
         let body = resp.json::<T>().await?;
-        Ok((body, headers))
+        Ok((body, next))
     }
 
     /// Send `builder` and discard the response body. Used for endpoints
@@ -272,16 +264,11 @@ fn compute_backoff(resp: &reqwest::Response, attempt: u32, remaining_budget: Dur
     let wait = match parse_retry_after(resp) {
         Some(ra) => ra,
         None => {
-            // Full jitter: U(0, min(cap, base * 2^attempt)). Shift is
-            // capped so the 2^attempt term stays representable.
+            // `attempt.min(6)` keeps `1u32 << attempt` from overflowing;
+            // `BACKOFF_BASE * 64 = 32s` already exceeds `BACKOFF_CAP`.
             let shifted = BACKOFF_BASE.saturating_mul(1u32 << attempt.min(6));
             let capped = shifted.min(BACKOFF_CAP);
-            let millis = capped.as_millis() as u64;
-            if millis == 0 {
-                Duration::ZERO
-            } else {
-                Duration::from_millis(fastrand::u64(0..=millis))
-            }
+            Duration::from_millis(fastrand::u64(0..=capped.as_millis() as u64))
         }
     };
     wait.min(remaining_budget)
@@ -291,11 +278,8 @@ fn compute_backoff(resp: &reqwest::Response, attempt: u32, remaining_budget: Dur
 /// `rel="next"`, if present. Braze uses this for cursor-style pagination
 /// on `/custom_attributes`; the response body does not carry the cursor.
 pub(crate) fn parse_next_link(headers: &reqwest::header::HeaderMap) -> Option<String> {
-    // Servers may emit multiple `Link` header fields (one value per field)
-    // instead of comma-joining into one — iterate `get_all` so we don't
-    // miss a `rel="next"` in a later field. Braze cursors are opaque
-    // tokens without commas, so splitting each field on `,` is safe in
-    // practice.
+    // RFC 5988 allows repeated `Link` fields; `get_all` so a later
+    // `rel="next"` isn't missed. Braze cursors are comma-free in practice.
     for hv in headers.get_all(reqwest::header::LINK) {
         let Ok(raw) = hv.to_str() else { continue };
         for part in raw.split(',') {

@@ -16,7 +16,7 @@
 //! `deprecated` is derived from `status == STATUS_BLOCKLISTED`.
 
 use crate::braze::error::BrazeApiError;
-use crate::braze::{parse_next_link, BrazeClient};
+use crate::braze::BrazeClient;
 use crate::resource::{CustomAttribute, CustomAttributeType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -41,8 +41,8 @@ impl BrazeClient {
                 None => self.get(&["custom_attributes"]),
                 Some(url) => self.get_absolute(url)?,
             };
-            let (resp, headers): (CustomAttributeListResponse, _) =
-                self.send_json_with_headers(req).await?;
+            let (resp, next): (CustomAttributeListResponse, _) =
+                self.send_json_with_next_link(req).await?;
 
             // Dedup across pages — per-page checks would miss a name that
             // recurs on a later cursor page.
@@ -56,7 +56,7 @@ impl BrazeClient {
                 all.push(wire_to_domain(w));
             }
 
-            match parse_next_link(&headers) {
+            match next {
                 // Guard against a server that echoes the same cursor —
                 // without this the safety-cap is the only exit.
                 Some(url) if Some(&url) == next_url.as_ref() => {
@@ -114,9 +114,10 @@ fn wire_to_domain(w: CustomAttributeWire) -> CustomAttribute {
 fn wire_data_type_to_domain(raw: Option<&str>) -> CustomAttributeType {
     let lowered = raw.unwrap_or("").to_ascii_lowercase();
 
-    // `object_array` and `object array` are both observed in practice.
-    // Check the two-token form first so "object" doesn't eat "object array".
-    if lowered.starts_with("object array") || lowered.starts_with("object_array") {
+    // `"object array"` must be checked before the leading-token match:
+    // `split_whitespace().next()` would return `"object"` alone and
+    // mis-classify Object-Array attributes as Object.
+    if lowered.starts_with("object array") {
         return CustomAttributeType::ObjectArray;
     }
 
@@ -128,6 +129,7 @@ fn wire_data_type_to_domain(raw: Option<&str>) -> CustomAttributeType {
         "time" | "date" => CustomAttributeType::Time,
         "array" => CustomAttributeType::Array,
         "object" => CustomAttributeType::Object,
+        "object_array" => CustomAttributeType::ObjectArray,
         "" => {
             tracing::debug!("Braze data_type is absent, defaulting to string");
             CustomAttributeType::String
