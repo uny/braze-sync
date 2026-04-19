@@ -10,7 +10,6 @@ use clap::Args;
 use futures::stream::{StreamExt, TryStreamExt};
 use std::path::Path;
 
-use super::diff::resolve_catalog_names;
 use super::{selected_kinds, FETCH_CONCURRENCY};
 
 #[derive(Args, Debug, Default)]
@@ -46,13 +45,6 @@ pub async fn run(
                     .await
                     .context("exporting catalog_schema")?;
                 eprintln!("✓ catalog_schema: exported {n} resource(s)");
-                total_written += n;
-            }
-            ResourceKind::CatalogItems => {
-                let n = export_catalog_items(&client, &catalogs_root, args.name.as_deref())
-                    .await
-                    .context("exporting catalog_items")?;
-                eprintln!("✓ catalog_items: exported {n} catalog(s)");
                 total_written += n;
             }
             ResourceKind::ContentBlock => {
@@ -195,41 +187,6 @@ async fn export_email_templates(
         email_template_io::save_email_template(email_templates_root, et)?;
     }
     Ok(templates.len())
-}
-
-/// Export catalog items. Discovers catalogs via `list_catalogs` (to get
-/// names), then fetches items per catalog in parallel. With `--name`,
-/// fetches items for that single catalog only.
-async fn export_catalog_items(
-    client: &BrazeClient,
-    catalogs_root: &Path,
-    name_filter: Option<&str>,
-) -> anyhow::Result<usize> {
-    let catalog_names = resolve_catalog_names(client, name_filter).await?;
-
-    let mut stream = futures::stream::iter(catalog_names.into_iter().map(|name| {
-        let client = client.clone();
-        async move {
-            match client.list_catalog_items(&name).await {
-                Ok(items) => Ok(Some((name, items))),
-                Err(BrazeApiError::NotFound { .. }) => {
-                    eprintln!("⚠ catalog_items: catalog '{name}' not found in Braze");
-                    Ok(None)
-                }
-                Err(e) => Err(e),
-            }
-        }
-    }))
-    .buffer_unordered(FETCH_CONCURRENCY);
-
-    let mut count = 0;
-    while let Some(result) = stream.next().await {
-        if let Some((name, items)) = result? {
-            catalog_io::save_items(catalogs_root, &name, &items)?;
-            count += 1;
-        }
-    }
-    Ok(count)
 }
 
 async fn export_custom_attributes(

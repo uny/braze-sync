@@ -11,7 +11,7 @@
 //! accidentally change the public JSON contract. Conversion happens at
 //! the boundary in [`From`] impls.
 
-use crate::diff::catalog::{CatalogItemsDiff, CatalogSchemaDiff};
+use crate::diff::catalog::CatalogSchemaDiff;
 use crate::diff::content_block::ContentBlockDiff;
 use crate::diff::custom_attribute::{CustomAttributeDiff, CustomAttributeOp};
 use crate::diff::email_template::EmailTemplateDiff;
@@ -57,13 +57,6 @@ enum JsonDiffEntry {
         name: String,
         op: JsonOp,
         field_diffs: Vec<JsonFieldDiff>,
-    },
-    CatalogItems {
-        catalog_name: String,
-        added: usize,
-        modified: usize,
-        removed: usize,
-        unchanged: usize,
     },
     ContentBlock {
         name: String,
@@ -155,7 +148,6 @@ impl From<&ResourceDiff> for JsonDiffEntry {
     fn from(d: &ResourceDiff) -> Self {
         match d {
             ResourceDiff::CatalogSchema(c) => Self::from_catalog_schema(c),
-            ResourceDiff::CatalogItems(c) => Self::from_catalog_items(c),
             ResourceDiff::ContentBlock(c) => Self::from_content_block(c),
             ResourceDiff::EmailTemplate(c) => Self::from_email_template(c),
             ResourceDiff::CustomAttribute(c) => Self::from_custom_attribute(c),
@@ -169,16 +161,6 @@ impl JsonDiffEntry {
             name: c.name.clone(),
             op: top_op(&c.op),
             field_diffs: c.field_diffs.iter().filter_map(json_field_diff).collect(),
-        }
-    }
-
-    fn from_catalog_items(c: &CatalogItemsDiff) -> Self {
-        Self::CatalogItems {
-            catalog_name: c.catalog_name.clone(),
-            added: c.added_ids.len(),
-            modified: c.modified_ids.len(),
-            removed: c.removed_ids.len(),
-            unchanged: c.unchanged_count,
         }
     }
 

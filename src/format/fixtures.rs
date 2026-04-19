@@ -3,7 +3,7 @@
 //! Each fixture builds a [`DiffSummary`] in a specific shape so the
 //! corresponding TableFormatter / JsonFormatter snapshot is reproducible.
 
-use crate::diff::catalog::{diff_schema, CatalogItemsDiff};
+use crate::diff::catalog::diff_schema;
 use crate::diff::content_block::{diff as diff_content_block, ContentBlockDiff};
 use crate::diff::custom_attribute::{CustomAttributeDiff, CustomAttributeOp};
 use crate::diff::email_template::EmailTemplateDiff;
@@ -56,19 +56,6 @@ pub fn catalog_schema_unchanged() -> DiffSummary {
     let d = diff_schema(Some(&cat), Some(&cat)).unwrap();
     DiffSummary {
         diffs: vec![ResourceDiff::CatalogSchema(d)],
-    }
-}
-
-pub fn catalog_items_with_changes() -> DiffSummary {
-    let d = CatalogItemsDiff {
-        catalog_name: "cardiology".into(),
-        added_ids: vec!["af001".into(), "af002".into(), "af003".into()],
-        modified_ids: vec!["mod_x".into()],
-        removed_ids: vec!["legacy_y".into()],
-        unchanged_count: 9842,
-    };
-    DiffSummary {
-        diffs: vec![ResourceDiff::CatalogItems(d)],
     }
 }
 
@@ -129,15 +116,6 @@ pub fn all_kinds_mixed() -> DiffSummary {
     };
     let cs = diff_schema(Some(&cs_local), Some(&cs_remote)).unwrap();
 
-    // Catalog items: a small handful of changes.
-    let ci = CatalogItemsDiff {
-        catalog_name: "cardiology".into(),
-        added_ids: vec!["af001".into()],
-        modified_ids: vec![],
-        removed_ids: vec![],
-        unchanged_count: 100,
-    };
-
     // Content block: modified with a text diff.
     let cb_from = ContentBlock {
         name: "promo".into(),
@@ -190,7 +168,6 @@ pub fn all_kinds_mixed() -> DiffSummary {
     DiffSummary {
         diffs: vec![
             ResourceDiff::CatalogSchema(cs),
-            ResourceDiff::CatalogItems(ci),
             ResourceDiff::ContentBlock(cb),
             ResourceDiff::EmailTemplate(et),
             ResourceDiff::CustomAttribute(ca),

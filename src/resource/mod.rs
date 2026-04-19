@@ -1,4 +1,4 @@
-//! Domain types for the five resources braze-sync manages.
+//! Domain types for the four resources braze-sync manages.
 //!
 //! See IMPLEMENTATION.md §6 for the complete type contracts. Adding a new
 //! variant to [`Resource`] / [`ResourceKind`] forces every `match` site in
@@ -11,7 +11,7 @@ pub mod content_block;
 pub mod custom_attribute;
 pub mod email_template;
 
-pub use catalog::{Catalog, CatalogField, CatalogFieldType, CatalogItemRow, CatalogItems};
+pub use catalog::{Catalog, CatalogField, CatalogFieldType};
 pub use content_block::{ContentBlock, ContentBlockState};
 pub use custom_attribute::{CustomAttribute, CustomAttributeRegistry, CustomAttributeType};
 pub use email_template::EmailTemplate;
@@ -23,7 +23,6 @@ pub use email_template::EmailTemplate;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Resource {
     CatalogSchema(Catalog),
-    CatalogItems(CatalogItems),
     ContentBlock(ContentBlock),
     EmailTemplate(EmailTemplate),
     CustomAttributeRegistry(CustomAttributeRegistry),
@@ -35,7 +34,6 @@ pub enum Resource {
 #[clap(rename_all = "snake_case")]
 pub enum ResourceKind {
     CatalogSchema,
-    CatalogItems,
     ContentBlock,
     EmailTemplate,
     CustomAttribute,
@@ -45,7 +43,6 @@ impl ResourceKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::CatalogSchema => "catalog_schema",
-            Self::CatalogItems => "catalog_items",
             Self::ContentBlock => "content_block",
             Self::EmailTemplate => "email_template",
             Self::CustomAttribute => "custom_attribute",
@@ -55,7 +52,6 @@ impl ResourceKind {
     pub fn all() -> &'static [Self] {
         &[
             Self::CatalogSchema,
-            Self::CatalogItems,
             Self::ContentBlock,
             Self::EmailTemplate,
             Self::CustomAttribute,
@@ -67,7 +63,6 @@ impl Resource {
     pub fn kind(&self) -> ResourceKind {
         match self {
             Self::CatalogSchema(_) => ResourceKind::CatalogSchema,
-            Self::CatalogItems(_) => ResourceKind::CatalogItems,
             Self::ContentBlock(_) => ResourceKind::ContentBlock,
             Self::EmailTemplate(_) => ResourceKind::EmailTemplate,
             Self::CustomAttributeRegistry(_) => ResourceKind::CustomAttribute,

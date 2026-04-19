@@ -1,8 +1,0 @@
----
-source: src/format/snapshot_tests.rs
-expression: "TableFormatter.format(&fixtures::catalog_items_with_changes())"
----
-📦 Catalog Items: cardiology
-   + 3 added, ~ 1 modified, - 1 removed (in 9847 total)
-
-Summary: 1 changed, 0 in sync, 0 orphan, 1 destructive

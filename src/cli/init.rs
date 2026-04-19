@@ -206,9 +206,6 @@ resources:
   catalog_schema:
     enabled: true
     path: catalogs/
-  catalog_items:
-    enabled: true
-    parallel_batches: 4
   content_block:
     enabled: true
     path: content_blocks/

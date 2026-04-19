@@ -9,8 +9,8 @@ ignore = [
     # is attempting to reseed. We do not install any `log` logger
     # (we use `tracing`) and never call `rand::rng()` from logging
     # code paths, so this advisory does not apply to this binary.
-    # The advisory fires on rand 0.8.5 and 0.9.2, both pulled in
-    # transitively (governor / wiremock dev-dep). Re-check once those
-    # crates upgrade to rand >= 0.9.3 and drop this entry.
+    # The advisory fires on rand 0.8.5 and 0.9.2, pulled in transitively
+    # (wiremock dev-dep). Re-check once that crate upgrades to
+    # rand >= 0.9.3 and drop this entry.
     "RUSTSEC-2026-0097",
 ]

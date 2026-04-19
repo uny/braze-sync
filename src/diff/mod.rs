@@ -79,7 +79,6 @@ impl<T> DiffOp<T> {
 #[derive(Debug, Clone)]
 pub enum ResourceDiff {
     CatalogSchema(catalog::CatalogSchemaDiff),
-    CatalogItems(catalog::CatalogItemsDiff),
     ContentBlock(content_block::ContentBlockDiff),
     EmailTemplate(email_template::EmailTemplateDiff),
     CustomAttribute(custom_attribute::CustomAttributeDiff),
@@ -89,7 +88,6 @@ impl ResourceDiff {
     pub fn kind(&self) -> ResourceKind {
         match self {
             Self::CatalogSchema(_) => ResourceKind::CatalogSchema,
-            Self::CatalogItems(_) => ResourceKind::CatalogItems,
             Self::ContentBlock(_) => ResourceKind::ContentBlock,
             Self::EmailTemplate(_) => ResourceKind::EmailTemplate,
             Self::CustomAttribute(_) => ResourceKind::CustomAttribute,
@@ -99,7 +97,6 @@ impl ResourceDiff {
     pub fn name(&self) -> &str {
         match self {
             Self::CatalogSchema(d) => &d.name,
-            Self::CatalogItems(d) => &d.catalog_name,
             Self::ContentBlock(d) => &d.name,
             Self::EmailTemplate(d) => &d.name,
             Self::CustomAttribute(d) => &d.name,
@@ -109,7 +106,6 @@ impl ResourceDiff {
     pub fn has_changes(&self) -> bool {
         match self {
             Self::CatalogSchema(d) => d.has_changes(),
-            Self::CatalogItems(d) => d.has_changes(),
             Self::ContentBlock(d) => d.has_changes(),
             Self::EmailTemplate(d) => d.has_changes(),
             Self::CustomAttribute(d) => d.has_changes(),
@@ -131,7 +127,6 @@ impl ResourceDiff {
     pub fn has_destructive(&self) -> bool {
         match self {
             Self::CatalogSchema(d) => d.has_destructive(),
-            Self::CatalogItems(d) => d.has_destructive(),
             // Content Block / Email Template have no DELETE API. "Destructive"
             // for these resources is reframed as orphan tracking (§11.6); the
             // apply path performs no destructive call.

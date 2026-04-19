@@ -5,9 +5,6 @@ expression: "TableFormatter.format(&fixtures::all_kinds_mixed())"
 📋 Catalog Schema: cardiology
    + field: score (number)
 
-📦 Catalog Items: cardiology
-   + 1 added, ~ 0 modified, - 0 removed (in 101 total)
-
 📝 Content Block: promo
    ~ content changed (+5 -3)
 
@@ -18,4 +15,4 @@ expression: "TableFormatter.format(&fixtures::all_kinds_mixed())"
 🏷  Custom Attribute: marketing_segment
    ~ deprecated: false → true
 
-Summary: 5 changed, 0 in sync, 0 orphan, 0 destructive
+Summary: 4 changed, 0 in sync, 0 orphan, 0 destructive

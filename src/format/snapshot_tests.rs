@@ -54,20 +54,6 @@ fn catalog_schema_unchanged_json() {
 }
 
 // =====================================================================
-// catalog items
-// =====================================================================
-
-#[test]
-fn catalog_items_table() {
-    insta::assert_snapshot!(TableFormatter.format(&fixtures::catalog_items_with_changes()));
-}
-
-#[test]
-fn catalog_items_json() {
-    insta::assert_snapshot!(JsonFormatter.format(&fixtures::catalog_items_with_changes()));
-}
-
-// =====================================================================
 // content block added (local-only)
 // =====================================================================
 

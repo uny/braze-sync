@@ -4,7 +4,7 @@
 //! layout shown in IMPLEMENTATION.md §7.4. v0.1.0 ships without ANSI
 //! colors; `--no-color` is a no-op until a future cosmetic pass.
 
-use crate::diff::catalog::{CatalogItemsDiff, CatalogSchemaDiff};
+use crate::diff::catalog::CatalogSchemaDiff;
 use crate::diff::content_block::ContentBlockDiff;
 use crate::diff::custom_attribute::{CustomAttributeDiff, CustomAttributeOp};
 use crate::diff::email_template::EmailTemplateDiff;
@@ -54,7 +54,6 @@ fn render_one(out: &mut String, diff: &ResourceDiff) {
 
     match diff {
         ResourceDiff::CatalogSchema(d) => render_catalog_schema(out, d),
-        ResourceDiff::CatalogItems(d) => render_catalog_items(out, d),
         ResourceDiff::ContentBlock(d) => render_content_block(out, d),
         ResourceDiff::EmailTemplate(d) => render_email_template(out, d),
         ResourceDiff::CustomAttribute(d) => render_custom_attribute(out, d),
@@ -64,7 +63,6 @@ fn render_one(out: &mut String, diff: &ResourceDiff) {
 fn kind_icon(kind: ResourceKind) -> &'static str {
     match kind {
         ResourceKind::CatalogSchema => "📋",
-        ResourceKind::CatalogItems => "📦",
         ResourceKind::ContentBlock => "📝",
         ResourceKind::EmailTemplate => "📧",
         ResourceKind::CustomAttribute => "🏷 ",
@@ -74,7 +72,6 @@ fn kind_icon(kind: ResourceKind) -> &'static str {
 fn kind_label(kind: ResourceKind) -> &'static str {
     match kind {
         ResourceKind::CatalogSchema => "Catalog Schema",
-        ResourceKind::CatalogItems => "Catalog Items",
         ResourceKind::ContentBlock => "Content Block",
         ResourceKind::EmailTemplate => "Email Template",
         ResourceKind::CustomAttribute => "Custom Attribute",
@@ -111,18 +108,6 @@ fn render_catalog_schema(out: &mut String, d: &CatalogSchemaDiff) {
             DiffOp::Unchanged => {}
         }
     }
-}
-
-fn render_catalog_items(out: &mut String, d: &CatalogItemsDiff) {
-    let total = d.added_ids.len() + d.modified_ids.len() + d.removed_ids.len() + d.unchanged_count;
-    let _ = writeln!(
-        out,
-        "   + {} added, ~ {} modified, - {} removed (in {} total)",
-        d.added_ids.len(),
-        d.modified_ids.len(),
-        d.removed_ids.len(),
-        total,
-    );
 }
 
 fn render_content_block(out: &mut String, d: &ContentBlockDiff) {
