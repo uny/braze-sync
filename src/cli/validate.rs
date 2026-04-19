@@ -191,6 +191,10 @@ fn validate_catalog_schemas(
             }
         };
 
+        // Exclude is checked AFTER parse so a malformed file still
+        // surfaces — excludes mean "don't enforce rules on this name",
+        // not "silence this file". A broken YAML is a workspace problem
+        // regardless of whether the resource is managed out of band.
         if crate::config::is_excluded(&cat.name, excludes) {
             continue;
         }

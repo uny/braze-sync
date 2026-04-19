@@ -27,7 +27,7 @@ use regex_lite::Regex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use super::{selected_kinds, FETCH_CONCURRENCY};
+use super::{selected_kinds, warn_if_name_excluded, FETCH_CONCURRENCY};
 
 #[derive(Args, Debug)]
 pub struct DiffArgs {
@@ -60,6 +60,9 @@ pub async fn run(
 
     let mut summary = DiffSummary::default();
     for kind in kinds {
+        if warn_if_name_excluded(kind, args.name.as_deref(), resolved.excludes_for(kind)) {
+            continue;
+        }
         match kind {
             ResourceKind::CatalogSchema => {
                 let diffs = compute_catalog_schema_diffs(

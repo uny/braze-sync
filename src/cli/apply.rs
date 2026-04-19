@@ -28,7 +28,7 @@ use super::diff::{
     compute_catalog_schema_diffs, compute_content_block_plan, compute_custom_attribute_diffs,
     compute_email_template_plan,
 };
-use super::selected_kinds;
+use super::{selected_kinds, warn_if_name_excluded};
 
 #[derive(Args, Debug)]
 pub struct ApplyArgs {
@@ -76,6 +76,9 @@ pub async fn run(
     let mut content_block_id_index: Option<ContentBlockIdIndex> = None;
     let mut email_template_id_index: Option<EmailTemplateIdIndex> = None;
     for kind in kinds {
+        if warn_if_name_excluded(kind, args.name.as_deref(), resolved.excludes_for(kind)) {
+            continue;
+        }
         match kind {
             ResourceKind::CatalogSchema => {
                 let diffs = compute_catalog_schema_diffs(

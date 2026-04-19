@@ -11,7 +11,7 @@ use futures::stream::{StreamExt, TryStreamExt};
 use regex_lite::Regex;
 use std::path::Path;
 
-use super::{selected_kinds, FETCH_CONCURRENCY};
+use super::{selected_kinds, warn_if_name_excluded, FETCH_CONCURRENCY};
 
 #[derive(Args, Debug, Default)]
 pub struct ExportArgs {
@@ -40,6 +40,14 @@ pub async fn run(
 
     let mut total_written: usize = 0;
     for kind in kinds {
+        // `custom_attribute` ignores `--name` (registry is a single file),
+        // so skipping by exclude match before dispatching wouldn't fit —
+        // handle it per-arm alongside the existing --name warning.
+        if !matches!(kind, ResourceKind::CustomAttribute)
+            && warn_if_name_excluded(kind, args.name.as_deref(), resolved.excludes_for(kind))
+        {
+            continue;
+        }
         match kind {
             ResourceKind::CatalogSchema => {
                 let n = export_catalog_schemas(
@@ -141,13 +149,11 @@ async fn export_content_blocks(
     excludes: &[Regex],
 ) -> anyhow::Result<usize> {
     let summaries = client.list_content_blocks().await?;
-    let targets: Vec<_> = match name_filter {
-        Some(name) => summaries.into_iter().filter(|s| s.name == name).collect(),
-        None => summaries
-            .into_iter()
-            .filter(|s| !is_excluded(&s.name, excludes))
-            .collect(),
-    };
+    let targets: Vec<_> = summaries
+        .into_iter()
+        .filter(|s| name_filter.is_none_or(|n| s.name == n))
+        .filter(|s| !is_excluded(&s.name, excludes))
+        .collect();
 
     if targets.is_empty() {
         if let Some(name) = name_filter {
@@ -185,13 +191,11 @@ async fn export_email_templates(
     excludes: &[Regex],
 ) -> anyhow::Result<usize> {
     let summaries = client.list_email_templates().await?;
-    let targets: Vec<_> = match name_filter {
-        Some(name) => summaries.into_iter().filter(|s| s.name == name).collect(),
-        None => summaries
-            .into_iter()
-            .filter(|s| !is_excluded(&s.name, excludes))
-            .collect(),
-    };
+    let targets: Vec<_> = summaries
+        .into_iter()
+        .filter(|s| name_filter.is_none_or(|n| s.name == n))
+        .filter(|s| !is_excluded(&s.name, excludes))
+        .collect();
 
     if targets.is_empty() {
         if let Some(name) = name_filter {

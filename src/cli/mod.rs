@@ -193,6 +193,30 @@ async fn dispatch(cli: &Cli, resolved: ResolvedConfig, config_dir: &Path) -> any
     }
 }
 
+/// When `--name <n>` matches `kind`'s `exclude_patterns`, emit a warning
+/// and return `true` so the caller can skip the kind. Keeps the
+/// "excludes always win" invariant explicit at the CLI boundary so a
+/// user who names an excluded resource isn't left staring at a silently
+/// empty result.
+pub(crate) fn warn_if_name_excluded(
+    kind: ResourceKind,
+    name: Option<&str>,
+    excludes: &[regex_lite::Regex],
+) -> bool {
+    let Some(name) = name else {
+        return false;
+    };
+    if crate::config::is_excluded(name, excludes) {
+        eprintln!(
+            "⚠ {}: '{}' matches exclude_patterns; skipping",
+            kind.as_str(),
+            name
+        );
+        return true;
+    }
+    false
+}
+
 /// Expand an optional resource filter to the list of kinds to process,
 /// excluding any kinds disabled in the config.
 pub(crate) fn selected_kinds(

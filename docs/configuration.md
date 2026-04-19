@@ -150,6 +150,14 @@ subset as `naming.*_name_pattern`). Bad regexes hard-error at config
 load time — not at first use — so a typo in a pattern does not
 silently become "matches nothing".
 
+> **Anchoring:** patterns are substring-matched, so `hoge` will also
+> match `foo_hoge_bar`. Anchor with `^…$` when you want exact-name
+> equality (see the example below).
+
+If `--name <n>` is passed on the command line and `<n>` matches an
+exclude pattern, the CLI prints a warning and skips the kind for that
+invocation. Excludes always win over `--name`.
+
 ```yaml
 custom_attribute:
   enabled: true
