@@ -9,7 +9,9 @@ file formats, JSON output, exit codes) for the full v1.x line.
 
 ## [Unreleased]
 
-### Breaking changes (targeted for v0.8.0)
+## [0.8.0] — 2026-04-19
+
+### Breaking changes
 
 - **Removed `catalog_items` support.** braze-sync now exclusively
   manages Braze configuration (schemas, content blocks, email
@@ -37,7 +39,7 @@ disk are no longer read or written — delete them.
 braze-sync no longer throttles proactively; Braze's own 429 signal is
 the only pacing mechanism.
 
-### Added (unreleased)
+### Added
 
 - `custom_attribute` now uses the Braze-verified wire schema
   (`attributes`/`name`/`status`) and follows RFC 5988 `Link: rel="next"`
@@ -45,10 +47,18 @@ the only pacing mechanism.
   workspaces where attributes carried suffixed type strings like
   `"String (Automatically Detected)"` or `status: "Blocklisted"`.
 - `content_blocks/list` and `templates/email/list` now use offset
-  pagination with `limit=1000` (Braze max). Workspaces with over 100
-  entries no longer hard-error.
+  pagination with `limit=1000` (the Braze documented max). Workspaces
+  with more than 100 entries no longer hard-error on `diff`/`apply`.
 - `CustomAttributeType::Object` / `ObjectArray` domain variants for
   the `Object` and `Object Array` types that Braze returns in practice.
+- `exclude_patterns: [<regex>, ...]` on every resource config. Names
+  matching any pattern are skipped by `export`, `diff`, `apply`, and
+  `validate`, so Braze-reserved attributes (`_unset`), developer
+  leftovers (`hoge`, `hack`), and legacy camelCase duplicates stop
+  surfacing as drift. Patterns compile at config load time (bad regex
+  → hard error before the command runs).
+- New `docs/scope-boundaries.md` — canonical "configuration vs runtime
+  data" reference.
 
 ## [0.7.0] — 2026-04-19
 

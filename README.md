@@ -8,7 +8,7 @@ synchronize it to Braze with the same workflow you'd use for
 detection in CI, and an `--allow-destructive` gate that has to be
 crossed explicitly before anything is dropped.
 
-## Status: v0.8.0-prep (4 resources + init)
+## Status: v0.8.0 (4 resources + init)
 
 braze-sync manages Braze **configuration** as code. The four managed
 resource kinds are:
