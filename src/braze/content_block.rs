@@ -23,14 +23,18 @@ pub struct ContentBlockSummary {
 
 impl BrazeClient {
     /// Braze has no `has_more`/cursor field, so we loop until a short page.
+    /// `offset` is omitted on the first request because this endpoint rejects
+    /// `offset=0` with `400 "Offset must be greater than 0."`.
     pub async fn list_content_blocks(&self) -> Result<Vec<ContentBlockSummary>, BrazeApiError> {
         let mut all: Vec<ContentBlockListEntry> = Vec::with_capacity(LIST_LIMIT as usize);
         let mut offset: u32 = 0;
         loop {
-            let req = self.get(&["content_blocks", "list"]).query(&[
-                ("limit", LIST_LIMIT.to_string()),
-                ("offset", offset.to_string()),
-            ]);
+            let mut req = self
+                .get(&["content_blocks", "list"])
+                .query(&[("limit", LIST_LIMIT.to_string())]);
+            if offset > 0 {
+                req = req.query(&[("offset", offset.to_string())]);
+            }
             let resp: ContentBlockListResponse = self.send_json(req).await?;
             let page_len = resp.content_blocks.len();
             if all.len().saturating_add(page_len) > LIST_SAFETY_CAP_ITEMS {
@@ -208,7 +212,9 @@ mod tests {
     use crate::braze::test_client as make_client;
     use reqwest::StatusCode;
     use serde_json::json;
-    use wiremock::matchers::{body_json, header, method, path, query_param};
+    use wiremock::matchers::{
+        body_json, header, method, path, query_param, query_param_is_missing,
+    };
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
@@ -218,7 +224,7 @@ mod tests {
             .and(path("/content_blocks/list"))
             .and(header("authorization", "Bearer test-key"))
             .and(query_param("limit", "1000"))
-            .and(query_param("offset", "0"))
+            .and(query_param_is_missing("offset"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "content_blocks": [
                     {"content_block_id": "id-1", "name": "promo"},
@@ -536,7 +542,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/content_blocks/list"))
-            .and(query_param("offset", "0"))
+            .and(query_param_is_missing("offset"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "content_blocks": [
                     {"content_block_id": "id-1", "name": "a"},
@@ -595,7 +601,7 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/content_blocks/list"))
-            .and(query_param("offset", "0"))
+            .and(query_param_is_missing("offset"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(json!({ "content_blocks": page1 })),
             )
