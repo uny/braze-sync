@@ -9,6 +9,47 @@ file formats, JSON output, exit codes) for the full v1.x line.
 
 ## [Unreleased]
 
+### Breaking changes (targeted for v0.8.0)
+
+- **Removed `catalog_items` support.** braze-sync now exclusively
+  manages Braze configuration (schemas, content blocks, email
+  templates, custom attribute registry). Catalog items are runtime
+  data and are out of scope — see
+  [`docs/scope-boundaries.md`](docs/scope-boundaries.md).
+- **Removed the client-side rate limiter.** The `governor` dependency
+  is gone; braze-sync now reacts to 429 + `Retry-After` instead of
+  pre-throttling. The 429 retry loop uses a time budget + exponential
+  backoff with full jitter, and honors `Retry-After` as integer
+  seconds or HTTP-date.
+- **Config hard-errors on removed keys.** Configs that still carry
+  `defaults.rate_limit_per_minute`, `environments.<env>.rate_limit_per_minute`,
+  or a `resources.catalog_items:` section will fail to load.
+
+### Migration
+
+**If you were syncing catalog items:** use the Braze REST API
+(`/catalogs/{name}/items`) directly from your data pipeline, Cloud
+Functions, or a dedicated ETL job. Remove the `catalog_items:` section
+from `braze-sync.config.yaml`. Any `catalogs/*/items.csv` files on
+disk are no longer read or written — delete them.
+
+**If your config specified `rate_limit_per_minute`:** delete the key.
+braze-sync no longer throttles proactively; Braze's own 429 signal is
+the only pacing mechanism.
+
+### Added (unreleased)
+
+- `custom_attribute` now uses the Braze-verified wire schema
+  (`attributes`/`name`/`status`) and follows RFC 5988 `Link: rel="next"`
+  pagination through every page. Fixes `exported 0 attribute(s)` on
+  workspaces where attributes carried suffixed type strings like
+  `"String (Automatically Detected)"` or `status: "Blocklisted"`.
+- `content_blocks/list` and `templates/email/list` now use offset
+  pagination with `limit=1000` (Braze max). Workspaces with over 100
+  entries no longer hard-error.
+- `CustomAttributeType::Object` / `ObjectArray` domain variants for
+  the `Object` and `Object Array` types that Braze returns in practice.
+
 ## [0.7.0] — 2026-04-19
 
 ### Added

@@ -8,11 +8,20 @@ synchronize it to Braze with the same workflow you'd use for
 detection in CI, and an `--allow-destructive` gate that has to be
 crossed explicitly before anything is dropped.
 
-## Status: v0.6.0 (all 5 resources + init)
+## Status: v0.8.0-prep (4 resources + init)
 
-All five v1.0 resource kinds are implemented end-to-end: **Catalog
-Schema**, **Catalog Items**, **Content Block**, **Email Template**, and
-**Custom Attribute** (registry mode).
+braze-sync manages Braze **configuration** as code. The four managed
+resource kinds are:
+
+- **Catalog Schema** (field definitions, types, constraints)
+- **Content Block** (reusable Liquid fragments)
+- **Email Template** (HTML/Liquid templates)
+- **Custom Attribute** registry (definition-level; deprecation toggle)
+
+**Out of scope**: runtime data like catalog **items**, user attribute
+values, events, and campaigns. Those have their own systems of record;
+use the Braze REST API or data pipelines directly. See
+[docs/scope-boundaries.md](docs/scope-boundaries.md).
 
 | Command | What it does |
 |:---|:---|
