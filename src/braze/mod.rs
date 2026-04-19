@@ -1,25 +1,31 @@
 //! Braze REST API client.
 //!
 //! Layered:
-//! - [`rate_limit`]: token-bucket throttle (governor)
 //! - [`error`]: typed [`error::BrazeApiError`] variants
 //! - [`catalog`] (and sibling modules per resource):
 //!   per-endpoint async methods written as `impl BrazeClient { ... }`
 //!   blocks
 //!
 //! Every request goes through [`BrazeClient::send_json`] so authentication,
-//! `User-Agent`, rate limiting, and 429 retry behavior are defined exactly
-//! once. See IMPLEMENTATION.md §8.
+//! `User-Agent`, and 429 retry behavior are defined exactly once.
+//!
+//! ## Rate limiting philosophy
+//!
+//! braze-sync does **not** carry a client-side predictive rate limiter.
+//! Braze is authoritative on its own quotas (and shares pools across
+//! endpoints in ways the client can't know), so we react to 429 +
+//! `Retry-After` instead of pre-throttling. The retry loop below is the
+//! only pacing mechanism: it honors `Retry-After` exactly when present,
+//! does exponential backoff with full jitter when absent, and gives up
+//! when either a total-time budget or a hard attempt cap is exceeded.
 
 pub mod catalog;
 pub mod content_block;
 pub mod custom_attribute;
 pub mod email_template;
 pub mod error;
-pub mod rate_limit;
 
 use crate::braze::error::BrazeApiError;
-use crate::braze::rate_limit::RateLimiter;
 use reqwest::{Client, RequestBuilder, StatusCode};
 use secrecy::{ExposeSecret, SecretString};
 use std::sync::Arc;
@@ -27,18 +33,30 @@ use std::time::Duration;
 use url::Url;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_RETRIES: u32 = 3;
-const DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(2);
 
-/// Cheap-to-clone Braze API client. Internally Arc-shares the API key,
-/// the rate limiter, and `reqwest::Client`'s connection pool, so cloning
-/// for a parallel batch is essentially free.
+/// Cumulative sleep budget for 429 retries on a single logical request.
+/// Once total backoff sleep crosses this, the request fails fast so the
+/// caller can surface a user-visible error instead of hanging.
+const RETRY_BUDGET: Duration = Duration::from_secs(60);
+
+/// Hard attempt cap. Protects against a degenerate server returning
+/// `Retry-After: 0` forever (which would never consume the time budget
+/// because each sleep is zero).
+const RETRY_MAX_ATTEMPTS: u32 = 100;
+
+/// Exponential-backoff parameters. Used only when the 429 response has
+/// no `Retry-After` header.
+const BACKOFF_BASE: Duration = Duration::from_millis(500);
+const BACKOFF_CAP: Duration = Duration::from_secs(10);
+
+/// Cheap-to-clone Braze API client. Internally Arc-shares the API key
+/// and `reqwest::Client`'s connection pool, so cloning for a parallel
+/// batch is essentially free.
 #[derive(Clone)]
 pub struct BrazeClient {
     http: Client,
     base_url: Url,
     api_key: Arc<SecretString>,
-    limiter: Arc<RateLimiter>,
 }
 
 // Hand-written Debug to be 100% certain the api key never lands in
@@ -54,14 +72,10 @@ impl std::fmt::Debug for BrazeClient {
 
 impl BrazeClient {
     pub fn from_resolved(resolved: &crate::config::ResolvedConfig) -> Self {
-        Self::new(
-            resolved.api_endpoint.clone(),
-            resolved.api_key.clone(),
-            resolved.rate_limit_per_minute,
-        )
+        Self::new(resolved.api_endpoint.clone(), resolved.api_key.clone())
     }
 
-    pub fn new(base_url: Url, api_key: SecretString, rpm: u32) -> Self {
+    pub fn new(base_url: Url, api_key: SecretString) -> Self {
         let http = Client::builder()
             .user_agent(concat!("braze-sync/", env!("CARGO_PKG_VERSION")))
             .timeout(REQUEST_TIMEOUT)
@@ -71,7 +85,6 @@ impl BrazeClient {
             http,
             base_url,
             api_key: Arc::new(api_key),
-            limiter: Arc::new(RateLimiter::new(rpm)),
         }
     }
 
@@ -122,18 +135,53 @@ impl BrazeClient {
             .header(reqwest::header::ACCEPT, "application/json")
     }
 
-    /// Execute `builder` with rate-limit acquire + 429 retry, returning
-    /// the raw response on success or a typed error on failure. Shared
-    /// transport layer used by both [`Self::send_json`] and
-    /// [`Self::send_ok`] so the retry / auth-mapping policy lives in
-    /// exactly one place.
+    /// Pre-authenticated GET for an absolute URL that must share origin
+    /// with `base_url`. Used by pagination paths that receive the URL of
+    /// the next page in a `Link: rel="next"` header. Refuses cross-origin
+    /// URLs so a compromised or misconfigured upstream can't redirect us
+    /// to attacker-controlled hosts carrying our bearer token.
+    pub(crate) fn get_absolute(&self, url: &str) -> Result<RequestBuilder, BrazeApiError> {
+        let parsed = Url::parse(url).map_err(|e| BrazeApiError::Http {
+            status: StatusCode::BAD_GATEWAY,
+            body: format!("malformed pagination URL {url:?}: {e}"),
+        })?;
+        let same_origin = parsed.scheme() == self.base_url.scheme()
+            && parsed.host_str() == self.base_url.host_str()
+            && parsed.port_or_known_default() == self.base_url.port_or_known_default();
+        if !same_origin {
+            return Err(BrazeApiError::Http {
+                status: StatusCode::BAD_GATEWAY,
+                body: format!(
+                    "refusing cross-origin pagination URL {url:?} (base is {})",
+                    self.base_url
+                ),
+            });
+        }
+        Ok(self
+            .http
+            .get(parsed)
+            .bearer_auth(self.api_key.expose_secret())
+            .header(reqwest::header::ACCEPT, "application/json"))
+    }
+
+    /// Execute `builder` with 429 retry, returning the raw response on
+    /// success or a typed error on failure. Shared transport layer used
+    /// by both [`Self::send_json`] and [`Self::send_ok`] so the retry /
+    /// auth-mapping policy lives in exactly one place.
+    ///
+    /// Retry policy: honor `Retry-After` (integer seconds or HTTP-date)
+    /// when present; otherwise exponential backoff with full jitter
+    /// (`BACKOFF_BASE * 2^attempt`, capped at `BACKOFF_CAP`). Give up
+    /// when cumulative sleep exceeds [`RETRY_BUDGET`] or attempts exceed
+    /// [`RETRY_MAX_ATTEMPTS`] (the latter only protects against servers
+    /// that return `Retry-After: 0` forever).
     async fn send_with_retry(
         &self,
         builder: RequestBuilder,
     ) -> Result<reqwest::Response, BrazeApiError> {
         let mut attempt: u32 = 0;
+        let mut elapsed = Duration::ZERO;
         loop {
-            self.limiter.acquire().await;
             let req = builder
                 .try_clone()
                 .expect("non-streaming requests are cloneable");
@@ -144,14 +192,16 @@ impl BrazeClient {
                 return Ok(resp);
             }
             match status {
-                StatusCode::TOO_MANY_REQUESTS if attempt < MAX_RETRIES => {
-                    let wait = parse_retry_after(&resp).unwrap_or(DEFAULT_RETRY_AFTER);
-                    tracing::warn!(?wait, attempt, "429 received, backing off");
-                    tokio::time::sleep(wait).await;
-                    attempt += 1;
-                }
                 StatusCode::TOO_MANY_REQUESTS => {
-                    return Err(BrazeApiError::RateLimitExhausted);
+                    if attempt >= RETRY_MAX_ATTEMPTS || elapsed >= RETRY_BUDGET {
+                        return Err(BrazeApiError::RateLimitExhausted);
+                    }
+                    let remaining = RETRY_BUDGET.saturating_sub(elapsed);
+                    let wait = compute_backoff(&resp, attempt, remaining);
+                    tracing::warn!(?wait, attempt, ?elapsed, "429 received, backing off");
+                    tokio::time::sleep(wait).await;
+                    elapsed = elapsed.saturating_add(wait);
+                    attempt += 1;
                 }
                 StatusCode::UNAUTHORIZED => return Err(BrazeApiError::Unauthorized),
                 _ => {
@@ -171,6 +221,18 @@ impl BrazeClient {
         Ok(resp.json::<T>().await?)
     }
 
+    /// Like [`Self::send_json`] but also returns the response headers.
+    /// Used by pagination paths that need the `Link` header.
+    pub(crate) async fn send_json_with_headers<T: serde::de::DeserializeOwned>(
+        &self,
+        builder: RequestBuilder,
+    ) -> Result<(T, reqwest::header::HeaderMap), BrazeApiError> {
+        let resp = self.send_with_retry(builder).await?;
+        let headers = resp.headers().clone();
+        let body = resp.json::<T>().await?;
+        Ok((body, headers))
+    }
+
     /// Send `builder` and discard the response body. Used for endpoints
     /// whose only meaningful output is the HTTP status (POST add field,
     /// DELETE field). Drains the body so the connection can return to
@@ -182,19 +244,72 @@ impl BrazeClient {
     }
 }
 
-/// Parse a `Retry-After` header as integer seconds. HTTP-date format
-/// (RFC 7231 §7.1.3) is not handled and falls through to `None`, which
-/// the caller maps to `DEFAULT_RETRY_AFTER`. Braze only sends seconds
-/// in practice; if that changes, extend this function rather than adding
-/// a full HTTP-date parser.
+/// Parse a `Retry-After` header. Supports both integer seconds (the
+/// common case for Braze) and RFC 7231 §7.1.3 HTTP-date (IMF-fixdate /
+/// RFC 2822). Returns `None` if the header is missing or unparseable.
 fn parse_retry_after(resp: &reqwest::Response) -> Option<Duration> {
-    resp.headers()
+    let raw = resp
+        .headers()
         .get(reqwest::header::RETRY_AFTER)?
         .to_str()
-        .ok()?
-        .parse::<u64>()
-        .ok()
-        .map(Duration::from_secs)
+        .ok()?;
+    if let Ok(secs) = raw.parse::<u64>() {
+        return Some(Duration::from_secs(secs));
+    }
+    // HTTP-date. `parse_from_rfc2822` accepts IMF-fixdate (which is a
+    // strict subset). Negative deltas (date already past) collapse to 0.
+    let dt = chrono::DateTime::parse_from_rfc2822(raw).ok()?;
+    let delta = dt.timestamp().saturating_sub(chrono::Utc::now().timestamp());
+    Some(Duration::from_secs(delta.max(0) as u64))
+}
+
+/// Compute the sleep duration before the next retry. Clamped to
+/// `remaining_budget` so a degenerate server can't push a single sleep
+/// past the retry budget.
+fn compute_backoff(
+    resp: &reqwest::Response,
+    attempt: u32,
+    remaining_budget: Duration,
+) -> Duration {
+    let wait = match parse_retry_after(resp) {
+        Some(ra) => ra,
+        None => {
+            // Full jitter: U(0, min(cap, base * 2^attempt)). Shift is
+            // capped so the 2^attempt term stays representable.
+            let shifted = BACKOFF_BASE.saturating_mul(1u32 << attempt.min(6));
+            let capped = shifted.min(BACKOFF_CAP);
+            let millis = capped.as_millis() as u64;
+            if millis == 0 {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(fastrand::u64(0..=millis))
+            }
+        }
+    };
+    wait.min(remaining_budget)
+}
+
+/// Parse RFC 5988 Link header and return the URL associated with
+/// `rel="next"`, if present. Braze uses this for cursor-style pagination
+/// on `/custom_attributes`; the response body does not carry the cursor.
+pub(crate) fn parse_next_link(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    let raw = headers.get(reqwest::header::LINK)?.to_str().ok()?;
+    for part in raw.split(',') {
+        let part = part.trim();
+        let Some((url_part, params)) = part.split_once(';') else {
+            continue;
+        };
+        let has_next = params
+            .split(';')
+            .map(str::trim)
+            .any(|p| p.eq_ignore_ascii_case(r#"rel="next""#));
+        if !has_next {
+            continue;
+        }
+        let url = url_part.trim().trim_start_matches('<').trim_end_matches('>');
+        return Some(url.to_string());
+    }
+    None
 }
 
 /// Check whether a list response was truncated and return a
@@ -282,7 +397,190 @@ pub(crate) fn test_client(server: &wiremock::MockServer) -> BrazeClient {
     BrazeClient::new(
         Url::parse(&server.uri()).unwrap(),
         SecretString::from("test-key".to_string()),
-        // Very high rpm so the limiter is effectively a no-op in tests.
-        10_000,
     )
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use chrono::{Duration as ChronoDuration, Utc};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // Build a reqwest Response with only the specified Retry-After header
+    // set, without going through the network. Used to exercise the pure
+    // parsing path of `parse_retry_after`.
+    async fn response_with_retry_after(val: &str) -> reqwest::Response {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/r"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", val))
+            .mount(&server)
+            .await;
+        reqwest::get(format!("{}/r", server.uri())).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn retry_after_parses_integer_seconds() {
+        let resp = response_with_retry_after("5").await;
+        assert_eq!(parse_retry_after(&resp), Some(Duration::from_secs(5)));
+    }
+
+    #[tokio::test]
+    async fn retry_after_parses_http_date() {
+        let future = Utc::now() + ChronoDuration::seconds(10);
+        // `%a, %d %b %Y %H:%M:%S GMT` is IMF-fixdate, accepted by rfc2822.
+        let formatted = future.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+        let resp = response_with_retry_after(&formatted).await;
+        let d = parse_retry_after(&resp).expect("should parse HTTP-date");
+        // Allow ±2s for scheduler/clock drift in CI.
+        assert!(
+            d >= Duration::from_secs(8) && d <= Duration::from_secs(12),
+            "expected ~10s, got {d:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_after_past_http_date_clamps_to_zero() {
+        let past = Utc::now() - ChronoDuration::seconds(30);
+        let formatted = past.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+        let resp = response_with_retry_after(&formatted).await;
+        assert_eq!(parse_retry_after(&resp), Some(Duration::ZERO));
+    }
+
+    #[tokio::test]
+    async fn retry_after_unparseable_returns_none() {
+        let resp = response_with_retry_after("not a date").await;
+        assert_eq!(parse_retry_after(&resp), None);
+    }
+
+    #[tokio::test]
+    async fn backoff_without_header_falls_back_to_exponential_jitter() {
+        // No Retry-After → full-jitter draw in [0, cap).
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/r"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&server)
+            .await;
+        let resp = reqwest::get(format!("{}/r", server.uri())).await.unwrap();
+
+        // attempt=0 → min(cap, base*1)=500ms → jitter in [0, 500ms].
+        for _ in 0..20 {
+            let w = compute_backoff(&resp, 0, Duration::from_secs(60));
+            assert!(w <= Duration::from_millis(500), "attempt=0 bound: {w:?}");
+        }
+        // attempt=10 → saturates to cap (10s) → jitter in [0, 10s].
+        for _ in 0..20 {
+            let w = compute_backoff(&resp, 10, Duration::from_secs(60));
+            assert!(w <= BACKOFF_CAP, "attempt=10 cap: {w:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn backoff_clamped_to_remaining_budget() {
+        let resp = response_with_retry_after("30").await;
+        // Server says 30s but only 5s budget left.
+        let w = compute_backoff(&resp, 0, Duration::from_secs(5));
+        assert_eq!(w, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn parse_next_link_single_rel() {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert(
+            reqwest::header::LINK,
+            r#"<https://rest.example/custom_attributes/?cursor=abc>; rel="next""#
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            parse_next_link(&h),
+            Some("https://rest.example/custom_attributes/?cursor=abc".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_next_link_multiple_rels_picks_next() {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert(
+            reqwest::header::LINK,
+            r#"<https://rest.example/?cursor=prev>; rel="prev", <https://rest.example/?cursor=next>; rel="next""#
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            parse_next_link(&h),
+            Some("https://rest.example/?cursor=next".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_next_link_absent_returns_none() {
+        let h = reqwest::header::HeaderMap::new();
+        assert_eq!(parse_next_link(&h), None);
+    }
+
+    #[test]
+    fn parse_next_link_without_next_rel_returns_none() {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert(
+            reqwest::header::LINK,
+            r#"<https://rest.example/?cursor=prev>; rel="prev""#
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(parse_next_link(&h), None);
+    }
+
+    #[tokio::test]
+    async fn get_absolute_rejects_cross_origin() {
+        let server = MockServer::start().await;
+        let client = super::test_client(&server);
+        let err = client
+            .get_absolute("https://attacker.example/custom_attributes/?cursor=x")
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("cross-origin"), "got {msg:?}");
+    }
+
+    #[tokio::test]
+    async fn get_absolute_accepts_same_origin() {
+        let server = MockServer::start().await;
+        let client = super::test_client(&server);
+        let url = format!("{}/custom_attributes/?cursor=abc", server.uri());
+        let _builder = client
+            .get_absolute(&url)
+            .expect("same-origin URL should be accepted");
+    }
+
+    #[tokio::test]
+    async fn get_absolute_rejects_malformed_url() {
+        let server = MockServer::start().await;
+        let client = super::test_client(&server);
+        let err = client.get_absolute("not a url").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("malformed"), "got {msg:?}");
+    }
+
+    #[tokio::test]
+    async fn retries_attempt_cap_fires_on_degenerate_zero_retry_after() {
+        // retry-after: 0 forever → attempt cap is the only exit.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/x"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+            .mount(&server)
+            .await;
+        let client = super::test_client(&server);
+        let req = client.get(&["x"]);
+        let err = client
+            .send_json::<serde_json::Value>(req)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, BrazeApiError::RateLimitExhausted),
+            "expected RateLimitExhausted, got {err:?}"
+        );
+    }
 }

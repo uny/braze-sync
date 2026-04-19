@@ -39,6 +39,8 @@ pub enum CustomAttributeType {
     Boolean,
     Time,
     Array,
+    Object,
+    ObjectArray,
 }
 
 impl CustomAttributeType {
@@ -53,6 +55,8 @@ impl CustomAttributeType {
             Self::Boolean => "boolean",
             Self::Time => "time",
             Self::Array => "array",
+            Self::Object => "object",
+            Self::ObjectArray => "object_array",
         }
     }
 }

@@ -48,8 +48,9 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
-# Rate limiting
-governor = "0.7"
+# Jitter for 429 backoff. Tiny, zero-dep PRNG — the Braze client is the
+# only caller and only needs U(0, N) for jitter.
+fastrand = "2"
 
 # File system
 dotenvy = "0.15"
