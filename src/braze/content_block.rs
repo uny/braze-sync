@@ -33,16 +33,16 @@ impl BrazeClient {
             ]);
             let resp: ContentBlockListResponse = self.send_json(req).await?;
             let page_len = resp.content_blocks.len();
+            if all.len().saturating_add(page_len) > LIST_SAFETY_CAP_ITEMS {
+                return Err(BrazeApiError::PaginationNotImplemented {
+                    endpoint: "/content_blocks/list",
+                    detail: format!("would exceed {LIST_SAFETY_CAP_ITEMS} item safety cap"),
+                });
+            }
             all.extend(resp.content_blocks);
 
             if page_len < LIST_LIMIT as usize {
                 break;
-            }
-            if all.len() >= LIST_SAFETY_CAP_ITEMS {
-                return Err(BrazeApiError::PaginationNotImplemented {
-                    endpoint: "/content_blocks/list",
-                    detail: format!("exceeded {LIST_SAFETY_CAP_ITEMS} item safety cap"),
-                });
             }
             offset += LIST_LIMIT;
         }

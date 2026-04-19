@@ -40,16 +40,16 @@ impl BrazeClient {
             ]);
             let resp: EmailTemplateListResponse = self.send_json(req).await?;
             let page_len = resp.templates.len();
+            if all.len().saturating_add(page_len) > LIST_SAFETY_CAP_ITEMS {
+                return Err(BrazeApiError::PaginationNotImplemented {
+                    endpoint: "/templates/email/list",
+                    detail: format!("would exceed {LIST_SAFETY_CAP_ITEMS} item safety cap"),
+                });
+            }
             all.extend(resp.templates);
 
             if page_len < LIST_LIMIT as usize {
                 break;
-            }
-            if all.len() >= LIST_SAFETY_CAP_ITEMS {
-                return Err(BrazeApiError::PaginationNotImplemented {
-                    endpoint: "/templates/email/list",
-                    detail: format!("exceeded {LIST_SAFETY_CAP_ITEMS} item safety cap"),
-                });
             }
             offset += LIST_LIMIT;
         }
