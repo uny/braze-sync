@@ -14,12 +14,16 @@
 
 use crate::braze::error::BrazeApiError;
 use crate::braze::{
-    check_duplicate_names, check_pagination, classify_info_message, BrazeClient, InfoMessageClass,
+    check_duplicate_names, classify_info_message, BrazeClient, InfoMessageClass,
 };
 use crate::resource::EmailTemplate;
 use serde::{Deserialize, Serialize};
 
-const LIST_LIMIT: u32 = 100;
+/// Page size (Braze documented max is 1000).
+const LIST_LIMIT: u32 = 1000;
+
+/// Hard cap on total items; mirrors the one in `content_block.rs`.
+const SAFETY_CAP_ITEMS: usize = 100_000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EmailTemplateSummary {
@@ -28,31 +32,39 @@ pub struct EmailTemplateSummary {
 }
 
 impl BrazeClient {
-    /// Returns one page of up to [`LIST_LIMIT`] summaries. Hard-errors
-    /// rather than silently truncating: see `PaginationNotImplemented`.
+    /// List every email template using offset pagination. Loops until
+    /// a page returns fewer than [`LIST_LIMIT`] entries.
     pub async fn list_email_templates(&self) -> Result<Vec<EmailTemplateSummary>, BrazeApiError> {
-        let req = self
-            .get(&["templates", "email", "list"])
-            .query(&[("limit", LIST_LIMIT.to_string())]);
-        let resp: EmailTemplateListResponse = self.send_json(req).await?;
-        let returned = resp.templates.len();
+        let mut all: Vec<EmailTemplateListEntry> = Vec::new();
+        let mut offset: u32 = 0;
+        loop {
+            let req = self.get(&["templates", "email", "list"]).query(&[
+                ("limit", LIST_LIMIT.to_string()),
+                ("offset", offset.to_string()),
+            ]);
+            let resp: EmailTemplateListResponse = self.send_json(req).await?;
+            let got = resp.templates.len();
+            all.extend(resp.templates);
 
-        // Fail closed when the page is or might be truncated.
-        check_pagination(
-            resp.count,
-            returned,
-            LIST_LIMIT as usize,
-            "/templates/email/list",
-        )?;
+            if got < LIST_LIMIT as usize {
+                break;
+            }
+            if all.len() >= SAFETY_CAP_ITEMS {
+                return Err(BrazeApiError::PaginationNotImplemented {
+                    endpoint: "/templates/email/list",
+                    detail: format!("exceeded {SAFETY_CAP_ITEMS} item safety cap"),
+                });
+            }
+            offset = offset.saturating_add(LIST_LIMIT);
+        }
 
         check_duplicate_names(
-            resp.templates.iter().map(|e| e.template_name.as_str()),
-            resp.templates.len(),
+            all.iter().map(|e| e.template_name.as_str()),
+            all.len(),
             "/templates/email/list",
         )?;
 
-        Ok(resp
-            .templates
+        Ok(all
             .into_iter()
             .map(|w| EmailTemplateSummary {
                 email_template_id: w.email_template_id,
@@ -142,8 +154,6 @@ impl BrazeClient {
 struct EmailTemplateListResponse {
     #[serde(default)]
     templates: Vec<EmailTemplateListEntry>,
-    #[serde(default)]
-    count: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -210,9 +220,9 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/templates/email/list"))
             .and(header("authorization", "Bearer test-key"))
-            .and(query_param("limit", "100"))
+            .and(query_param("limit", "1000"))
+            .and(query_param("offset", "0"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "count": 2,
                 "templates": [
                     {"email_template_id": "id-1", "template_name": "welcome"},
                     {"email_template_id": "id-2", "template_name": "password_reset"}
@@ -498,59 +508,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_errors_when_count_exceeds_returned() {
+    async fn list_offset_pagination_across_two_pages() {
         let server = MockServer::start().await;
-        let entries: Vec<serde_json::Value> = (0..100)
+        let page1: Vec<serde_json::Value> = (0..1000)
             .map(|i| {
                 json!({
-                    "email_template_id": format!("id-{i}"),
-                    "template_name": format!("tpl-{i}")
+                    "email_template_id": format!("id-p1-{i}"),
+                    "template_name": format!("p1_{i}")
+                })
+            })
+            .collect();
+        let page2: Vec<serde_json::Value> = (0..42)
+            .map(|i| {
+                json!({
+                    "email_template_id": format!("id-p2-{i}"),
+                    "template_name": format!("p2_{i}")
                 })
             })
             .collect();
         Mock::given(method("GET"))
             .and(path("/templates/email/list"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "count": 250,
-                "templates": entries,
-                "message": "success"
-            })))
+            .and(query_param("offset", "1000"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "templates": page2 })))
             .mount(&server)
             .await;
-        let client = make_client(&server);
-        let err = client.list_email_templates().await.unwrap_err();
-        match err {
-            BrazeApiError::PaginationNotImplemented { endpoint, detail } => {
-                assert_eq!(endpoint, "/templates/email/list");
-                assert!(detail.contains("100"), "detail: {detail}");
-                assert!(detail.contains("250"), "detail: {detail}");
-            }
-            other => panic!("expected PaginationNotImplemented, got {other:?}"),
-        }
-    }
+        Mock::given(method("GET"))
+            .and(path("/templates/email/list"))
+            .and(query_param("offset", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "templates": page1 })))
+            .mount(&server)
+            .await;
 
-    #[tokio::test]
-    async fn list_errors_on_full_page_with_no_count_field() {
-        let server = MockServer::start().await;
-        let entries: Vec<serde_json::Value> = (0..100)
-            .map(|i| {
-                json!({
-                    "email_template_id": format!("id-{i}"),
-                    "template_name": format!("tpl-{i}")
-                })
-            })
-            .collect();
-        Mock::given(method("GET"))
-            .and(path("/templates/email/list"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "templates": entries })))
-            .mount(&server)
-            .await;
         let client = make_client(&server);
-        let err = client.list_email_templates().await.unwrap_err();
-        assert!(
-            matches!(err, BrazeApiError::PaginationNotImplemented { .. }),
-            "got {err:?}"
-        );
+        let summaries = client.list_email_templates().await.unwrap();
+        assert_eq!(summaries.len(), 1042);
+        assert_eq!(summaries[0].name, "p1_0");
+        assert_eq!(summaries[1041].name, "p2_41");
     }
 
     #[tokio::test]
@@ -559,7 +552,6 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/templates/email/list"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "count": 2,
                 "templates": [
                     {"email_template_id": "id-a", "template_name": "dup"},
                     {"email_template_id": "id-b", "template_name": "dup"}

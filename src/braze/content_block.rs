@@ -7,12 +7,19 @@
 
 use crate::braze::error::BrazeApiError;
 use crate::braze::{
-    check_duplicate_names, check_pagination, classify_info_message, BrazeClient, InfoMessageClass,
+    check_duplicate_names, classify_info_message, BrazeClient, InfoMessageClass,
 };
 use crate::resource::{ContentBlock, ContentBlockState};
 use serde::{Deserialize, Serialize};
 
-const LIST_LIMIT: u32 = 100;
+/// Page size (Braze documented max is 1000). Hitting this lets a
+/// typical workspace finish in a single request.
+const LIST_LIMIT: u32 = 1000;
+
+/// Hard cap on total items to protect against a degenerate server that
+/// keeps returning a full page. At 1000/page this is 100 pages, far
+/// beyond any realistic workspace.
+const SAFETY_CAP_ITEMS: usize = 100_000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContentBlockSummary {
@@ -21,31 +28,39 @@ pub struct ContentBlockSummary {
 }
 
 impl BrazeClient {
-    /// Returns one page of up to [`LIST_LIMIT`] summaries. Hard-errors
-    /// rather than silently truncating: see `PaginationNotImplemented`.
+    /// List every content block in the workspace using offset pagination.
+    /// Loops until a page returns fewer than [`LIST_LIMIT`] entries.
     pub async fn list_content_blocks(&self) -> Result<Vec<ContentBlockSummary>, BrazeApiError> {
-        let req = self
-            .get(&["content_blocks", "list"])
-            .query(&[("limit", LIST_LIMIT.to_string())]);
-        let resp: ContentBlockListResponse = self.send_json(req).await?;
-        let returned = resp.content_blocks.len();
+        let mut all: Vec<ContentBlockListEntry> = Vec::new();
+        let mut offset: u32 = 0;
+        loop {
+            let req = self.get(&["content_blocks", "list"]).query(&[
+                ("limit", LIST_LIMIT.to_string()),
+                ("offset", offset.to_string()),
+            ]);
+            let resp: ContentBlockListResponse = self.send_json(req).await?;
+            let got = resp.content_blocks.len();
+            all.extend(resp.content_blocks);
 
-        // Fail closed when the page is or might be truncated.
-        check_pagination(
-            resp.count,
-            returned,
-            LIST_LIMIT as usize,
-            "/content_blocks/list",
-        )?;
+            if got < LIST_LIMIT as usize {
+                break;
+            }
+            if all.len() >= SAFETY_CAP_ITEMS {
+                return Err(BrazeApiError::PaginationNotImplemented {
+                    endpoint: "/content_blocks/list",
+                    detail: format!("exceeded {SAFETY_CAP_ITEMS} item safety cap"),
+                });
+            }
+            offset = offset.saturating_add(LIST_LIMIT);
+        }
 
         check_duplicate_names(
-            resp.content_blocks.iter().map(|e| e.name.as_str()),
-            resp.content_blocks.len(),
+            all.iter().map(|e| e.name.as_str()),
+            all.len(),
             "/content_blocks/list",
         )?;
 
-        Ok(resp
-            .content_blocks
+        Ok(all
             .into_iter()
             .map(|w| ContentBlockSummary {
                 content_block_id: w.content_block_id,
@@ -145,8 +160,6 @@ impl BrazeClient {
 struct ContentBlockListResponse {
     #[serde(default)]
     content_blocks: Vec<ContentBlockListEntry>,
-    #[serde(default)]
-    count: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -211,9 +224,9 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/content_blocks/list"))
             .and(header("authorization", "Bearer test-key"))
-            .and(query_param("limit", "100"))
+            .and(query_param("limit", "1000"))
+            .and(query_param("offset", "0"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "count": 2,
                 "content_blocks": [
                     {"content_block_id": "id-1", "name": "promo"},
                     {"content_block_id": "id-2", "name": "header"}
@@ -526,77 +539,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_errors_when_count_exceeds_returned() {
-        let server = MockServer::start().await;
-        let entries: Vec<serde_json::Value> = (0..100)
-            .map(|i| {
-                json!({
-                    "content_block_id": format!("id-{i}"),
-                    "name": format!("block-{i}")
-                })
-            })
-            .collect();
-        Mock::given(method("GET"))
-            .and(path("/content_blocks/list"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "count": 250,
-                "content_blocks": entries,
-                "message": "success"
-            })))
-            .mount(&server)
-            .await;
-        let client = make_client(&server);
-        let err = client.list_content_blocks().await.unwrap_err();
-        match err {
-            BrazeApiError::PaginationNotImplemented { endpoint, detail } => {
-                assert_eq!(endpoint, "/content_blocks/list");
-                assert!(detail.contains("100"), "detail: {detail}");
-                assert!(detail.contains("250"), "detail: {detail}");
-            }
-            other => panic!("expected PaginationNotImplemented, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn list_errors_on_full_page_with_no_count_field() {
-        // Ambiguous case: 100 returned, no `count` to disambiguate.
-        // Fail closed rather than risk page-2 invisibility.
-        let server = MockServer::start().await;
-        let entries: Vec<serde_json::Value> = (0..100)
-            .map(|i| {
-                json!({
-                    "content_block_id": format!("id-{i}"),
-                    "name": format!("block-{i}")
-                })
-            })
-            .collect();
-        Mock::given(method("GET"))
-            .and(path("/content_blocks/list"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(json!({ "content_blocks": entries })),
-            )
-            .mount(&server)
-            .await;
-        let client = make_client(&server);
-        let err = client.list_content_blocks().await.unwrap_err();
-        assert!(
-            matches!(err, BrazeApiError::PaginationNotImplemented { .. }),
-            "got {err:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn list_short_page_with_no_count_is_trusted_as_complete() {
-        // Pins the `_ => None` arm of the truncation match for the
-        // non-empty-short-page-no-count case. `list_empty_array`
-        // covers the 0-entry flavour; this test nails down that a
-        // partial-but-under-LIMIT page without `count` is accepted
-        // as the full workspace. Matches the comment on
-        // `list_content_blocks` about every known paginated API
-        // returning exactly `limit` when more pages exist.
+    async fn list_short_page_is_treated_as_complete() {
+        // Partial page (under LIST_LIMIT) is terminal — the loop stops
+        // without a second request.
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/content_blocks/list"))
+            .and(query_param("offset", "0"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "content_blocks": [
                     {"content_block_id": "id-1", "name": "a"},
@@ -608,34 +557,68 @@ mod tests {
         let client = make_client(&server);
         let summaries = client.list_content_blocks().await.unwrap();
         assert_eq!(summaries.len(), 2);
-        assert_eq!(summaries[0].name, "a");
-        assert_eq!(summaries[1].name, "b");
     }
 
     #[tokio::test]
-    async fn list_succeeds_when_count_matches_full_page_exactly() {
-        // 100 returned + count: 100 → exact full workspace, definitely
-        // no more pages, must succeed.
+    async fn list_offset_pagination_across_three_pages() {
+        // Full-page × 2 then a short page → three requests, all entries merged.
         let server = MockServer::start().await;
-        let entries: Vec<serde_json::Value> = (0..100)
+        let page1: Vec<serde_json::Value> = (0..1000)
             .map(|i| {
                 json!({
-                    "content_block_id": format!("id-{i}"),
-                    "name": format!("block-{i}")
+                    "content_block_id": format!("id-p1-{i}"),
+                    "name": format!("p1_{i}")
+                })
+            })
+            .collect();
+        let page2: Vec<serde_json::Value> = (0..1000)
+            .map(|i| {
+                json!({
+                    "content_block_id": format!("id-p2-{i}"),
+                    "name": format!("p2_{i}")
+                })
+            })
+            .collect();
+        let page3: Vec<serde_json::Value> = (0..234)
+            .map(|i| {
+                json!({
+                    "content_block_id": format!("id-p3-{i}"),
+                    "name": format!("p3_{i}")
                 })
             })
             .collect();
         Mock::given(method("GET"))
             .and(path("/content_blocks/list"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "count": 100,
-                "content_blocks": entries
-            })))
+            .and(query_param("offset", "2000"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "content_blocks": page3 })),
+            )
             .mount(&server)
             .await;
+        Mock::given(method("GET"))
+            .and(path("/content_blocks/list"))
+            .and(query_param("offset", "1000"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "content_blocks": page2 })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/content_blocks/list"))
+            .and(query_param("offset", "0"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "content_blocks": page1 })),
+            )
+            .mount(&server)
+            .await;
+
         let client = make_client(&server);
         let summaries = client.list_content_blocks().await.unwrap();
-        assert_eq!(summaries.len(), 100);
+        assert_eq!(summaries.len(), 2234);
+        assert_eq!(summaries[0].name, "p1_0");
+        assert_eq!(summaries[999].name, "p1_999");
+        assert_eq!(summaries[1000].name, "p2_0");
+        assert_eq!(summaries[2233].name, "p3_233");
     }
 
     #[tokio::test]
@@ -649,7 +632,6 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/content_blocks/list"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "count": 2,
                 "content_blocks": [
                     {"content_block_id": "id-a", "name": "dup"},
                     {"content_block_id": "id-b", "name": "dup"}

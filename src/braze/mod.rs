@@ -313,29 +313,6 @@ pub(crate) fn parse_next_link(headers: &reqwest::header::HeaderMap) -> Option<St
     None
 }
 
-/// Check whether a list response was truncated and return a
-/// `PaginationNotImplemented` error if so.  Shared by every list
-/// endpoint that uses the fail-closed pagination guard.
-pub(crate) fn check_pagination(
-    count: Option<usize>,
-    returned: usize,
-    limit: usize,
-    endpoint: &'static str,
-) -> Result<(), BrazeApiError> {
-    let truncation_detail: Option<String> = match count {
-        Some(total) if total > returned => Some(format!("got {returned} of {total} results")),
-        None if returned >= limit => Some(format!(
-            "got a full page of {returned} result(s) with no total reported; \
-             cannot verify whether more exist"
-        )),
-        _ => None,
-    };
-    if let Some(detail) = truncation_detail {
-        return Err(BrazeApiError::PaginationNotImplemented { endpoint, detail });
-    }
-    Ok(())
-}
-
 /// Check that no two items in a list response share the same name.
 /// Shared by every list endpoint that indexes resources by name.
 pub(crate) fn check_duplicate_names<'a>(
