@@ -144,9 +144,10 @@ that `tracing` / `Debug` / panic messages cannot leak it.
 
 These will be lifted across the v0.x → v1.0 milestones:
 
-- **No catalog create / delete.** v0.6.0 manages fields on existing
-  catalogs. To create a brand-new catalog, create it in the Braze
-  dashboard first, then run `braze-sync export`.
+- **No catalog delete.** `apply` creates new catalogs and adds fields,
+  but it will not delete a catalog that exists in Braze and is missing
+  from Git — the side effect (loss of all items) is too large to do
+  implicitly. Drop the catalog manually in the Braze dashboard.
 - **No field type changes.** Changing a field's type from `string` to
   `number` (or similar) is not auto-applied because the operation is
   data-losing on the field. Drop the field manually in Braze, then

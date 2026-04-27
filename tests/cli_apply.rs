@@ -250,6 +250,60 @@ async fn confirm_with_allow_destructive_calls_delete_and_exits_zero() {
     .unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn confirm_with_new_catalog_posts_create_and_skips_per_field_post() {
+    let server = MockServer::start().await;
+    // Remote has no catalogs — local introduces "cardiology".
+    Mock::given(method("GET"))
+        .and(path("/catalogs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "catalogs": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/catalogs"))
+        .and(body_json(json!({
+            "catalogs": [{
+                "name": "cardiology",
+                "fields": [
+                    {"name": "id", "type": "string"},
+                    {"name": "severity", "type": "number"}
+                ]
+            }]
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"message": "ok"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/catalogs/cardiology/fields"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_schema(
+        tmp.path(),
+        "cardiology",
+        &[("id", "string"), ("severity", "number")],
+    );
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "catalog_schema", "--confirm"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
+
 // =====================================================================
 // Content Block (v0.2.0)
 // =====================================================================
