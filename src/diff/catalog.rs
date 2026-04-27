@@ -30,10 +30,8 @@ pub fn diff_schema(local: Option<&Catalog>, remote: Option<&Catalog>) -> Option<
         (Some(l), None) => Some(CatalogSchemaDiff {
             name: l.name.clone(),
             op: DiffOp::Added(l.clone()),
-            // Populate field_diffs from the local fields so the diff
-            // formatters list them under the "+ new catalog" line. The
-            // create-catalog apply path skips the field_diffs loop and
-            // sends the fields as part of `POST /catalogs`.
+            // Surfaced so diff formatters can list the new fields under
+            // the "+ new catalog" line; the apply path uses `op` instead.
             field_diffs: l.fields.iter().map(|f| DiffOp::Added(f.clone())).collect(),
         }),
         (None, Some(r)) => Some(CatalogSchemaDiff {
@@ -134,8 +132,6 @@ mod tests {
         assert!(matches!(d.op, DiffOp::Added(_)));
         assert!(d.has_changes());
         assert!(!d.has_destructive());
-        // Added catalog diffs surface their fields so formatters can
-        // list them under the "+ new catalog" line.
         assert_eq!(d.field_diffs.len(), 2);
         assert!(d.field_diffs.iter().all(|f| matches!(f, DiffOp::Added(_))));
     }

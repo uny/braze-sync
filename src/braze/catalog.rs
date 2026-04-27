@@ -80,20 +80,9 @@ impl BrazeClient {
 
     /// `POST /catalogs` — create a new catalog with its initial schema.
     ///
-    /// Wire shape (per Braze public docs):
-    ///
-    /// ```json
-    /// {"catalogs": [{"name": "...", "description": "...",
-    ///                "fields": [{"name": "...", "type": "..."}]}]}
-    /// ```
-    ///
-    /// `description` is omitted from the body when `None` so we don't
-    /// send `null` to a Braze field that the API may reject.
-    ///
-    /// 409 is mapped to `Ok(())` for idempotency: a concurrent operator
-    /// that already created the catalog by the time we POST should not
-    /// fail this run — the follow-up state will be reconciled by the
-    /// rest of the apply walk (or a subsequent `apply` if drift remains).
+    /// 409 is mapped to `Ok(())` so a concurrent operator that already
+    /// created the catalog doesn't fail this run; remaining drift is
+    /// reconciled by the rest of the apply walk or a subsequent `apply`.
     pub async fn create_catalog(&self, catalog: &Catalog) -> Result<(), BrazeApiError> {
         let body = CreateCatalogRequest {
             catalogs: vec![CreateCatalogEntry {

@@ -261,8 +261,6 @@ async fn confirm_with_new_catalog_posts_create_and_skips_per_field_post() {
         })))
         .mount(&server)
         .await;
-    // The full schema (name + fields) goes in one POST /catalogs body;
-    // per-field POSTs would be a duplicate-write bug.
     Mock::given(method("POST"))
         .and(path("/catalogs"))
         .and(body_json(json!({

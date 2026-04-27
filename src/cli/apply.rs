@@ -236,8 +236,6 @@ fn check_for_unsupported_ops(summary: &DiffSummary) -> anyhow::Result<()> {
         }
         if let ResourceDiff::CatalogSchema(d) = diff {
             match &d.op {
-                // `Added` is handled by `apply_catalog_schema` via
-                // `POST /catalogs`; nothing to statically reject here.
                 DiffOp::Added(_) => {}
                 DiffOp::Removed(_) => {
                     return Err(anyhow!(
@@ -348,10 +346,8 @@ async fn apply_catalog_schema(
     client: &BrazeClient,
     d: &CatalogSchemaDiff,
 ) -> anyhow::Result<usize> {
-    // `POST /catalogs` accepts the full schema in one request, so for
-    // `Added` we skip the per-field loop below — those entries are
-    // already covered by the create body and walking them would issue
-    // duplicate `add_catalog_field` POSTs.
+    // `POST /catalogs` carries the full schema, so the per-field loop
+    // below is skipped for `Added` to avoid duplicate field POSTs.
     if let DiffOp::Added(cat) = &d.op {
         tracing::info!(catalog = %d.name, "creating new catalog");
         client
