@@ -9,6 +9,8 @@ file formats, JSON output, exit codes) for the full v1.x line.
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-04-27
+
 ### Added
 
 - **Catalog creation in `apply`.** A new catalog directory committed to
