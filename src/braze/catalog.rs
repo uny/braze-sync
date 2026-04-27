@@ -80,9 +80,10 @@ impl BrazeClient {
 
     /// `POST /catalogs` — create a new catalog with its initial schema.
     ///
-    /// 409 is mapped to `Ok(())` so a concurrent operator that already
-    /// created the catalog doesn't fail this run; remaining drift is
-    /// reconciled by the rest of the apply walk or a subsequent `apply`.
+    /// Duplicate names surface as `400` with body
+    /// `error_id: "catalog-name-already-exists"` per Braze docs and are
+    /// propagated to the caller; a subsequent `apply` will see the
+    /// existing catalog and no-op on the create.
     pub async fn create_catalog(&self, catalog: &Catalog) -> Result<(), BrazeApiError> {
         let body = CreateCatalogRequest {
             catalogs: vec![CreateCatalogEntry {
@@ -99,11 +100,7 @@ impl BrazeClient {
             }],
         };
         let req = self.post(&["catalogs"]).json(&body);
-        match self.send_ok(req).await {
-            Ok(()) => Ok(()),
-            Err(BrazeApiError::Http { status, .. }) if status == StatusCode::CONFLICT => Ok(()),
-            Err(e) => Err(e),
-        }
+        self.send_ok(req).await
     }
 
     /// `POST /catalogs/{name}/fields` — add one field to a catalog schema.
@@ -596,11 +593,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_catalog_409_treated_as_idempotent_success() {
+    async fn create_catalog_duplicate_name_propagates_400() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/catalogs"))
-            .respond_with(ResponseTemplate::new(409).set_body_string("catalog already exists"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "errors": [{
+                    "id": "catalog-name-already-exists",
+                    "message": "A catalog with that name already exists"
+                }]
+            })))
             .mount(&server)
             .await;
 
@@ -610,7 +612,16 @@ mod tests {
             description: None,
             fields: vec![],
         };
-        client.create_catalog(&cat).await.unwrap();
+        let err = client.create_catalog(&cat).await.unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                BrazeApiError::Http { status, body }
+                    if *status == StatusCode::BAD_REQUEST
+                        && body.contains("catalog-name-already-exists")
+            ),
+            "got {err:?}"
+        );
     }
 
     #[tokio::test]

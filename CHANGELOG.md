@@ -15,10 +15,9 @@ file formats, JSON output, exit codes) for the full v1.x line.
   Git (`catalogs/<name>/schema.yaml`) is now created in Braze on
   `apply --confirm` via `POST /catalogs`, including its initial fields
   and `description`. Previously `apply` hard-errored and required the
-  catalog to be created in the Braze dashboard first. 409 responses are
-  treated as idempotent success so concurrent operators don't break the
-  apply walk. Catalog **deletion** is still not supported — see the
-  Limitations section in the README.
+  catalog to be created in the Braze dashboard first. Catalog
+  **deletion** is still not supported — see the Limitations section in
+  the README.
 
 ### Migration
 
