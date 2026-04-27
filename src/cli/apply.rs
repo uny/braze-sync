@@ -236,14 +236,9 @@ fn check_for_unsupported_ops(summary: &DiffSummary) -> anyhow::Result<()> {
         }
         if let ResourceDiff::CatalogSchema(d) = diff {
             match &d.op {
-                DiffOp::Added(_) => {
-                    return Err(anyhow!(
-                        "creating a new catalog '{}' is not supported by braze-sync; \
-                         create the catalog in the Braze dashboard first, then run \
-                         `braze-sync export` to populate the local schema",
-                        d.name
-                    ));
-                }
+                // `Added` is handled by `apply_catalog_schema` via
+                // `POST /catalogs`; nothing to statically reject here.
+                DiffOp::Added(_) => {}
                 DiffOp::Removed(_) => {
                     return Err(anyhow!(
                         "deleting catalog '{}' (top-level) is not supported by braze-sync; \
@@ -353,6 +348,19 @@ async fn apply_catalog_schema(
     client: &BrazeClient,
     d: &CatalogSchemaDiff,
 ) -> anyhow::Result<usize> {
+    // `POST /catalogs` accepts the full schema in one request, so for
+    // `Added` we skip the per-field loop below — those entries are
+    // already covered by the create body and walking them would issue
+    // duplicate `add_catalog_field` POSTs.
+    if let DiffOp::Added(cat) = &d.op {
+        tracing::info!(catalog = %d.name, "creating new catalog");
+        client
+            .create_catalog(cat)
+            .await
+            .with_context(|| format!("creating catalog '{}'", d.name))?;
+        return Ok(1);
+    }
+
     let mut count = 0;
     for fd in &d.field_diffs {
         match fd {

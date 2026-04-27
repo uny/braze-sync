@@ -78,6 +78,45 @@ impl BrazeClient {
         }
     }
 
+    /// `POST /catalogs` — create a new catalog with its initial schema.
+    ///
+    /// Wire shape (per Braze public docs):
+    ///
+    /// ```json
+    /// {"catalogs": [{"name": "...", "description": "...",
+    ///                "fields": [{"name": "...", "type": "..."}]}]}
+    /// ```
+    ///
+    /// `description` is omitted from the body when `None` so we don't
+    /// send `null` to a Braze field that the API may reject.
+    ///
+    /// 409 is mapped to `Ok(())` for idempotency: a concurrent operator
+    /// that already created the catalog by the time we POST should not
+    /// fail this run — the follow-up state will be reconciled by the
+    /// rest of the apply walk (or a subsequent `apply` if drift remains).
+    pub async fn create_catalog(&self, catalog: &Catalog) -> Result<(), BrazeApiError> {
+        let body = CreateCatalogRequest {
+            catalogs: vec![CreateCatalogEntry {
+                name: &catalog.name,
+                description: catalog.description.as_deref(),
+                fields: catalog
+                    .fields
+                    .iter()
+                    .map(|f| WireField {
+                        name: &f.name,
+                        field_type: f.field_type,
+                    })
+                    .collect(),
+            }],
+        };
+        let req = self.post(&["catalogs"]).json(&body);
+        match self.send_ok(req).await {
+            Ok(()) => Ok(()),
+            Err(BrazeApiError::Http { status, .. }) if status == StatusCode::CONFLICT => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     /// `POST /catalogs/{name}/fields` — add one field to a catalog schema.
     ///
     /// **ASSUMED** wire format `{"fields": [{"name": "...", "type": "..."}]}`
@@ -118,6 +157,19 @@ impl BrazeClient {
 
 #[derive(Serialize)]
 struct AddFieldsRequest<'a> {
+    fields: Vec<WireField<'a>>,
+}
+
+#[derive(Serialize)]
+struct CreateCatalogRequest<'a> {
+    catalogs: Vec<CreateCatalogEntry<'a>>,
+}
+
+#[derive(Serialize)]
+struct CreateCatalogEntry<'a> {
+    name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<&'a str>,
     fields: Vec<WireField<'a>>,
 }
 
@@ -487,6 +539,135 @@ mod tests {
             .add_catalog_field("cardiology", &field)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_catalog_happy_path_sends_correct_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/catalogs"))
+            .and(header("authorization", "Bearer test-key"))
+            .and(body_json(json!({
+                "catalogs": [{
+                    "name": "cardiology",
+                    "description": "Cardiology catalog",
+                    "fields": [
+                        {"name": "id", "type": "string"},
+                        {"name": "severity_level", "type": "number"}
+                    ]
+                }]
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"message": "success"})))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let cat = Catalog {
+            name: "cardiology".into(),
+            description: Some("Cardiology catalog".into()),
+            fields: vec![
+                CatalogField {
+                    name: "id".into(),
+                    field_type: CatalogFieldType::String,
+                },
+                CatalogField {
+                    name: "severity_level".into(),
+                    field_type: CatalogFieldType::Number,
+                },
+            ],
+        };
+        client.create_catalog(&cat).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_catalog_omits_description_when_none() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/catalogs"))
+            .and(body_json(json!({
+                "catalogs": [{
+                    "name": "minimal",
+                    "fields": [{"name": "id", "type": "string"}]
+                }]
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"message": "success"})))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let cat = Catalog {
+            name: "minimal".into(),
+            description: None,
+            fields: vec![CatalogField {
+                name: "id".into(),
+                field_type: CatalogFieldType::String,
+            }],
+        };
+        client.create_catalog(&cat).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_catalog_409_treated_as_idempotent_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/catalogs"))
+            .respond_with(ResponseTemplate::new(409).set_body_string("catalog already exists"))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let cat = Catalog {
+            name: "existing".into(),
+            description: None,
+            fields: vec![],
+        };
+        client.create_catalog(&cat).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_catalog_unauthorized_propagates() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/catalogs"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("invalid key"))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let cat = Catalog {
+            name: "x".into(),
+            description: None,
+            fields: vec![],
+        };
+        let err = client.create_catalog(&cat).await.unwrap_err();
+        assert!(matches!(err, BrazeApiError::Unauthorized), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn create_catalog_retries_on_429_then_succeeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/catalogs"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"message": "ok"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/catalogs"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let cat = Catalog {
+            name: "x".into(),
+            description: None,
+            fields: vec![CatalogField {
+                name: "id".into(),
+                field_type: CatalogFieldType::String,
+            }],
+        };
+        client.create_catalog(&cat).await.unwrap();
     }
 
     #[tokio::test]

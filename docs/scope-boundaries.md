@@ -12,7 +12,7 @@ declarative settings, and that a team would review in a pull request.
 
 | Resource | What braze-sync owns |
 |:---|:---|
-| **Catalog Schema** | Field definitions, types, constraints |
+| **Catalog Schema** | Catalog creation, field definitions, types, constraints |
 | **Content Block** | Reusable Liquid fragments |
 | **Email Template** | HTML/Liquid templates, subject, metadata |
 | **Custom Attribute** registry | Attribute name/type/deprecation — the *definition* only |

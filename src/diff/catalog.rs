@@ -30,7 +30,11 @@ pub fn diff_schema(local: Option<&Catalog>, remote: Option<&Catalog>) -> Option<
         (Some(l), None) => Some(CatalogSchemaDiff {
             name: l.name.clone(),
             op: DiffOp::Added(l.clone()),
-            field_diffs: vec![],
+            // Populate field_diffs from the local fields so the diff
+            // formatters list them under the "+ new catalog" line. The
+            // create-catalog apply path skips the field_diffs loop and
+            // sends the fields as part of `POST /catalogs`.
+            field_diffs: l.fields.iter().map(|f| DiffOp::Added(f.clone())).collect(),
         }),
         (None, Some(r)) => Some(CatalogSchemaDiff {
             name: r.name.clone(),
@@ -119,11 +123,21 @@ mod tests {
 
     #[test]
     fn local_only_is_added() {
-        let l = cat("c", vec![field("id", CatalogFieldType::String)]);
+        let l = cat(
+            "c",
+            vec![
+                field("id", CatalogFieldType::String),
+                field("score", CatalogFieldType::Number),
+            ],
+        );
         let d = diff_schema(Some(&l), None).unwrap();
         assert!(matches!(d.op, DiffOp::Added(_)));
         assert!(d.has_changes());
         assert!(!d.has_destructive());
+        // Added catalog diffs surface their fields so formatters can
+        // list them under the "+ new catalog" line.
+        assert_eq!(d.field_diffs.len(), 2);
+        assert!(d.field_diffs.iter().all(|f| matches!(f, DiffOp::Added(_))));
     }
 
     #[test]
