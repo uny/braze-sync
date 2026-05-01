@@ -48,9 +48,4 @@ pub enum Error {
 
     #[error("Rate limit exhausted after {retries} retries")]
     RateLimitExhausted { retries: u32 },
-
-    #[error(
-        "Custom Attribute '{name}' cannot be created via API; created implicitly via /users/track"
-    )]
-    CustomAttributeCreateNotSupported { name: String },
 }

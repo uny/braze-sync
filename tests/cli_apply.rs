@@ -961,13 +961,22 @@ async fn apply_custom_attribute_dry_run_makes_no_write_call() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn apply_custom_attribute_present_in_git_only_rejects() {
+async fn apply_custom_attribute_present_in_git_only_is_informational_no_op() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "attributes": []
         })))
+        .mount(&server)
+        .await;
+    // PresentInGitOnly is informational drift — Braze has no create
+    // endpoint for custom attributes (they materialize on first
+    // /users/track), so `apply` must not POST and must not error.
+    Mock::given(method("POST"))
+        .and(path("/custom_attributes/blocklist"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
         .mount(&server)
         .await;
 
@@ -990,16 +999,95 @@ async fn apply_custom_attribute_present_in_git_only_rejects() {
     .await
     .unwrap();
 
-    assert_eq!(
-        output.status.code(),
-        Some(1),
+    assert!(
+        output.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stderr.contains("cannot be created via API"),
-        "stderr: {stderr}"
+        stdout.contains("in Git registry but not in Braze"),
+        "expected PresentInGitOnly warning in plan output; stdout: {stdout}"
+    );
+}
+
+/// Regression: a registry-only custom_attribute (`PresentInGitOnly`) must
+/// not block apply of unrelated, actionable resources in the same run.
+/// Before this was reclassified as informational drift, the CA diff
+/// short-circuited `check_for_unsupported_ops` and prevented the
+/// content_block create POST from firing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_mixed_registry_only_ca_does_not_block_content_block_create() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/catalogs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "catalogs": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 0,
+            "templates": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/custom_attributes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "attributes": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/content_blocks/create"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_block_id": "new-id-1",
+            "message": "success"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/custom_attributes/blocklist"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_content_block(tmp.path(), "fresh", "Hello\n");
+    write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  - name: typo_attr\n    type: string\n",
+    );
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--confirm"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 

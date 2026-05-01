@@ -280,8 +280,7 @@ fn exit_code_for(err: &anyhow::Error) -> i32 {
                 Error::Io(_)
                 | Error::YamlParse { .. }
                 | Error::CsvParse { .. }
-                | Error::InvalidFormat { .. }
-                | Error::CustomAttributeCreateNotSupported { .. } => return 1,
+                | Error::InvalidFormat { .. } => return 1,
             }
         }
     }

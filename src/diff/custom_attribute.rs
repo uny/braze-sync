@@ -39,17 +39,14 @@ impl CustomAttributeDiff {
     /// Whether `apply` should consider this diff actionable — i.e. it
     /// must not be skipped by the "No changes to apply" early exit.
     ///
-    /// - `DeprecationToggled` produces an API call.
-    /// - `PresentInGitOnly` is included so it reaches
-    ///   `check_for_unsupported_ops` and produces a clear rejection
-    ///   error rather than being silently ignored.
-    /// - `MetadataOnly` and `UnregisteredInGit` are informational drift
-    ///   that `apply` cannot resolve (the fix is `export`, not `apply`).
+    /// Only `DeprecationToggled` produces an API call. Every other variant
+    /// is informational drift that `apply` cannot resolve, including
+    /// `PresentInGitOnly`: Braze has no creation endpoint for custom
+    /// attributes (they materialize on first `/users/track` call), so a
+    /// registry entry that isn't in Braze yet is normal — and must not
+    /// block apply of unrelated resources.
     pub fn is_actionable(&self) -> bool {
-        matches!(
-            self.op,
-            CustomAttributeOp::DeprecationToggled { .. } | CustomAttributeOp::PresentInGitOnly
-        )
+        matches!(self.op, CustomAttributeOp::DeprecationToggled { .. })
     }
 }
 
@@ -361,7 +358,7 @@ mod tests {
             to: true
         })
         .is_actionable());
-        assert!(make(CustomAttributeOp::PresentInGitOnly).is_actionable());
+        assert!(!make(CustomAttributeOp::PresentInGitOnly).is_actionable());
         assert!(!make(CustomAttributeOp::MetadataOnly).is_actionable());
         assert!(!make(CustomAttributeOp::UnregisteredInGit).is_actionable());
         assert!(!make(CustomAttributeOp::Unchanged).is_actionable());
