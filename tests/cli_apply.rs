@@ -950,6 +950,11 @@ async fn apply_custom_attribute_present_in_git_only_is_informational_no_op() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("in Git registry but not in Braze"),
+        "expected PresentInGitOnly warning in plan output; stdout: {stdout}"
+    );
 }
 
 /// Regression: a registry-only custom_attribute (`PresentInGitOnly`) must
