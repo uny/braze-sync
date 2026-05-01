@@ -9,6 +9,24 @@ file formats, JSON output, exit codes) for the full v1.x line.
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-05-01
+
+### Fixed
+
+- **`apply` no longer aborts on registry-only custom attributes.** A
+  custom attribute present in the local registry but missing from
+  Braze (`PresentInGitOnly`) is now treated as informational drift,
+  matching how `diff` already reports it. Previously `apply --confirm`
+  hard-errored with `Custom Attribute '...' cannot be created via
+  API`, which blocked all other resource changes (content blocks,
+  catalog schemas, email templates) in the same run. Braze has no
+  creation endpoint for custom attributes — they materialize on the
+  first `/users/track` call — so registry-only entries are an expected
+  state, especially right after `export` from a higher environment.
+  The plan-print still surfaces the `⚠ in Git registry but not in
+  Braze (likely a typo)` warning, but the run no longer exits
+  non-zero. (#24)
+
 ## [0.9.0] — 2026-04-27
 
 ### Added
