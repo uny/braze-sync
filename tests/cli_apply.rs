@@ -907,13 +907,22 @@ async fn apply_custom_attribute_dry_run_makes_no_write_call() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn apply_custom_attribute_present_in_git_only_rejects() {
+async fn apply_custom_attribute_present_in_git_only_is_informational_no_op() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "attributes": []
         })))
+        .mount(&server)
+        .await;
+    // PresentInGitOnly is informational drift — Braze has no create
+    // endpoint for custom attributes (they materialize on first
+    // /users/track), so `apply` must not POST and must not error.
+    Mock::given(method("POST"))
+        .and(path("/custom_attributes/blocklist"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
         .mount(&server)
         .await;
 
@@ -936,16 +945,10 @@ async fn apply_custom_attribute_present_in_git_only_rejects() {
     .await
     .unwrap();
 
-    assert_eq!(
-        output.status.code(),
-        Some(1),
+    assert!(
+        output.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("cannot be created via API"),
-        "stderr: {stderr}"
     );
 }
 

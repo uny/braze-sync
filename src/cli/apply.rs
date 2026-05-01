@@ -226,14 +226,6 @@ pub async fn run(
 /// (e.g. content-type change with no in-place update), re-evaluate.
 fn check_for_unsupported_ops(summary: &DiffSummary) -> anyhow::Result<()> {
     for diff in &summary.diffs {
-        if let ResourceDiff::CustomAttribute(d) = diff {
-            if matches!(d.op, CustomAttributeOp::PresentInGitOnly) {
-                return Err(Error::CustomAttributeCreateNotSupported {
-                    name: d.name.clone(),
-                }
-                .into());
-            }
-        }
         if let ResourceDiff::CatalogSchema(d) = diff {
             match &d.op {
                 DiffOp::Added(_) => {

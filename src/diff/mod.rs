@@ -114,9 +114,11 @@ impl ResourceDiff {
 
     /// Whether `apply` can act on this diff. For most resource types this
     /// is the same as `has_changes()`. Custom Attributes are the exception:
-    /// `MetadataOnly` and `UnregisteredInGit` are informational drift
-    /// that `apply` cannot resolve via API. `PresentInGitOnly` is
-    /// actionable so `apply` can surface the unsupported-create error.
+    /// only `DeprecationToggled` produces an API call. `MetadataOnly`,
+    /// `UnregisteredInGit`, and `PresentInGitOnly` are all informational
+    /// drift — Braze has no create endpoint for custom attributes (they
+    /// materialize on first `/users/track`), so registry-only entries are
+    /// expected and must not block apply.
     pub fn is_actionable(&self) -> bool {
         match self {
             Self::CustomAttribute(d) => d.is_actionable(),
