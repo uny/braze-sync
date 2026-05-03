@@ -9,6 +9,20 @@ file formats, JSON output, exit codes) for the full v1.x line.
 
 ## [Unreleased]
 
+## [0.9.2] — 2026-05-03
+
+### Fixed
+
+- **Catalog creation no longer fails with `id-not-first-column` on
+  freshly-exported workspaces.** `POST /catalogs` rejects bodies whose
+  `fields[0].name` is not `id`, but exported `schema.yaml` files
+  alphabetize fields, so any catalog whose id was not first
+  alphabetically failed to create on a clean target environment.
+  `Catalog::normalized()` now hoists the `id` field to position 0 and
+  alphabetizes the rest; both the wire payload and the on-disk
+  `schema.yaml` share this ordering, so export ↔ apply stays
+  round-trip stable. (#26)
+
 ## [0.9.1] — 2026-05-01
 
 ### Fixed
