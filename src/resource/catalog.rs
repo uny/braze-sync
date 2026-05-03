@@ -5,6 +5,11 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Name of the privileged primary-key field on every Braze catalog.
+/// `POST /catalogs` rejects bodies whose `fields[0].name` is not this
+/// (error id `id-not-first-column`).
+pub const ID_FIELD_NAME: &str = "id";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Catalog {
     pub name: String,
@@ -57,11 +62,19 @@ impl CatalogFieldType {
 }
 
 impl Catalog {
-    /// Return a copy with `fields` sorted by name. Used to keep on-disk
-    /// output and diff input deterministic regardless of API ordering.
+    /// Return a copy with `fields` ordered for serialization: the `id`
+    /// field (if present) first, then the rest sorted alphabetically by
+    /// name. Used both for deterministic on-disk output and for the
+    /// `POST /catalogs` request body — Braze rejects creates whose
+    /// `fields[0]` is not the `id` column with `id-not-first-column`.
     pub fn normalized(&self) -> Self {
         let mut sorted = self.clone();
-        sorted.fields.sort_by(|a, b| a.name.cmp(&b.name));
+        sorted.fields.sort_by(|a, b| {
+            let a_is_id = a.name == ID_FIELD_NAME;
+            let b_is_id = b.name == ID_FIELD_NAME;
+            // bool false < true, so reverse to put id first.
+            b_is_id.cmp(&a_is_id).then_with(|| a.name.cmp(&b.name))
+        });
         sorted
     }
 }
@@ -142,6 +155,59 @@ fields:
 
     #[test]
     fn normalized_sorts_fields_by_name() {
+        let cat = Catalog {
+            name: "x".into(),
+            description: None,
+            fields: vec![
+                CatalogField {
+                    name: "z".into(),
+                    field_type: CatalogFieldType::String,
+                },
+                CatalogField {
+                    name: "a".into(),
+                    field_type: CatalogFieldType::String,
+                },
+            ],
+        };
+        let n = cat.normalized();
+        assert_eq!(n.fields[0].name, "a");
+        assert_eq!(n.fields[1].name, "z");
+    }
+
+    #[test]
+    fn normalized_hoists_id_field_to_front() {
+        // Braze's POST /catalogs rejects bodies whose first field is not
+        // `id` of type string with error id `id-not-first-column`. The
+        // hoist applies regardless of the id field's alphabetic position.
+        let cat = Catalog {
+            name: "x".into(),
+            description: None,
+            fields: vec![
+                CatalogField {
+                    name: "URL".into(),
+                    field_type: CatalogFieldType::String,
+                },
+                CatalogField {
+                    name: "author".into(),
+                    field_type: CatalogFieldType::String,
+                },
+                CatalogField {
+                    name: "id".into(),
+                    field_type: CatalogFieldType::String,
+                },
+                CatalogField {
+                    name: "title".into(),
+                    field_type: CatalogFieldType::String,
+                },
+            ],
+        };
+        let n = cat.normalized();
+        let names: Vec<_> = n.fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["id", "URL", "author", "title"]);
+    }
+
+    #[test]
+    fn normalized_without_id_field_is_pure_alphabetical() {
         let cat = Catalog {
             name: "x".into(),
             description: None,

@@ -172,6 +172,29 @@ mod tests {
     }
 
     #[test]
+    fn save_hoists_id_field_to_top_then_sorts_rest() {
+        // Mirrors the wire requirement: Braze rejects POST /catalogs
+        // bodies whose first field isn't `id`. Keeping the on-disk
+        // representation aligned with the wire shape avoids surprise
+        // diffs after an `apply` writes back a freshly-created catalog.
+        let dir = tempfile::tempdir().unwrap();
+        let c = Catalog {
+            name: "x".into(),
+            description: None,
+            fields: vec![
+                field("URL", CatalogFieldType::String),
+                field("author", CatalogFieldType::String),
+                field("id", CatalogFieldType::String),
+                field("title", CatalogFieldType::String),
+            ],
+        };
+        save_schema(dir.path(), &c).unwrap();
+        let loaded = load_all_schemas(dir.path()).unwrap();
+        let names: Vec<_> = loaded[0].fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["id", "URL", "author", "title"]);
+    }
+
+    #[test]
     fn save_sorts_fields_alphabetically() {
         let dir = tempfile::tempdir().unwrap();
         let c = Catalog {
