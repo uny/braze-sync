@@ -80,16 +80,23 @@ impl BrazeClient {
 
     /// `POST /catalogs` — create a new catalog with its initial schema.
     ///
+    /// Normalizes field order before sending: Braze rejects creates whose
+    /// first field is not `id` (HTTP 400, `id-not-first-column`), and
+    /// on-disk schemas exported from existing workspaces are typically
+    /// alphabetized — so a literal `id` field can land mid-array.
+    /// `Catalog::normalized()` hoists `id` to position 0.
+    ///
     /// Duplicate names surface as `400` with body
     /// `error_id: "catalog-name-already-exists"` per Braze docs and are
     /// propagated to the caller; a subsequent `apply` will see the
     /// existing catalog and no-op on the create.
     pub async fn create_catalog(&self, catalog: &Catalog) -> Result<(), BrazeApiError> {
+        let normalized = catalog.normalized();
         let body = CreateCatalogRequest {
             catalogs: vec![CreateCatalogEntry {
-                name: &catalog.name,
-                description: catalog.description.as_deref(),
-                fields: catalog
+                name: &normalized.name,
+                description: normalized.description.as_deref(),
+                fields: normalized
                     .fields
                     .iter()
                     .map(|f| WireField {
@@ -559,6 +566,56 @@ mod tests {
                 CatalogField {
                     name: "severity_level".into(),
                     field_type: CatalogFieldType::Number,
+                },
+            ],
+        };
+        client.create_catalog(&cat).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_catalog_hoists_id_field_to_first_position() {
+        // Braze returns HTTP 400 `id-not-first-column` when fields[0]
+        // is not `id`. Repos exported by braze-sync sort fields
+        // alphabetically on disk, so a literal `id` lands mid-array;
+        // create_catalog must normalize before sending.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/catalogs"))
+            .and(body_json(json!({
+                "catalogs": [{
+                    "name": "alpha",
+                    "fields": [
+                        {"name": "id", "type": "string"},
+                        {"name": "URL", "type": "string"},
+                        {"name": "author", "type": "string"},
+                        {"name": "title", "type": "string"}
+                    ]
+                }]
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"message": "success"})))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let cat = Catalog {
+            name: "alpha".into(),
+            description: None,
+            fields: vec![
+                CatalogField {
+                    name: "URL".into(),
+                    field_type: CatalogFieldType::String,
+                },
+                CatalogField {
+                    name: "author".into(),
+                    field_type: CatalogFieldType::String,
+                },
+                CatalogField {
+                    name: "id".into(),
+                    field_type: CatalogFieldType::String,
+                },
+                CatalogField {
+                    name: "title".into(),
+                    field_type: CatalogFieldType::String,
                 },
             ],
         };
