@@ -5,6 +5,11 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Name of the privileged primary-key field on every Braze catalog.
+/// `POST /catalogs` rejects bodies whose `fields[0].name` is not this
+/// (error id `id-not-first-column`).
+pub const ID_FIELD_NAME: &str = "id";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Catalog {
     pub name: String,
@@ -65,13 +70,10 @@ impl Catalog {
     pub fn normalized(&self) -> Self {
         let mut sorted = self.clone();
         sorted.fields.sort_by(|a, b| {
-            let a_is_id = a.name == "id";
-            let b_is_id = b.name == "id";
-            match (a_is_id, b_is_id) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => a.name.cmp(&b.name),
-            }
+            let a_is_id = a.name == ID_FIELD_NAME;
+            let b_is_id = b.name == ID_FIELD_NAME;
+            // bool false < true, so reverse to put id first.
+            b_is_id.cmp(&a_is_id).then_with(|| a.name.cmp(&b.name))
         });
         sorted
     }
