@@ -9,6 +9,33 @@ file formats, JSON output, exit codes) for the full v1.x line.
 
 ## [Unreleased]
 
+### Added
+
+- **Topological apply order for content blocks.** When a local content
+  block body references another via the Liquid include syntax
+  `{{content_blocks.${other} | id: '...'}}`, `apply` now creates the
+  target block before its referrer. Pre-v0.11 behavior sorted by name
+  alphabetically and broke on a fresh workspace whenever a referrer
+  sorted before its target — Braze validates the body at create time
+  and rejects forward references with an opaque HTTP 500, halting the
+  whole apply pass mid-pipeline. The new ordering pass parses
+  references out of every actionable diff body, builds a
+  `referrer → target` graph limited to blocks in the actionable set
+  (references to already-present blocks are treated as no-op edges, so
+  the referrer becomes a leaf), topologically sorts so targets precede
+  referrers, and aborts before any HTTP write if it detects a cycle —
+  surfacing the cycle path with named blocks so the operator can fix
+  the loop instead of decoding a 500. The dry-run plan is emitted in
+  the chosen order, so `apply` (without `--confirm`) previews the
+  exact write sequence.
+- **`apply_order` config field on `ResourceConfig`.** Default
+  `dependency` (the new behavior). Set
+  `resources.content_block.apply_order: alphabetical` to opt back into
+  the v0.10 ordering — useful for repos that have built tooling around
+  the old apply sequence and don't yet have inter-block references.
+  The field is consulted only by content_block apply; setting it on
+  other resource kinds is accepted but inert.
+
 ## [0.10.0] — 2026-05-04
 
 ### Added

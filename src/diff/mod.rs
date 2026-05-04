@@ -10,6 +10,7 @@ use similar::{ChangeTag, TextDiff};
 
 pub mod catalog;
 pub mod content_block;
+pub mod content_block_order;
 pub mod custom_attribute;
 pub mod email_template;
 pub mod orphan;

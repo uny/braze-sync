@@ -10,9 +10,10 @@
 //! cross-write atomicity.
 
 use crate::braze::BrazeClient;
-use crate::config::ResolvedConfig;
+use crate::config::{ApplyOrder, ResolvedConfig};
 use crate::diff::catalog::CatalogSchemaDiff;
 use crate::diff::content_block::{ContentBlockDiff, ContentBlockIdIndex};
+use crate::diff::content_block_order::reorder_content_block_diffs_by_dependency;
 use crate::diff::custom_attribute::CustomAttributeOp;
 use crate::diff::email_template::{EmailTemplateDiff, EmailTemplateIdIndex};
 use crate::diff::orphan;
@@ -147,6 +148,26 @@ pub async fn run(
     // halts mid-pipeline. Runs even when --kind is restricted to a non-tag
     // kind so tag drift cannot sneak past a per-kind apply.
     enforce_tag_preflight(config_dir, &resolved, &summary)?;
+
+    // Content_block apply-order pass. Targets must precede referrers
+    // because Braze validates `{{content_blocks.${other}}}` includes at
+    // create time and rejects forward references with an opaque HTTP
+    // 500. Done before plan-print so the dry-run preview reflects the
+    // exact order writes will fire.
+    if matches!(
+        resolved.resources.content_block.apply_order,
+        ApplyOrder::Dependency
+    ) {
+        let reordered = reorder_content_block_diffs_by_dependency(std::mem::take(&mut summary.diffs))
+            .map_err(|cycle| {
+                anyhow!(
+                    "content_block dependency cycle detected\n       \
+                     {cycle}\n       \
+                     resolve by removing one of these references and try again"
+                )
+            })?;
+        summary.diffs = reordered;
+    }
 
     let mode_label = if args.confirm {
         "Plan:"

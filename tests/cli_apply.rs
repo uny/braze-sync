@@ -1218,3 +1218,215 @@ async fn apply_custom_attribute_batches_both_directions() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Applied 2 change(s)"), "stderr: {stderr}");
 }
+
+// =====================================================================
+// Content Block apply order (v0.11.0)
+// =====================================================================
+//
+// Topological apply: when a local block references another via the
+// Liquid `{{content_blocks.${target}}}` include, the target must be
+// created first because Braze validates the body at create time and
+// returns an opaque HTTP 500 if the reference doesn't resolve. These
+// tests pin the new ordering and the cycle-detection guard rail.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn content_block_apply_creates_dependency_target_before_referrer() {
+    // a_referrer (alphabetically first) references b_target. Pre-v0.11.0
+    // this would create a_referrer first and trip Braze's forward-ref
+    // 500. We assert that POSTs land in dependency order: b_target
+    // before a_referrer.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/content_blocks/create"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_block_id": "new-id",
+            "message": "success"
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_content_block(
+        tmp.path(),
+        "a_referrer",
+        "see {{content_blocks.${b_target} | id: 'cb1'}}\n",
+    );
+    write_local_content_block(tmp.path(), "b_target", "leaf body\n");
+
+    tokio::task::spawn_blocking({
+        let cfg = config_path.clone();
+        move || {
+            Command::cargo_bin("braze-sync")
+                .unwrap()
+                .env("BRAZE_API_KEY", "test-key")
+                .args(["--config", cfg.to_str().unwrap()])
+                .args(["apply", "--resource", "content_block", "--confirm"])
+                .assert()
+                .success();
+        }
+    })
+    .await
+    .unwrap();
+
+    // Inspect the received request log: pull out the create POSTs in
+    // order and assert b_target lands first. Wiremock records every
+    // request the server received in the order it received it, so the
+    // index of each create call is the apply order.
+    let received = server
+        .received_requests()
+        .await
+        .expect("recording is on by default");
+    let create_names: Vec<String> = received
+        .iter()
+        .filter(|r| r.method == wiremock::http::Method::POST && r.url.path() == "/content_blocks/create")
+        .map(|r| {
+            let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+            v.get("name").and_then(|n| n.as_str()).unwrap().to_string()
+        })
+        .collect();
+    assert_eq!(
+        create_names,
+        vec!["b_target".to_string(), "a_referrer".to_string()],
+        "dependency target must be created before referrer"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn content_block_apply_aborts_on_reference_cycle_before_any_write() {
+    // A → B → A. Topo-sort must reject this with a named-block error
+    // before any HTTP write goes out. `.expect(0)` on POST proves no
+    // create call fires.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_content_block(tmp.path(), "cycle_a", "{{content_blocks.${cycle_b}}}\n");
+    write_local_content_block(tmp.path(), "cycle_b", "{{content_blocks.${cycle_a}}}\n");
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "content_block", "--confirm"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(!output.status.success(), "expected non-zero exit");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("dependency cycle"),
+        "expected cycle error in stderr; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("cycle_a") && stderr.contains("cycle_b"),
+        "cycle error must name both blocks; got:\n{stderr}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn content_block_apply_alphabetical_opt_out_preserves_input_order() {
+    // With `apply_order: alphabetical` the topo pass is skipped and the
+    // forward reference would explode against real Braze. Here we just
+    // assert ordering: a_referrer first (alphabetical), b_target
+    // second — i.e. the v0.10 behavior is opt-in-able.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/content_blocks/create"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_block_id": "new-id",
+            "message": "success"
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    // Hand-write config with apply_order override; write_config doesn't
+    // surface the field and we don't want to grow that helper for one
+    // test.
+    let config_path = tmp.path().join("braze-sync.config.yaml");
+    let yaml = format!(
+        "version: 1
+default_environment: test
+environments:
+  test:
+    api_endpoint: {uri}
+    api_key_env: BRAZE_API_KEY
+resources:
+  content_block:
+    enabled: true
+    path: content_blocks/
+    apply_order: alphabetical
+",
+        uri = server.uri()
+    );
+    std::fs::write(&config_path, yaml).unwrap();
+    write_local_content_block(
+        tmp.path(),
+        "a_referrer",
+        "see {{content_blocks.${b_target}}}\n",
+    );
+    write_local_content_block(tmp.path(), "b_target", "leaf\n");
+
+    tokio::task::spawn_blocking({
+        let cfg = config_path.clone();
+        move || {
+            Command::cargo_bin("braze-sync")
+                .unwrap()
+                .env("BRAZE_API_KEY", "test-key")
+                .args(["--config", cfg.to_str().unwrap()])
+                .args(["apply", "--resource", "content_block", "--confirm"])
+                .assert()
+                .success();
+        }
+    })
+    .await
+    .unwrap();
+
+    let received = server.received_requests().await.unwrap();
+    let create_names: Vec<String> = received
+        .iter()
+        .filter(|r| r.method == wiremock::http::Method::POST && r.url.path() == "/content_blocks/create")
+        .map(|r| {
+            let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+            v.get("name").and_then(|n| n.as_str()).unwrap().to_string()
+        })
+        .collect();
+    assert_eq!(
+        create_names,
+        vec!["a_referrer".to_string(), "b_target".to_string()],
+        "alphabetical opt-out must preserve pre-v0.11 ordering"
+    );
+}

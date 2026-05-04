@@ -97,6 +97,28 @@ pub struct ResourceConfig {
     /// don't produce noise. See `docs/configuration.md §exclude_patterns`.
     #[serde(default)]
     pub exclude_patterns: Vec<String>,
+    /// Apply-time ordering policy. Currently consulted only by
+    /// `content_block` apply, which uses `Dependency` to topologically
+    /// sort `{{content_blocks.${other}}}` references so a referrer is
+    /// never created before its target. The field is shared on
+    /// `ResourceConfig` (rather than scoped to a content_block-only
+    /// type) to keep `ResourcesConfig::for_kind` type-stable; setting
+    /// it on other resource kinds is accepted but inert.
+    #[serde(default)]
+    pub apply_order: ApplyOrder,
+}
+
+/// Apply-time ordering policy. Default `Dependency` — strictly better
+/// than alphabetical when a content_block references another block,
+/// equivalent when none does. `Alphabetical` preserves pre-v0.11.0
+/// behavior for callers who built tooling around the exact apply
+/// sequence.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ApplyOrder {
+    #[default]
+    Dependency,
+    Alphabetical,
 }
 
 fn default_enabled() -> bool {
@@ -108,6 +130,7 @@ fn default_catalog_schema() -> ResourceConfig {
         enabled: true,
         path: PathBuf::from("catalogs/"),
         exclude_patterns: Vec::new(),
+        apply_order: ApplyOrder::Dependency,
     }
 }
 
@@ -116,6 +139,7 @@ fn default_content_block() -> ResourceConfig {
         enabled: true,
         path: PathBuf::from("content_blocks/"),
         exclude_patterns: Vec::new(),
+        apply_order: ApplyOrder::Dependency,
     }
 }
 
@@ -124,6 +148,7 @@ fn default_email_template() -> ResourceConfig {
         enabled: true,
         path: PathBuf::from("email_templates/"),
         exclude_patterns: Vec::new(),
+        apply_order: ApplyOrder::Dependency,
     }
 }
 
@@ -132,6 +157,7 @@ fn default_custom_attribute() -> ResourceConfig {
         enabled: true,
         path: PathBuf::from("custom_attributes/registry.yaml"),
         exclude_patterns: Vec::new(),
+        apply_order: ApplyOrder::Dependency,
     }
 }
 
@@ -142,6 +168,7 @@ fn default_tag() -> ResourceConfig {
         enabled: false,
         path: PathBuf::from("tags/registry.yaml"),
         exclude_patterns: Vec::new(),
+        apply_order: ApplyOrder::Dependency,
     }
 }
 

@@ -17,7 +17,8 @@
 pub mod schema;
 
 pub use schema::{
-    ConfigFile, Defaults, EnvironmentConfig, NamingConfig, ResourceConfig, ResourcesConfig,
+    ApplyOrder, ConfigFile, Defaults, EnvironmentConfig, NamingConfig, ResourceConfig,
+    ResourcesConfig,
 };
 
 use crate::error::{Error, Result};

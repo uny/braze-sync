@@ -44,6 +44,14 @@ them and `apply` does nothing about them by default. Pass
 `--archive-orphans` to rename them remotely with an
 `[ARCHIVED-YYYY-MM-DD]` prefix; the data is never silently dropped.
 
+When a block body references another block via the Liquid include
+syntax `{{content_blocks.${other} | id: '...'}}`, `apply` topologically
+sorts so the referenced block is created before the referrer. Without
+this, Braze rejects forward references at create time with an opaque
+HTTP 500. Cycles abort the apply with a named-blocks error before any
+write fires. Set `resources.content_block.apply_order: alphabetical` to
+restore pre-v0.11 ordering.
+
 ## Install
 
 **Pre-built binaries** (recommended):
