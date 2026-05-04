@@ -9,6 +9,8 @@ file formats, JSON output, exit codes) for the full v1.x line.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-05-04
+
 ### Added
 
 - **`tag` resource kind, GitOps-only.** Workspace tags are now tracked
