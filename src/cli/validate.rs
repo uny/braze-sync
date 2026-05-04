@@ -8,7 +8,8 @@
 use crate::config::ConfigFile;
 use crate::error::Error;
 use crate::fs::{
-    catalog_io, content_block_io, custom_attribute_io, email_template_io, try_read_resource_dir,
+    catalog_io, content_block_io, custom_attribute_io, email_template_io, tag_io,
+    try_read_resource_dir,
 };
 use crate::resource::ResourceKind;
 use anyhow::anyhow;
@@ -70,6 +71,18 @@ pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> an
                 validate_custom_attributes(
                     &registry_path,
                     cfg.naming.custom_attribute_name_pattern.as_deref(),
+                    &excludes,
+                    &mut issues,
+                )?;
+            }
+            ResourceKind::Tag => {
+                let registry_path = config_dir.join(&cfg.resources.tag.path);
+                let excludes = compile_kind_excludes(cfg, kind)?;
+                validate_tags(
+                    cfg,
+                    config_dir,
+                    &registry_path,
+                    cfg.naming.tag_name_pattern.as_deref(),
                     &excludes,
                     &mut issues,
                 )?;
@@ -348,6 +361,167 @@ fn validate_email_templates(
     }
 
     Ok(())
+}
+
+/// Tag-resource validation. Two checks:
+///   1. Structural — the registry parses, has no duplicate names, and
+///      every name matches the configured naming pattern.
+///   2. Cross-reference — every tag referenced by a content_block or
+///      email_template frontmatter exists in the registry. **This is the
+///      check that prevents the "tag not found in Braze" apply failure
+///      from happening in CI.**
+fn validate_tags(
+    cfg: &ConfigFile,
+    config_dir: &Path,
+    registry_path: &Path,
+    name_pattern: Option<&str>,
+    excludes: &[Regex],
+    issues: &mut Vec<ValidationIssue>,
+) -> anyhow::Result<()> {
+    let registry_opt = match tag_io::load_registry(registry_path) {
+        Ok(r) => r,
+        Err(Error::YamlParse { path, source }) => {
+            issues.push(ValidationIssue {
+                path,
+                message: format!("parse error: {source}"),
+            });
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    if let Some(registry) = &registry_opt {
+        let pattern = compile_name_pattern(name_pattern, "tag_name_pattern")?;
+        let mut seen = HashSet::with_capacity(registry.tags.len());
+        for t in &registry.tags {
+            if crate::config::is_excluded(&t.name, excludes) {
+                continue;
+            }
+            if !seen.insert(t.name.as_str()) {
+                issues.push(ValidationIssue {
+                    path: registry_path.to_path_buf(),
+                    message: format!("duplicate tag name '{}'", t.name),
+                });
+            }
+            check_name_pattern(
+                pattern.as_ref(),
+                &t.name,
+                registry_path,
+                "tag",
+                "tag_name_pattern",
+                issues,
+            );
+        }
+    }
+
+    // Resources matching their own kind's exclude_patterns are still
+    // checked: the apply path doesn't skip them, so neither does this.
+    if cfg.resources.content_block.enabled {
+        let root = config_dir.join(&cfg.resources.content_block.path);
+        walk_for_tag_refs(&root, "content_block", issues, |p| {
+            if !p.is_file() || p.extension().and_then(|e| e.to_str()) != Some("liquid") {
+                return Ok(None);
+            }
+            let cb = content_block_io::read_content_block_file(p)?;
+            Ok(Some((cb.name, cb.tags)))
+        })?
+        .into_iter()
+        .for_each(|(p, name, tags)| {
+            check_resource_tags(
+                registry_opt.as_ref(),
+                excludes,
+                &p,
+                "content_block",
+                &name,
+                &tags,
+                issues,
+            );
+        });
+    }
+    if cfg.resources.email_template.enabled {
+        let root = config_dir.join(&cfg.resources.email_template.path);
+        walk_for_tag_refs(&root, "email_template", issues, |p| {
+            if !p.is_dir() || !p.join("template.yaml").is_file() {
+                return Ok(None);
+            }
+            let et = email_template_io::read_email_template_dir(p)?;
+            Ok(Some((et.name, et.tags)))
+        })?
+        .into_iter()
+        .for_each(|(p, name, tags)| {
+            check_resource_tags(
+                registry_opt.as_ref(),
+                excludes,
+                &p,
+                "email_template",
+                &name,
+                &tags,
+                issues,
+            );
+        });
+    }
+
+    Ok(())
+}
+
+/// Walk a resource directory, skipping non-resource entries. The reader
+/// returns `Ok(None)` for entries that aren't a resource of the kind,
+/// `Ok(Some((name, tags)))` for valid ones, and `Err` for parse failures
+/// (folded into `issues` so a single malformed file doesn't hide the
+/// rest from `validate --resource tag`).
+fn walk_for_tag_refs<F>(
+    root: &Path,
+    kind: &str,
+    issues: &mut Vec<ValidationIssue>,
+    mut read: F,
+) -> anyhow::Result<Vec<(PathBuf, String, Vec<String>)>>
+where
+    F: FnMut(&Path) -> Result<Option<(String, Vec<String>)>, Error>,
+{
+    let mut out = Vec::new();
+    let Some(rd) = try_read_resource_dir(root, kind)? else {
+        return Ok(out);
+    };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        match read(&p) {
+            Ok(Some((name, tags))) => out.push((p, name, tags)),
+            Ok(None) => {}
+            Err(Error::YamlParse { path, source }) => issues.push(ValidationIssue {
+                path,
+                message: format!("parse error: {source}"),
+            }),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(out)
+}
+
+fn check_resource_tags(
+    registry: Option<&crate::resource::TagRegistry>,
+    excludes: &[Regex],
+    path: &Path,
+    kind: &str,
+    resource_name: &str,
+    tags: &[String],
+    issues: &mut Vec<ValidationIssue>,
+) {
+    for t in tags {
+        if crate::config::is_excluded(t, excludes) {
+            continue;
+        }
+        let in_registry = registry.is_some_and(|r| r.contains(t));
+        if !in_registry {
+            issues.push(ValidationIssue {
+                path: path.to_path_buf(),
+                message: format!(
+                    "{kind} '{resource_name}' references tag '{t}' which is not declared in tags/registry.yaml \
+                     (apply will fail with HTTP 400 until the tag is created in the Braze dashboard \
+                     and added to the registry)"
+                ),
+            });
+        }
+    }
 }
 
 fn validate_custom_attributes(

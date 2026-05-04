@@ -14,6 +14,7 @@ pub mod content_block_io;
 pub mod custom_attribute_io;
 pub mod email_template_io;
 pub mod frontmatter;
+pub mod tag_io;
 
 use crate::error::{Error, Result};
 use std::path::{Path, PathBuf};
