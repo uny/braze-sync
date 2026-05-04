@@ -136,8 +136,10 @@ fn default_custom_attribute() -> ResourceConfig {
 }
 
 fn default_tag() -> ResourceConfig {
+    // Opt-in: enabling without a registry file would flag every tag
+    // reference in existing resources as undeclared on first validate.
     ResourceConfig {
-        enabled: true,
+        enabled: false,
         path: PathBuf::from("tags/registry.yaml"),
         exclude_patterns: Vec::new(),
     }

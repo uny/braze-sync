@@ -26,6 +26,10 @@ pub struct ValidateNaming<'a> {
     pub content_block: Option<&'a str>,
     pub custom_attribute: Option<&'a str>,
     pub tag: Option<&'a str>,
+    /// Tag is opt-in (default `false` in production schema). Tests that
+    /// exercise tag features must set this to `true` so the kind is
+    /// included by `selected_kinds`.
+    pub enable_tag: bool,
 }
 
 /// Write a minimal braze-sync config for validate (no real server needed).
@@ -40,6 +44,9 @@ environments:
     api_key_env: BRAZE_VALIDATE_TEST_NOT_SET
 ",
     );
+    if naming.enable_tag {
+        yaml.push_str("resources:\n  tag:\n    enabled: true\n    path: tags/registry.yaml\n");
+    }
     if naming.catalog.is_some()
         || naming.content_block.is_some()
         || naming.custom_attribute.is_some()

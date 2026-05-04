@@ -133,16 +133,20 @@ A single-file registry — see [registry-mode.md](registry-mode.md).
 
 | Field | Type | Default |
 |:---|:---|:---|
-| `enabled` | bool | `true` |
+| `enabled` | bool | `false` |
 | `path` | path | `tags/registry.yaml` |
 | `exclude_patterns` | list of regex strings | `[]` |
 
-A single-file registry of workspace tags. Braze does **not** expose a
-public REST API for tags (no list, create, update, or delete), so the
-registry is derived from local resource frontmatter rather than a remote
-pull, and `apply` cannot create tags — it can only fail-fast (with an
-actionable message) when a referenced tag is missing. See
-[registry-mode.md](registry-mode.md) for the registry contract.
+A single-file registry of workspace tags. **Opt-in:** omitting
+`resources.tag` from your config leaves tag tracking off so existing
+projects upgrade without surprise validation failures. Set
+`resources.tag.enabled: true` and create `tags/registry.yaml` (e.g. via
+`braze-sync export --resource tag`) to turn the feature on. Braze does
+**not** expose a public REST API for tags (no list, create, update, or
+delete), so the registry is derived from local resource frontmatter
+rather than a remote pull, and `apply` cannot create tags — it can only
+fail-fast (with an actionable message) when a referenced tag is missing.
+See [registry-mode.md](registry-mode.md) for the registry contract.
 
 ### `exclude_patterns`
 

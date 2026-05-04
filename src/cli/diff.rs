@@ -393,8 +393,7 @@ pub(crate) fn compute_tag_diffs(
     excludes: &[Regex],
 ) -> anyhow::Result<Vec<ResourceDiff>> {
     let mut local = tag_io::load_registry(registry_path)?;
-    let mut referenced =
-        crate::cli::export::collect_local_tag_references(config_dir, resolved)?;
+    let mut referenced = crate::cli::export::collect_local_tag_references(config_dir, resolved)?;
 
     if let Some(name) = name_filter {
         if let Some(r) = local.as_mut() {

@@ -24,10 +24,11 @@ pub fn load_registry(path: &Path) -> Result<Option<TagRegistry>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.into()),
     };
-    let registry: TagRegistry = serde_norway::from_str(&bytes).map_err(|source| Error::YamlParse {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let registry: TagRegistry =
+        serde_norway::from_str(&bytes).map_err(|source| Error::YamlParse {
+            path: path.to_path_buf(),
+            source,
+        })?;
     Ok(Some(registry))
 }
 

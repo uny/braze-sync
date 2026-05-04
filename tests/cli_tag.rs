@@ -16,13 +16,16 @@ use common::{
 #[test]
 fn validate_passes_when_all_referenced_tags_are_in_registry() {
     let tmp = tempfile::tempdir().unwrap();
-    let config_path = write_config(tmp.path(), Default::default());
+    let config_path = write_config(
+        tmp.path(),
+        ValidateNaming {
+            enable_tag: true,
+            ..Default::default()
+        },
+    );
 
     write_local_content_block_with_tags(tmp.path(), "promo_block", "body", &["campaign", "promo"]);
-    write_local_tag_registry(
-        tmp.path(),
-        "tags:\n  - name: campaign\n  - name: promo\n",
-    );
+    write_local_tag_registry(tmp.path(), "tags:\n  - name: campaign\n  - name: promo\n");
 
     Command::cargo_bin("braze-sync")
         .unwrap()
@@ -34,10 +37,16 @@ fn validate_passes_when_all_referenced_tags_are_in_registry() {
 
 #[test]
 fn validate_fails_when_resource_references_unregistered_tag() {
-    // The whole point of v0.10.0: catch the "tag exists in Git but not in
-    // Braze" failure mode at validate time, before apply touches Braze.
+    // Catch "tag exists in Git but not in Braze" at validate time,
+    // before apply touches Braze.
     let tmp = tempfile::tempdir().unwrap();
-    let config_path = write_config(tmp.path(), Default::default());
+    let config_path = write_config(
+        tmp.path(),
+        ValidateNaming {
+            enable_tag: true,
+            ..Default::default()
+        },
+    );
 
     write_local_content_block_with_tags(
         tmp.path(),
@@ -64,10 +73,39 @@ fn validate_fails_when_resource_references_unregistered_tag() {
 }
 
 #[test]
+fn validate_passes_on_legacy_project_with_tag_references_and_no_registry() {
+    // Tag tracking is opt-in: a project that never declared
+    // `resources.tag` must not start failing on tag frontmatter just
+    // because braze-sync was upgraded.
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), Default::default());
+
+    write_local_content_block_with_tags(
+        tmp.path(),
+        "existing_block",
+        "body",
+        &["campaign", "promo"],
+    );
+
+    Command::cargo_bin("braze-sync")
+        .unwrap()
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["validate"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn validate_passes_with_no_registry_file_and_no_tag_references() {
     // Fresh project, no tags used anywhere.
     let tmp = tempfile::tempdir().unwrap();
-    let config_path = write_config(tmp.path(), Default::default());
+    let config_path = write_config(
+        tmp.path(),
+        ValidateNaming {
+            enable_tag: true,
+            ..Default::default()
+        },
+    );
     write_local_content_block_with_tags(tmp.path(), "plain", "body", &[]);
 
     Command::cargo_bin("braze-sync")
@@ -81,11 +119,14 @@ fn validate_passes_with_no_registry_file_and_no_tag_references() {
 #[test]
 fn validate_reports_duplicate_tag_names_in_registry() {
     let tmp = tempfile::tempdir().unwrap();
-    let config_path = write_config(tmp.path(), Default::default());
-    write_local_tag_registry(
+    let config_path = write_config(
         tmp.path(),
-        "tags:\n  - name: dup\n  - name: dup\n",
+        ValidateNaming {
+            enable_tag: true,
+            ..Default::default()
+        },
     );
+    write_local_tag_registry(tmp.path(), "tags:\n  - name: dup\n  - name: dup\n");
 
     let output = Command::cargo_bin("braze-sync")
         .unwrap()
@@ -106,13 +147,11 @@ fn validate_reports_naming_pattern_violation() {
         tmp.path(),
         ValidateNaming {
             tag: Some("^[a-z][a-z0-9_/-]*$"),
+            enable_tag: true,
             ..Default::default()
         },
     );
-    write_local_tag_registry(
-        tmp.path(),
-        "tags:\n  - name: \"BAD UPPER\"\n",
-    );
+    write_local_tag_registry(tmp.path(), "tags:\n  - name: \"BAD UPPER\"\n");
 
     let output = Command::cargo_bin("braze-sync")
         .unwrap()

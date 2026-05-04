@@ -5,11 +5,11 @@ use crate::braze::BrazeClient;
 use crate::config::{is_excluded, ResolvedConfig};
 use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io, tag_io};
 use crate::resource::{CustomAttributeRegistry, ResourceKind, Tag, TagRegistry};
-use std::collections::BTreeSet;
 use anyhow::Context as _;
 use clap::Args;
 use futures::stream::{StreamExt, TryStreamExt};
 use regex_lite::Regex;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use super::{selected_kinds, warn_if_name_excluded, FETCH_CONCURRENCY};

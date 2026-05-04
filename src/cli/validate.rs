@@ -414,62 +414,87 @@ fn validate_tags(
         }
     }
 
-    // Cross-reference: every tag a local resource declares must be in
-    // the registry. Resources that themselves match exclude_patterns of
-    // their kind are still validated against the tag registry — the
-    // apply path doesn't skip them, so neither does validate.
+    // Resources matching their own kind's exclude_patterns are still
+    // checked: the apply path doesn't skip them, so neither does this.
     if cfg.resources.content_block.enabled {
         let root = config_dir.join(&cfg.resources.content_block.path);
-        if let Some(rd) = try_read_resource_dir(&root, "content_block")? {
-            for entry in rd.flatten() {
-                let p = entry.path();
-                if !p.is_file() {
-                    continue;
-                }
-                let cb = match content_block_io::read_content_block_file(&p) {
-                    Ok(c) => c,
-                    Err(Error::YamlParse { .. }) => continue, // already reported
-                    Err(e) => return Err(e.into()),
-                };
-                check_resource_tags(
-                    registry_opt.as_ref(),
-                    excludes,
-                    &p,
-                    "content_block",
-                    &cb.name,
-                    &cb.tags,
-                    issues,
-                );
+        walk_for_tag_refs(&root, "content_block", issues, |p| {
+            if !p.is_file() || p.extension().and_then(|e| e.to_str()) != Some("liquid") {
+                return Ok(None);
             }
-        }
+            let cb = content_block_io::read_content_block_file(p)?;
+            Ok(Some((cb.name, cb.tags)))
+        })?
+        .into_iter()
+        .for_each(|(p, name, tags)| {
+            check_resource_tags(
+                registry_opt.as_ref(),
+                excludes,
+                &p,
+                "content_block",
+                &name,
+                &tags,
+                issues,
+            );
+        });
     }
     if cfg.resources.email_template.enabled {
         let root = config_dir.join(&cfg.resources.email_template.path);
-        if let Some(rd) = try_read_resource_dir(&root, "email_template")? {
-            for entry in rd.flatten() {
-                let p = entry.path();
-                if !p.is_dir() {
-                    continue;
-                }
-                let et = match email_template_io::read_email_template_dir(&p) {
-                    Ok(t) => t,
-                    Err(Error::YamlParse { .. }) => continue,
-                    Err(e) => return Err(e.into()),
-                };
-                check_resource_tags(
-                    registry_opt.as_ref(),
-                    excludes,
-                    &p,
-                    "email_template",
-                    &et.name,
-                    &et.tags,
-                    issues,
-                );
+        walk_for_tag_refs(&root, "email_template", issues, |p| {
+            if !p.is_dir() || !p.join("template.yaml").is_file() {
+                return Ok(None);
             }
-        }
+            let et = email_template_io::read_email_template_dir(p)?;
+            Ok(Some((et.name, et.tags)))
+        })?
+        .into_iter()
+        .for_each(|(p, name, tags)| {
+            check_resource_tags(
+                registry_opt.as_ref(),
+                excludes,
+                &p,
+                "email_template",
+                &name,
+                &tags,
+                issues,
+            );
+        });
     }
 
     Ok(())
+}
+
+/// Walk a resource directory, skipping non-resource entries. The reader
+/// returns `Ok(None)` for entries that aren't a resource of the kind,
+/// `Ok(Some((name, tags)))` for valid ones, and `Err` for parse failures
+/// (folded into `issues` so a single malformed file doesn't hide the
+/// rest from `validate --resource tag`).
+fn walk_for_tag_refs<F>(
+    root: &Path,
+    kind: &str,
+    issues: &mut Vec<ValidationIssue>,
+    mut read: F,
+) -> anyhow::Result<Vec<(PathBuf, String, Vec<String>)>>
+where
+    F: FnMut(&Path) -> Result<Option<(String, Vec<String>)>, Error>,
+{
+    let mut out = Vec::new();
+    let Some(rd) = try_read_resource_dir(root, kind)? else {
+        return Ok(out);
+    };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        match read(&p) {
+            Ok(Some((name, tags))) => out.push((p, name, tags)),
+            Ok(None) => {}
+            Err(Error::YamlParse { path, source }) => issues.push(ValidationIssue {
+                path,
+                message: format!("parse error: {source}"),
+            }),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(out)
 }
 
 fn check_resource_tags(
