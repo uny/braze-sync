@@ -15,6 +15,7 @@ use crate::diff::catalog::CatalogSchemaDiff;
 use crate::diff::content_block::ContentBlockDiff;
 use crate::diff::custom_attribute::{CustomAttributeDiff, CustomAttributeOp};
 use crate::diff::email_template::EmailTemplateDiff;
+use crate::diff::tag::{TagDiff, TagOp};
 use crate::diff::TextDiffSummary;
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::resource::CatalogField;
@@ -83,6 +84,13 @@ enum JsonDiffEntry {
         #[serde(skip_serializing_if = "Vec::is_empty")]
         hints: Vec<String>,
     },
+    Tag {
+        name: String,
+        #[serde(flatten)]
+        change: JsonTagChange,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        hints: Vec<String>,
+    },
 }
 
 #[derive(Serialize)]
@@ -125,6 +133,15 @@ enum JsonCustomAttributeChange {
     Unchanged,
 }
 
+#[derive(Serialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+enum JsonTagChange {
+    ReferencedButUnregistered,
+    RegisteredButUnreferenced,
+    MetadataOnly,
+    Unchanged,
+}
+
 // =====================================================================
 // Domain → Wire conversion at the boundary.
 // =====================================================================
@@ -151,6 +168,7 @@ impl From<&ResourceDiff> for JsonDiffEntry {
             ResourceDiff::ContentBlock(c) => Self::from_content_block(c),
             ResourceDiff::EmailTemplate(c) => Self::from_email_template(c),
             ResourceDiff::CustomAttribute(c) => Self::from_custom_attribute(c),
+            ResourceDiff::Tag(c) => Self::from_tag(c),
         }
     }
 }
@@ -191,6 +209,23 @@ impl JsonDiffEntry {
             change: json_custom_attribute_change(&c.op),
             hints: c.hints.clone(),
         }
+    }
+
+    fn from_tag(c: &TagDiff) -> Self {
+        Self::Tag {
+            name: c.name.clone(),
+            change: json_tag_change(&c.op),
+            hints: c.hints.clone(),
+        }
+    }
+}
+
+fn json_tag_change(op: &TagOp) -> JsonTagChange {
+    match op {
+        TagOp::ReferencedButUnregistered => JsonTagChange::ReferencedButUnregistered,
+        TagOp::RegisteredButUnreferenced => JsonTagChange::RegisteredButUnreferenced,
+        TagOp::MetadataOnly => JsonTagChange::MetadataOnly,
+        TagOp::Unchanged => JsonTagChange::Unchanged,
     }
 }
 

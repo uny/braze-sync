@@ -9,6 +9,38 @@ file formats, JSON output, exit codes) for the full v1.x line.
 
 ## [Unreleased]
 
+### Added
+
+- **`tag` resource kind, GitOps-only.** Workspace tags are now tracked
+  as a first-class registry at `tags/registry.yaml`. Braze does not
+  expose a public REST API for workspace tags (no list, create, update,
+  or delete — verified against the Braze API documentation), so the
+  registry is derived from local resource references rather than a
+  remote pull. Four CLI integrations:
+  - `export --resource tag` aggregates tags from local content_block
+    and email_template frontmatter into the registry. Run regular
+    `export` first to refresh the resource files, then `export tag` to
+    rebuild the registry.
+  - `validate --resource tag` cross-checks the registry against every
+    tag referenced by local resources. Any tag referenced without a
+    matching registry entry fails validation (exit 3) with an
+    actionable message.
+  - `diff --resource tag` reports the symmetric drift between the
+    registry and observed references (`referenced_but_unregistered` /
+    `registered_but_unreferenced`).
+  - `apply` adds a tag pre-flight that runs on every kind: if a
+    to-be-created/updated resource references a tag missing from the
+    registry, apply aborts before issuing any write — with a list of
+    missing tags and the resources that reference them. This prevents
+    the cascading "Tags could not be found" 400s that previously
+    halted apply at the first tagged content_block create on a fresh
+    target environment.
+
+  Disabled-by-default unless declared in the config. `braze-sync init`
+  now scaffolds a `tags/` directory and declares the resource in the
+  generated config. See `docs/local/feat-tag-management.md` for the
+  design notes.
+
 ## [0.9.2] — 2026-05-03
 
 ### Fixed

@@ -112,11 +112,12 @@ fn write_config_file(config_path: &Path, on_existing: OnExisting) -> anyhow::Res
     Ok(true)
 }
 
-const SUBDIRS: [&str; 4] = [
+const SUBDIRS: [&str; 5] = [
     "catalogs",
     "content_blocks",
     "email_templates",
     "custom_attributes",
+    "tags",
 ];
 
 const GITIGNORE_ENTRIES: [&str; 2] = [".env", ".env.*"];
@@ -215,12 +216,21 @@ resources:
   custom_attribute:
     enabled: true
     path: custom_attributes/registry.yaml
+  # Tags are GitOps-only: Braze does not expose a public REST API for
+  # workspace tags, so braze-sync cannot create them. Tracking them as a
+  # registry makes the dependency explicit so `apply` can fail fast (with
+  # an actionable error and a list of tags to create in the dashboard)
+  # instead of mid-pipeline at the first 400 from Braze.
+  tag:
+    enabled: true
+    path: tags/registry.yaml
 
 # Optional name validators enforced by `braze-sync validate`.
 # naming:
 #   catalog_name_pattern: "^[a-z][a-z0-9_]*$"
 #   content_block_name_pattern: "^[a-zA-Z0-9_]+$"
 #   custom_attribute_name_pattern: "^[a-z][a-z0-9_]*$"
+#   tag_name_pattern: "^[a-z][a-z0-9_/-]*$"
 "#;
 
 #[cfg(test)]

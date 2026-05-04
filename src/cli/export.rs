@@ -3,8 +3,9 @@
 use crate::braze::error::BrazeApiError;
 use crate::braze::BrazeClient;
 use crate::config::{is_excluded, ResolvedConfig};
-use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io};
-use crate::resource::{CustomAttributeRegistry, ResourceKind};
+use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io, tag_io};
+use crate::resource::{CustomAttributeRegistry, ResourceKind, Tag, TagRegistry};
+use std::collections::BTreeSet;
 use anyhow::Context as _;
 use clap::Args;
 use futures::stream::{StreamExt, TryStreamExt};
@@ -35,6 +36,7 @@ pub async fn run(
     let content_blocks_root = config_dir.join(&resolved.resources.content_block.path);
     let email_templates_root = config_dir.join(&resolved.resources.email_template.path);
     let custom_attributes_path = config_dir.join(&resolved.resources.custom_attribute.path);
+    let tags_path = config_dir.join(&resolved.resources.tag.path);
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
@@ -43,7 +45,7 @@ pub async fn run(
         // `custom_attribute` ignores `--name` (registry is a single file),
         // so skipping by exclude match before dispatching wouldn't fit —
         // handle it per-arm alongside the existing --name warning.
-        if !matches!(kind, ResourceKind::CustomAttribute)
+        if !matches!(kind, ResourceKind::CustomAttribute | ResourceKind::Tag)
             && warn_if_name_excluded(kind, args.name.as_deref(), resolved.excludes_for(kind))
         {
             continue;
@@ -100,6 +102,23 @@ pub async fn run(
                 .await
                 .context("exporting custom_attribute")?;
                 eprintln!("✓ custom_attribute: exported {n} attribute(s)");
+                total_written += n;
+            }
+            ResourceKind::Tag => {
+                if args.name.is_some() {
+                    eprintln!(
+                        "⚠ tag: --name is not supported for export \
+                         (the registry is a single file); exporting all tags"
+                    );
+                }
+                let n = export_tags(
+                    config_dir,
+                    &resolved,
+                    &tags_path,
+                    resolved.excludes_for(ResourceKind::Tag),
+                )
+                .context("exporting tag")?;
+                eprintln!("✓ tag: exported {n} tag(s)");
                 total_written += n;
             }
         }
@@ -223,6 +242,71 @@ async fn export_email_templates(
         email_template_io::save_email_template(email_templates_root, et)?;
     }
     Ok(templates.len())
+}
+
+/// Aggregate tag names from local content_block + email_template files.
+///
+/// Braze does not expose a public REST API for workspace tags, so the
+/// registry is derived from the local Git state instead of a remote
+/// list. Operators are expected to run regular `export` first (to refresh
+/// content_block / email_template files), then `export tag` to rebuild
+/// the registry from the freshly-synced frontmatter. Tags found here are
+/// the union of every `tags:` array on every local resource, minus
+/// `tag.exclude_patterns`.
+fn export_tags(
+    config_dir: &Path,
+    resolved: &ResolvedConfig,
+    registry_path: &Path,
+    excludes: &[Regex],
+) -> anyhow::Result<usize> {
+    let referenced = collect_local_tag_references(config_dir, resolved)?;
+    let tags: Vec<Tag> = referenced
+        .into_iter()
+        .filter(|name| !is_excluded(name, excludes))
+        .map(|name| Tag {
+            name,
+            description: None,
+        })
+        .collect();
+    let count = tags.len();
+    let registry = TagRegistry { tags };
+    tag_io::save_registry(registry_path, &registry)?;
+    Ok(count)
+}
+
+/// Walk every local resource directory the config knows about and
+/// collect the union of `tags:` referenced on the resources. Used by
+/// both `export` (to rebuild registry) and `apply`/`validate`
+/// (to cross-check the registry against actual usage).
+pub(crate) fn collect_local_tag_references(
+    config_dir: &Path,
+    resolved: &ResolvedConfig,
+) -> anyhow::Result<BTreeSet<String>> {
+    let mut tags: BTreeSet<String> = BTreeSet::new();
+
+    if resolved.resources.content_block.enabled {
+        let root = config_dir.join(&resolved.resources.content_block.path);
+        let blocks = content_block_io::load_all_content_blocks(&root)
+            .context("loading local content_blocks for tag aggregation")?;
+        for cb in &blocks {
+            for t in &cb.tags {
+                tags.insert(t.clone());
+            }
+        }
+    }
+
+    if resolved.resources.email_template.enabled {
+        let root = config_dir.join(&resolved.resources.email_template.path);
+        let templates = crate::fs::email_template_io::load_all_email_templates(&root)
+            .context("loading local email_templates for tag aggregation")?;
+        for et in &templates {
+            for t in &et.tags {
+                tags.insert(t.clone());
+            }
+        }
+    }
+
+    Ok(tags)
 }
 
 async fn export_custom_attributes(

@@ -57,6 +57,7 @@ fn render_one(out: &mut String, diff: &ResourceDiff) {
         ResourceDiff::ContentBlock(d) => render_content_block(out, d),
         ResourceDiff::EmailTemplate(d) => render_email_template(out, d),
         ResourceDiff::CustomAttribute(d) => render_custom_attribute(out, d),
+        ResourceDiff::Tag(d) => render_tag(out, d),
     }
 }
 
@@ -66,6 +67,7 @@ fn kind_icon(kind: ResourceKind) -> &'static str {
         ResourceKind::ContentBlock => "📝",
         ResourceKind::EmailTemplate => "📧",
         ResourceKind::CustomAttribute => "🏷 ",
+        ResourceKind::Tag => "🔖",
     }
 }
 
@@ -75,6 +77,7 @@ fn kind_label(kind: ResourceKind) -> &'static str {
         ResourceKind::ContentBlock => "Content Block",
         ResourceKind::EmailTemplate => "Email Template",
         ResourceKind::CustomAttribute => "Custom Attribute",
+        ResourceKind::Tag => "Tag",
     }
 }
 
@@ -180,6 +183,28 @@ fn render_custom_attribute(out: &mut String, d: &CustomAttributeDiff) {
             out.push_str("   ~ metadata-only change (no API to apply)\n");
         }
         CustomAttributeOp::Unchanged => {}
+    }
+    for hint in &d.hints {
+        let _ = writeln!(out, "   ℹ {hint}");
+    }
+}
+
+fn render_tag(out: &mut String, d: &crate::diff::tag::TagDiff) {
+    use crate::diff::tag::TagOp;
+    match &d.op {
+        TagOp::ReferencedButUnregistered => {
+            out.push_str(
+                "   ⚠ referenced by a resource but not in tags/registry.yaml \
+                 (apply will fail until added + created in Braze dashboard)\n",
+            );
+        }
+        TagOp::RegisteredButUnreferenced => {
+            out.push_str("   ℹ in tags/registry.yaml but no local resource references it\n");
+        }
+        TagOp::MetadataOnly => {
+            out.push_str("   ~ description differs (no API to apply)\n");
+        }
+        TagOp::Unchanged => {}
     }
     for hint in &d.hints {
         let _ = writeln!(out, "   ℹ {hint}");

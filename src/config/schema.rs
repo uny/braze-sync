@@ -51,6 +51,8 @@ pub struct ResourcesConfig {
     pub email_template: ResourceConfig,
     #[serde(default = "default_custom_attribute")]
     pub custom_attribute: ResourceConfig,
+    #[serde(default = "default_tag")]
+    pub tag: ResourceConfig,
 }
 
 impl ResourcesConfig {
@@ -61,6 +63,7 @@ impl ResourcesConfig {
             ResourceKind::ContentBlock => &self.content_block,
             ResourceKind::EmailTemplate => &self.email_template,
             ResourceKind::CustomAttribute => &self.custom_attribute,
+            ResourceKind::Tag => &self.tag,
         }
     }
 
@@ -76,6 +79,7 @@ impl Default for ResourcesConfig {
             content_block: default_content_block(),
             email_template: default_email_template(),
             custom_attribute: default_custom_attribute(),
+            tag: default_tag(),
         }
     }
 }
@@ -131,6 +135,14 @@ fn default_custom_attribute() -> ResourceConfig {
     }
 }
 
+fn default_tag() -> ResourceConfig {
+    ResourceConfig {
+        enabled: true,
+        path: PathBuf::from("tags/registry.yaml"),
+        exclude_patterns: Vec::new(),
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NamingConfig {
@@ -140,4 +152,6 @@ pub struct NamingConfig {
     pub content_block_name_pattern: Option<String>,
     #[serde(default)]
     pub custom_attribute_name_pattern: Option<String>,
+    #[serde(default)]
+    pub tag_name_pattern: Option<String>,
 }

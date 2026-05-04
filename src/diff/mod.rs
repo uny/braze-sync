@@ -13,6 +13,7 @@ pub mod content_block;
 pub mod custom_attribute;
 pub mod email_template;
 pub mod orphan;
+pub mod tag;
 
 #[derive(Debug, Clone)]
 pub struct TextDiffSummary {
@@ -82,6 +83,7 @@ pub enum ResourceDiff {
     ContentBlock(content_block::ContentBlockDiff),
     EmailTemplate(email_template::EmailTemplateDiff),
     CustomAttribute(custom_attribute::CustomAttributeDiff),
+    Tag(tag::TagDiff),
 }
 
 impl ResourceDiff {
@@ -91,6 +93,7 @@ impl ResourceDiff {
             Self::ContentBlock(_) => ResourceKind::ContentBlock,
             Self::EmailTemplate(_) => ResourceKind::EmailTemplate,
             Self::CustomAttribute(_) => ResourceKind::CustomAttribute,
+            Self::Tag(_) => ResourceKind::Tag,
         }
     }
 
@@ -100,6 +103,7 @@ impl ResourceDiff {
             Self::ContentBlock(d) => &d.name,
             Self::EmailTemplate(d) => &d.name,
             Self::CustomAttribute(d) => &d.name,
+            Self::Tag(d) => &d.name,
         }
     }
 
@@ -109,6 +113,7 @@ impl ResourceDiff {
             Self::ContentBlock(d) => d.has_changes(),
             Self::EmailTemplate(d) => d.has_changes(),
             Self::CustomAttribute(d) => d.has_changes(),
+            Self::Tag(d) => d.has_changes(),
         }
     }
 
@@ -122,6 +127,11 @@ impl ResourceDiff {
     pub fn is_actionable(&self) -> bool {
         match self {
             Self::CustomAttribute(d) => d.is_actionable(),
+            // Tag drift is informational from apply's perspective: Braze has
+            // no tag-mutation API, so `apply --kind tag` cannot push changes.
+            // Pre-flight (in cli/apply.rs) consumes Tag diffs separately to
+            // block apply when a referenced tag is unregistered.
+            Self::Tag(_) => false,
             other => other.has_changes(),
         }
     }
@@ -136,6 +146,8 @@ impl ResourceDiff {
             Self::EmailTemplate(_) => false,
             // Custom Attribute "removal" is only a deprecation flag toggle.
             Self::CustomAttribute(_) => false,
+            // Tags have no API mutation at all.
+            Self::Tag(_) => false,
         }
     }
 

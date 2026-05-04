@@ -25,6 +25,7 @@ pub struct ValidateNaming<'a> {
     pub catalog: Option<&'a str>,
     pub content_block: Option<&'a str>,
     pub custom_attribute: Option<&'a str>,
+    pub tag: Option<&'a str>,
 }
 
 /// Write a minimal braze-sync config for validate (no real server needed).
@@ -42,6 +43,7 @@ environments:
     if naming.catalog.is_some()
         || naming.content_block.is_some()
         || naming.custom_attribute.is_some()
+        || naming.tag.is_some()
     {
         yaml.push_str("naming:\n");
         if let Some(p) = naming.catalog {
@@ -52,6 +54,9 @@ environments:
         }
         if let Some(p) = naming.custom_attribute {
             yaml.push_str(&format!("  custom_attribute_name_pattern: \"{p}\"\n"));
+        }
+        if let Some(p) = naming.tag {
+            yaml.push_str(&format!("  tag_name_pattern: \"{p}\"\n"));
         }
     }
     fs::write(&config_path, yaml).unwrap();
@@ -100,6 +105,29 @@ pub fn write_local_custom_attribute_registry(dir: &Path, yaml_body: &str) {
     let ca_dir = dir.join("custom_attributes");
     fs::create_dir_all(&ca_dir).unwrap();
     fs::write(ca_dir.join("registry.yaml"), yaml_body).unwrap();
+}
+
+/// Write a local tag registry to `<dir>/tags/registry.yaml`.
+pub fn write_local_tag_registry(dir: &Path, yaml_body: &str) {
+    let t_dir = dir.join("tags");
+    fs::create_dir_all(&t_dir).unwrap();
+    fs::write(t_dir.join("registry.yaml"), yaml_body).unwrap();
+}
+
+/// Write a content block with explicit tags in frontmatter.
+pub fn write_local_content_block_with_tags(dir: &Path, name: &str, body: &str, tags: &[&str]) {
+    let cb_dir = dir.join("content_blocks");
+    fs::create_dir_all(&cb_dir).unwrap();
+    let mut text = format!("---\nname: {name}\nstate: active\n");
+    if !tags.is_empty() {
+        text.push_str("tags:\n");
+        for t in tags {
+            text.push_str(&format!("  - {t}\n"));
+        }
+    }
+    text.push_str("---\n");
+    text.push_str(body);
+    fs::write(cb_dir.join(format!("{name}.liquid")), text).unwrap();
 }
 
 /// Write a local email template directory under `<dir>/email_templates/<name>/`.

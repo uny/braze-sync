@@ -26,7 +26,7 @@ use std::path::Path;
 
 use super::diff::{
     compute_catalog_schema_diffs, compute_content_block_plan, compute_custom_attribute_diffs,
-    compute_email_template_plan,
+    compute_email_template_plan, compute_tag_diffs,
 };
 use super::{selected_kinds, warn_if_name_excluded};
 
@@ -69,6 +69,7 @@ pub async fn run(
     let content_blocks_root = config_dir.join(&resolved.resources.content_block.path);
     let email_templates_root = config_dir.join(&resolved.resources.email_template.path);
     let custom_attributes_path = config_dir.join(&resolved.resources.custom_attribute.path);
+    let tags_path = config_dir.join(&resolved.resources.tag.path);
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
@@ -126,8 +127,26 @@ pub async fn run(
                 .context("computing custom_attribute plan")?;
                 summary.diffs.extend(diffs);
             }
+            ResourceKind::Tag => {
+                let diffs = compute_tag_diffs(
+                    config_dir,
+                    &resolved,
+                    &tags_path,
+                    args.name.as_deref(),
+                    resolved.excludes_for(ResourceKind::Tag),
+                )
+                .context("computing tag plan")?;
+                summary.diffs.extend(diffs);
+            }
         }
     }
+
+    // Tag pre-flight: refuse to fire any mutation if a referenced tag is
+    // missing from the registry. Without this, Braze rejects the first
+    // tag-bearing create/update with HTTP 400 and the rest of the plan
+    // halts mid-pipeline. Runs even when --kind is restricted to a non-tag
+    // kind so tag drift cannot sneak past a per-kind apply.
+    enforce_tag_preflight(config_dir, &resolved, &summary)?;
 
     let mode_label = if args.confirm {
         "Plan:"
@@ -204,6 +223,9 @@ pub async fn run(
                     }
                 }
             }
+            // Tags have no remote mutation API. The diff is informational;
+            // pre-flight (above) is what protects apply from missing tags.
+            ResourceDiff::Tag(_) => {}
         }
     }
 
@@ -224,6 +246,87 @@ pub async fn run(
 /// `orphan` → archive-or-noop) maps to a supported API call, so there
 /// is nothing to statically reject. If a future diff shape is added
 /// (e.g. content-type change with no in-place update), re-evaluate.
+/// Block apply when any resource that would be mutated references a tag
+/// not declared in `tags/registry.yaml`. Braze has no public REST API for
+/// workspace tags, so we cannot create them; the only reliable way to
+/// avoid the cascading "Tags could not be found" failure (a single tagged
+/// content_block create that 400s blocks every queued create after it) is
+/// to refuse the apply entirely until the operator either (a) adds the
+/// tag to the registry after creating it in the Braze dashboard, or
+/// (b) removes the tag from the offending resource.
+///
+/// No-op when the `tag` resource is disabled in config — this is opt-in
+/// safety, not a forced gate.
+fn enforce_tag_preflight(
+    config_dir: &Path,
+    resolved: &ResolvedConfig,
+    summary: &DiffSummary,
+) -> anyhow::Result<()> {
+    if !resolved.resources.is_enabled(ResourceKind::Tag) {
+        return Ok(());
+    }
+    let tags_path = config_dir.join(&resolved.resources.tag.path);
+    let registry = match crate::fs::tag_io::load_registry(&tags_path)? {
+        Some(r) => r,
+        // No registry file → operator hasn't opted in to tag tracking yet;
+        // skip the gate rather than blocking on a config-only state.
+        None => return Ok(()),
+    };
+    let excludes = resolved.excludes_for(ResourceKind::Tag);
+
+    let mut missing: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for diff in &summary.diffs {
+        // Only inspect resources that would actually fire a write.
+        let (resource_label, tags) = match diff {
+            ResourceDiff::ContentBlock(d) => match &d.op {
+                DiffOp::Added(cb) => (format!("content_block '{}'", cb.name), &cb.tags),
+                DiffOp::Modified { to, .. } => (format!("content_block '{}'", to.name), &to.tags),
+                _ => continue,
+            },
+            ResourceDiff::EmailTemplate(d) => match &d.op {
+                DiffOp::Added(et) => (format!("email_template '{}'", et.name), &et.tags),
+                DiffOp::Modified { to, .. } => (format!("email_template '{}'", to.name), &to.tags),
+                _ => continue,
+            },
+            _ => continue,
+        };
+        for t in tags {
+            if crate::config::is_excluded(t, excludes) {
+                continue;
+            }
+            if !registry.contains(t) {
+                missing
+                    .entry(t.clone())
+                    .or_default()
+                    .push(resource_label.clone());
+            }
+        }
+    }
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let mut msg = String::from(
+        "tag pre-flight: refusing to apply — the following tags are referenced \
+         by resources that would be created/updated, but are not declared in \
+         tags/registry.yaml:\n",
+    );
+    for (tag, refs) in &missing {
+        msg.push_str(&format!("  • '{tag}' — referenced by:\n"));
+        for r in refs {
+            msg.push_str(&format!("      - {r}\n"));
+        }
+    }
+    msg.push_str(
+        "\nFix: create each missing tag in the Braze dashboard \
+         (Settings → Tags), then add it to tags/registry.yaml and re-run apply. \
+         Braze does not expose a tag creation API.",
+    );
+    Err(anyhow!(msg))
+}
+
 fn check_for_unsupported_ops(summary: &DiffSummary) -> anyhow::Result<()> {
     for diff in &summary.diffs {
         if let ResourceDiff::CatalogSchema(d) = diff {

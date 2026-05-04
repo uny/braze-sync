@@ -129,6 +129,21 @@ containing `template.yaml`, `body.html`, and `body.txt`.
 
 A single-file registry — see [registry-mode.md](registry-mode.md).
 
+#### `tag`
+
+| Field | Type | Default |
+|:---|:---|:---|
+| `enabled` | bool | `true` |
+| `path` | path | `tags/registry.yaml` |
+| `exclude_patterns` | list of regex strings | `[]` |
+
+A single-file registry of workspace tags. Braze does **not** expose a
+public REST API for tags (no list, create, update, or delete), so the
+registry is derived from local resource frontmatter rather than a remote
+pull, and `apply` cannot create tags — it can only fail-fast (with an
+actionable message) when a referenced tag is missing. See
+[registry-mode.md](registry-mode.md) for the registry contract.
+
 ### `exclude_patterns`
 
 `exclude_patterns` is a list of regular expressions — when a resource's
@@ -182,6 +197,7 @@ mean "no check".
 | `catalog_name_pattern` | Catalog names |
 | `content_block_name_pattern` | Content block names |
 | `custom_attribute_name_pattern` | Custom attribute names |
+| `tag_name_pattern` | Tag names (workspace tags in `tags/registry.yaml`) |
 
 Naming checks exit code `3` on mismatch, the same as any other
 `validate` failure.

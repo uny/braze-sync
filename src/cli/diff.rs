@@ -15,10 +15,11 @@ use crate::diff::custom_attribute::diff as diff_custom_attributes;
 use crate::diff::email_template::{
     diff as diff_email_template, EmailTemplateDiff, EmailTemplateIdIndex,
 };
+use crate::diff::tag::diff as diff_tags;
 use crate::diff::{DiffSummary, ResourceDiff};
 use crate::error::Error;
 use crate::format::OutputFormat;
-use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io};
+use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io, tag_io};
 use crate::resource::{Catalog, ContentBlock, EmailTemplate, ResourceKind};
 use anyhow::Context as _;
 use clap::Args;
@@ -55,6 +56,7 @@ pub async fn run(
     let content_blocks_root = config_dir.join(&resolved.resources.content_block.path);
     let email_templates_root = config_dir.join(&resolved.resources.email_template.path);
     let custom_attributes_path = config_dir.join(&resolved.resources.custom_attribute.path);
+    let tags_path = config_dir.join(&resolved.resources.tag.path);
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
@@ -106,6 +108,17 @@ pub async fn run(
                 )
                 .await
                 .context("computing custom_attribute diff")?;
+                summary.diffs.extend(diffs);
+            }
+            ResourceKind::Tag => {
+                let diffs = compute_tag_diffs(
+                    config_dir,
+                    &resolved,
+                    &tags_path,
+                    args.name.as_deref(),
+                    resolved.excludes_for(ResourceKind::Tag),
+                )
+                .context("computing tag diff")?;
                 summary.diffs.extend(diffs);
             }
         }
@@ -365,4 +378,35 @@ pub(crate) async fn compute_custom_attribute_diffs(
         .into_iter()
         .map(ResourceDiff::CustomAttribute)
         .collect())
+}
+
+/// Compute tag drift between the local registry and the union of tag
+/// names referenced by other local resources. Pure local computation —
+/// Braze has no tag list endpoint, so there is nothing to compare against
+/// remotely. Apply pre-flight is what catches "tag exists in Git but not
+/// in Braze" failures.
+pub(crate) fn compute_tag_diffs(
+    config_dir: &Path,
+    resolved: &ResolvedConfig,
+    registry_path: &Path,
+    name_filter: Option<&str>,
+    excludes: &[Regex],
+) -> anyhow::Result<Vec<ResourceDiff>> {
+    let mut local = tag_io::load_registry(registry_path)?;
+    let mut referenced =
+        crate::cli::export::collect_local_tag_references(config_dir, resolved)?;
+
+    if let Some(name) = name_filter {
+        if let Some(r) = local.as_mut() {
+            r.tags.retain(|t| t.name == name);
+        }
+        referenced.retain(|n| n == name);
+    }
+    if let Some(r) = local.as_mut() {
+        r.tags.retain(|t| !is_excluded(&t.name, excludes));
+    }
+    referenced.retain(|n| !is_excluded(n, excludes));
+
+    let tag_diffs = diff_tags(local.as_ref(), &referenced);
+    Ok(tag_diffs.into_iter().map(ResourceDiff::Tag).collect())
 }

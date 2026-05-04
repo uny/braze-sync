@@ -10,11 +10,13 @@ pub mod catalog;
 pub mod content_block;
 pub mod custom_attribute;
 pub mod email_template;
+pub mod tag;
 
 pub use catalog::{Catalog, CatalogField, CatalogFieldType};
 pub use content_block::{ContentBlock, ContentBlockState};
 pub use custom_attribute::{CustomAttribute, CustomAttributeRegistry, CustomAttributeType};
 pub use email_template::EmailTemplate;
+pub use tag::{Tag, TagRegistry};
 
 /// Every resource type braze-sync manages, as a single sum type.
 ///
@@ -26,6 +28,7 @@ pub enum Resource {
     ContentBlock(ContentBlock),
     EmailTemplate(EmailTemplate),
     CustomAttributeRegistry(CustomAttributeRegistry),
+    TagRegistry(TagRegistry),
 }
 
 /// Lightweight tag for filtering / CLI args. Mirrors [`Resource`] but
@@ -37,6 +40,7 @@ pub enum ResourceKind {
     ContentBlock,
     EmailTemplate,
     CustomAttribute,
+    Tag,
 }
 
 impl ResourceKind {
@@ -46,6 +50,7 @@ impl ResourceKind {
             Self::ContentBlock => "content_block",
             Self::EmailTemplate => "email_template",
             Self::CustomAttribute => "custom_attribute",
+            Self::Tag => "tag",
         }
     }
 
@@ -55,6 +60,7 @@ impl ResourceKind {
             Self::ContentBlock,
             Self::EmailTemplate,
             Self::CustomAttribute,
+            Self::Tag,
         ]
     }
 }
@@ -66,6 +72,7 @@ impl Resource {
             Self::ContentBlock(_) => ResourceKind::ContentBlock,
             Self::EmailTemplate(_) => ResourceKind::EmailTemplate,
             Self::CustomAttributeRegistry(_) => ResourceKind::CustomAttribute,
+            Self::TagRegistry(_) => ResourceKind::Tag,
         }
     }
 }
