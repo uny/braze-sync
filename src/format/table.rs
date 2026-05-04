@@ -201,9 +201,6 @@ fn render_tag(out: &mut String, d: &crate::diff::tag::TagDiff) {
         TagOp::RegisteredButUnreferenced => {
             out.push_str("   ℹ in tags/registry.yaml but no local resource references it\n");
         }
-        TagOp::MetadataOnly => {
-            out.push_str("   ~ description differs (no API to apply)\n");
-        }
         TagOp::Unchanged => {}
     }
     for hint in &d.hints {

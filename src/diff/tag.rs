@@ -19,7 +19,6 @@
 //! in the apply-mutation sense. The diff is consumed by validate and by
 //! `apply`'s pre-flight check.
 
-use crate::diff::opt_str_eq;
 use crate::resource::{Tag, TagRegistry};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -37,10 +36,6 @@ pub enum TagOp {
     ReferencedButUnregistered,
     /// Declared in the registry but no local resource references it.
     RegisteredButUnreferenced,
-    /// Description-only metadata difference between two registry entries
-    /// with the same name (only meaningful if a future `import` merges
-    /// registries from multiple environments).
-    MetadataOnly,
     Unchanged,
 }
 
@@ -94,48 +89,6 @@ pub fn diff(local: Option<&TagRegistry>, referenced: &BTreeSet<String>) -> Vec<T
         });
     }
 
-    diffs
-}
-
-/// Compare two tag registries entry-by-entry. Used by tests and
-/// future-merge tooling. Description-only differences are surfaced as
-/// `MetadataOnly`; presence-only differences map to the same one-sided
-/// variants used by [`diff`].
-#[allow(dead_code)]
-pub fn diff_registries(local: Option<&TagRegistry>, remote: Option<&TagRegistry>) -> Vec<TagDiff> {
-    let local_by: BTreeMap<&str, &Tag> = local
-        .map(|r| r.tags.iter().map(|t| (t.name.as_str(), t)).collect())
-        .unwrap_or_default();
-    let remote_by: BTreeMap<&str, &Tag> = remote
-        .map(|r| r.tags.iter().map(|t| (t.name.as_str(), t)).collect())
-        .unwrap_or_default();
-
-    let mut all_names: BTreeSet<&str> = BTreeSet::new();
-    all_names.extend(local_by.keys().copied());
-    all_names.extend(remote_by.keys().copied());
-
-    let mut diffs = Vec::new();
-    for name in all_names {
-        let l = local_by.get(name);
-        let r = remote_by.get(name);
-        let op = match (l, r) {
-            (Some(a), Some(b)) => {
-                if opt_str_eq(&a.description, &b.description) {
-                    TagOp::Unchanged
-                } else {
-                    TagOp::MetadataOnly
-                }
-            }
-            (Some(_), None) => TagOp::RegisteredButUnreferenced,
-            (None, Some(_)) => TagOp::ReferencedButUnregistered,
-            (None, None) => unreachable!(),
-        };
-        diffs.push(TagDiff {
-            name: name.to_string(),
-            op,
-            hints: Vec::new(),
-        });
-    }
     diffs
 }
 

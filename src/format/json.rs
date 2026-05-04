@@ -138,7 +138,6 @@ enum JsonCustomAttributeChange {
 enum JsonTagChange {
     ReferencedButUnregistered,
     RegisteredButUnreferenced,
-    MetadataOnly,
     Unchanged,
 }
 
@@ -224,7 +223,6 @@ fn json_tag_change(op: &TagOp) -> JsonTagChange {
     match op {
         TagOp::ReferencedButUnregistered => JsonTagChange::ReferencedButUnregistered,
         TagOp::RegisteredButUnreferenced => JsonTagChange::RegisteredButUnreferenced,
-        TagOp::MetadataOnly => JsonTagChange::MetadataOnly,
         TagOp::Unchanged => JsonTagChange::Unchanged,
     }
 }
