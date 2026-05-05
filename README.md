@@ -8,15 +8,17 @@ synchronize it to Braze with the same workflow you'd use for
 detection in CI, and an `--allow-destructive` gate that has to be
 crossed explicitly before anything is dropped.
 
-## Status: v0.8.0 (4 resources + init)
+## Status: v0.10.0 (5 resources + init)
 
-braze-sync manages Braze **configuration** as code. The four managed
+braze-sync manages Braze **configuration** as code. The five managed
 resource kinds are:
 
 - **Catalog Schema** (field definitions, types, constraints)
 - **Content Block** (reusable Liquid fragments)
 - **Email Template** (HTML/Liquid templates)
 - **Custom Attribute** registry (definition-level; deprecation toggle)
+- **Tag** registry (workspace tags referenced by other resources;
+  derived from local frontmatter because Braze exposes no tag API)
 
 **Out of scope**: runtime data like catalog **items**, user attribute
 values, events, and campaigns. Those have their own systems of record;
@@ -41,6 +43,14 @@ that exist in Braze but not in Git become *orphans* — `diff` flags
 them and `apply` does nothing about them by default. Pass
 `--archive-orphans` to rename them remotely with an
 `[ARCHIVED-YYYY-MM-DD]` prefix; the data is never silently dropped.
+
+When a block body references another block via the Liquid include
+syntax `{{content_blocks.${other} | id: '...'}}`, `apply` topologically
+sorts so the referenced block is created before the referrer. Without
+this, Braze rejects forward references at create time with an opaque
+HTTP 500. Cycles abort the apply with a named-blocks error before any
+write fires. Set `resources.content_block.apply_order: alphabetical` to
+restore pre-v0.11 ordering.
 
 ## Install
 
@@ -172,19 +182,6 @@ These will be lifted across the v0.x → v1.0 milestones:
   The diff layer also ignores the field to prevent an "infinite
   drift" loop (Braze has no DELETE, so a persistently-Modified
   Content Block is a trap).
-- **No pagination yet.** v0.2.0 sends a single page request to
-  `/catalogs` and `/content_blocks/list` (limit 100). For
-  `/content_blocks/list` this is a **hard error** if Braze reports more
-  results than fit on one page, or if a full page comes back with no
-  total to verify against — workspaces with >100 content blocks cannot
-  use v0.2.0 yet. Without the guard, `apply` could create duplicates of
-  blocks living on page 2+ (their names would diff as `Added`). This
-  limit is symmetric for `--name <foo>`: content blocks have no
-  get-by-name endpoint, so `diff --name`, `apply --name`, and
-  `export --name` still list-then-filter and hit the same page cap.
-  For `/catalogs` v0.2.0 still only warns; the same guard will be
-  applied symmetrically in a follow-up. Pagination support lands in
-  Phase C scale validation.
 - **`--archive-orphans` is a two-step read-modify-write.** The rename
   fetches `/content_blocks/info` to preserve the body, then posts
   `/content_blocks/update` with the archived name. If another operator
@@ -193,9 +190,9 @@ These will be lifted across the v0.x → v1.0 milestones:
   single-operator GitOps workflow v0.2.0 targets; a compare-and-swap
   header would lift it, but Braze's content_blocks API does not
   currently document one.
-- **`--no-color` only affects tracing output.** v0.2.0 does not emit
-  ANSI colors in table or diff output, so the flag currently only
-  suppresses ANSI escapes from the tracing subscriber on stderr.
+- **`--no-color` only affects tracing output.** Table and diff output
+  do not currently emit ANSI colors, so the flag only suppresses
+  ANSI escapes from the tracing subscriber on stderr.
 
 ## Exit codes
 

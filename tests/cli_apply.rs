@@ -1218,3 +1218,257 @@ async fn apply_custom_attribute_batches_both_directions() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Applied 2 change(s)"), "stderr: {stderr}");
 }
+
+// =====================================================================
+// Content Block apply order
+// =====================================================================
+//
+// Topological apply: when a local block references another via the
+// Liquid `{{content_blocks.${target}}}` include, the target must be
+// created first because Braze validates the body at create time and
+// returns an opaque HTTP 500 if the reference doesn't resolve.
+
+async fn received_create_names(server: &MockServer) -> Vec<String> {
+    server
+        .received_requests()
+        .await
+        .expect("recording is on by default")
+        .iter()
+        .filter(|r| {
+            r.method == wiremock::http::Method::POST && r.url.path() == "/content_blocks/create"
+        })
+        .map(|r| {
+            let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+            v.get("name").and_then(|n| n.as_str()).unwrap().to_string()
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn content_block_apply_creates_dependency_target_before_referrer() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/content_blocks/create"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_block_id": "new-id",
+            "message": "success"
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_content_block(
+        tmp.path(),
+        "a_referrer",
+        "see {{content_blocks.${b_target} | id: 'cb1'}}\n",
+    );
+    write_local_content_block(tmp.path(), "b_target", "leaf body\n");
+
+    // Dry-run first: the plan must list b_target before a_referrer so
+    // operators see the actual write sequence before passing --confirm.
+    let dry_run = tokio::task::spawn_blocking({
+        let cfg = config_path.clone();
+        move || {
+            Command::cargo_bin("braze-sync")
+                .unwrap()
+                .env("BRAZE_API_KEY", "test-key")
+                .args(["--config", cfg.to_str().unwrap()])
+                .args(["apply", "--resource", "content_block"])
+                .output()
+                .unwrap()
+        }
+    })
+    .await
+    .unwrap();
+    assert!(dry_run.status.success(), "dry-run must succeed");
+    let dry_stdout = String::from_utf8_lossy(&dry_run.stdout);
+    let pos_target = dry_stdout
+        .find("Content Block: b_target")
+        .expect("plan must list b_target");
+    let pos_referrer = dry_stdout
+        .find("Content Block: a_referrer")
+        .expect("plan must list a_referrer");
+    assert!(
+        pos_target < pos_referrer,
+        "dry-run plan must list b_target before a_referrer; got:\n{dry_stdout}"
+    );
+
+    tokio::task::spawn_blocking({
+        let cfg = config_path.clone();
+        move || {
+            Command::cargo_bin("braze-sync")
+                .unwrap()
+                .env("BRAZE_API_KEY", "test-key")
+                .args(["--config", cfg.to_str().unwrap()])
+                .args(["apply", "--resource", "content_block", "--confirm"])
+                .assert()
+                .success();
+        }
+    })
+    .await
+    .unwrap();
+
+    // Wiremock records requests in receive order, so create-call index
+    // is the apply order.
+    assert_eq!(
+        received_create_names(&server).await,
+        vec!["b_target".to_string(), "a_referrer".to_string()],
+        "dependency target must be created before referrer"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn content_block_apply_aborts_on_reference_cycle_before_any_write() {
+    // `.expect(0)` on POST proves no create call fires before the
+    // cycle is reported.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_content_block(tmp.path(), "cycle_a", "{{content_blocks.${cycle_b}}}\n");
+    write_local_content_block(tmp.path(), "cycle_b", "{{content_blocks.${cycle_a}}}\n");
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "content_block", "--confirm"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(!output.status.success(), "expected non-zero exit");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("dependency cycle"),
+        "expected cycle error in stderr; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("cycle_a") && stderr.contains("cycle_b"),
+        "cycle error must name both blocks; got:\n{stderr}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn content_block_apply_alphabetical_opt_out_preserves_input_order() {
+    // With `apply_order: alphabetical` the topo pass is skipped; we
+    // assert a_referrer comes first (alphabetical), b_target second.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/content_blocks/create"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_block_id": "new-id",
+            "message": "success"
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    // write_config doesn't surface apply_order; hand-write the YAML
+    // rather than grow the helper for one test.
+    let config_path = tmp.path().join("braze-sync.config.yaml");
+    let yaml = format!(
+        "version: 1
+default_environment: test
+environments:
+  test:
+    api_endpoint: {uri}
+    api_key_env: BRAZE_API_KEY
+resources:
+  content_block:
+    enabled: true
+    path: content_blocks/
+    apply_order: alphabetical
+",
+        uri = server.uri()
+    );
+    std::fs::write(&config_path, yaml).unwrap();
+    write_local_content_block(
+        tmp.path(),
+        "a_referrer",
+        "see {{content_blocks.${b_target}}}\n",
+    );
+    write_local_content_block(tmp.path(), "b_target", "leaf\n");
+
+    // Dry-run first: with apply_order=alphabetical the topo pass is
+    // skipped so the plan must echo input/alphabetical order.
+    let dry_run = tokio::task::spawn_blocking({
+        let cfg = config_path.clone();
+        move || {
+            Command::cargo_bin("braze-sync")
+                .unwrap()
+                .env("BRAZE_API_KEY", "test-key")
+                .args(["--config", cfg.to_str().unwrap()])
+                .args(["apply", "--resource", "content_block"])
+                .output()
+                .unwrap()
+        }
+    })
+    .await
+    .unwrap();
+    assert!(dry_run.status.success(), "dry-run must succeed");
+    let dry_stdout = String::from_utf8_lossy(&dry_run.stdout);
+    let pos_referrer = dry_stdout
+        .find("Content Block: a_referrer")
+        .expect("plan must list a_referrer");
+    let pos_target = dry_stdout
+        .find("Content Block: b_target")
+        .expect("plan must list b_target");
+    assert!(
+        pos_referrer < pos_target,
+        "dry-run plan under alphabetical mode must keep a_referrer before b_target; got:\n{dry_stdout}"
+    );
+
+    tokio::task::spawn_blocking({
+        let cfg = config_path.clone();
+        move || {
+            Command::cargo_bin("braze-sync")
+                .unwrap()
+                .env("BRAZE_API_KEY", "test-key")
+                .args(["--config", cfg.to_str().unwrap()])
+                .args(["apply", "--resource", "content_block", "--confirm"])
+                .assert()
+                .success();
+        }
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        received_create_names(&server).await,
+        vec!["a_referrer".to_string(), "b_target".to_string()],
+        "alphabetical opt-out must preserve input order"
+    );
+}
