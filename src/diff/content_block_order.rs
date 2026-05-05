@@ -71,17 +71,18 @@ impl std::fmt::Display for Cycle {
 /// order of `nodes`, so the dry-run plan for the same repo state is
 /// reproducible. Edge target lists are walked in given order; callers
 /// who want deterministic cycle-path messages should pre-sort/dedup.
-pub fn topo_sort(
-    nodes: &[String],
-    edges: &BTreeMap<String, Vec<String>>,
+pub fn topo_sort<'a>(
+    nodes: &'a [String],
+    edges: &'a BTreeMap<String, Vec<String>>,
 ) -> Result<Vec<String>, Cycle> {
-    let in_set: BTreeSet<&str> = nodes.iter().map(String::as_str).collect();
-    let mut visited: BTreeSet<String> = BTreeSet::new();
-    let mut on_stack: Vec<String> = Vec::new();
-    let mut on_stack_set: BTreeSet<String> = BTreeSet::new();
-    let mut out: Vec<String> = Vec::with_capacity(nodes.len());
+    let in_set: BTreeSet<&'a str> = nodes.iter().map(String::as_str).collect();
+    let mut visited: BTreeSet<&'a str> = BTreeSet::new();
+    let mut on_stack: Vec<&'a str> = Vec::new();
+    let mut on_stack_set: BTreeSet<&'a str> = BTreeSet::new();
+    let mut out: Vec<&'a str> = Vec::with_capacity(nodes.len());
 
     for n in nodes {
+        let n = n.as_str();
         if !visited.contains(n) {
             visit(
                 n,
@@ -94,35 +95,36 @@ pub fn topo_sort(
             )?;
         }
     }
-    Ok(out)
+    Ok(out.into_iter().map(str::to_owned).collect())
 }
 
-fn visit(
-    node: &str,
-    edges: &BTreeMap<String, Vec<String>>,
-    in_set: &BTreeSet<&str>,
-    visited: &mut BTreeSet<String>,
-    on_stack: &mut Vec<String>,
-    on_stack_set: &mut BTreeSet<String>,
-    out: &mut Vec<String>,
+fn visit<'a>(
+    node: &'a str,
+    edges: &'a BTreeMap<String, Vec<String>>,
+    in_set: &BTreeSet<&'a str>,
+    visited: &mut BTreeSet<&'a str>,
+    on_stack: &mut Vec<&'a str>,
+    on_stack_set: &mut BTreeSet<&'a str>,
+    out: &mut Vec<&'a str>,
 ) -> Result<(), Cycle> {
     if on_stack_set.contains(node) {
         // Cycle: cut the prefix before the first occurrence and append
         // the closing node so the message reads `A → B → C → A`.
-        let start = on_stack.iter().position(|n| n == node).unwrap_or(0);
-        let mut path: Vec<String> = on_stack[start..].to_vec();
-        path.push(node.to_string());
+        let start = on_stack.iter().position(|n| *n == node).unwrap_or(0);
+        let mut path: Vec<String> = on_stack[start..].iter().map(|s| (*s).to_owned()).collect();
+        path.push(node.to_owned());
         return Err(Cycle { path });
     }
     if visited.contains(node) {
         return Ok(());
     }
-    on_stack.push(node.to_string());
-    on_stack_set.insert(node.to_string());
+    on_stack.push(node);
+    on_stack_set.insert(node);
 
     if let Some(targets) = edges.get(node) {
         for t in targets {
-            if in_set.contains(t.as_str()) {
+            let t = t.as_str();
+            if in_set.contains(t) {
                 visit(t, edges, in_set, visited, on_stack, on_stack_set, out)?;
             }
         }
@@ -130,8 +132,8 @@ fn visit(
 
     on_stack.pop();
     on_stack_set.remove(node);
-    visited.insert(node.to_string());
-    out.push(node.to_string());
+    visited.insert(node);
+    out.push(node);
     Ok(())
 }
 

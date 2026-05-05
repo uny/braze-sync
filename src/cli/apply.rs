@@ -157,17 +157,15 @@ pub async fn run(
         resolved.resources.content_block.apply_order,
         ApplyOrder::Dependency
     ) {
-        let reordered = reorder_content_block_diffs_by_dependency(std::mem::take(
-            &mut summary.diffs,
-        ))
-        .map_err(|cycle| {
-            anyhow!(
-                "content_block dependency cycle detected\n       \
-                     {cycle}\n       \
-                     resolve by removing one of these references and try again"
-            )
-        })?;
-        summary.diffs = reordered;
+        summary.diffs =
+            reorder_content_block_diffs_by_dependency(std::mem::take(&mut summary.diffs))
+                .map_err(|cycle| {
+                    anyhow!(
+                        "content_block dependency cycle detected\n       \
+                         {cycle}\n       \
+                         resolve by removing one of these references and try again"
+                    )
+                })?;
     }
 
     let mode_label = if args.confirm {
