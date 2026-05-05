@@ -22,7 +22,6 @@
 //! Pure module: no I/O, no Braze calls.
 
 use crate::diff::{DiffOp, ResourceDiff};
-use crate::resource::ContentBlock;
 use regex_lite::Regex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
@@ -72,7 +71,8 @@ impl std::fmt::Display for Cycle {
 /// just becomes a leaf for sort purposes. Output is dependency-order:
 /// targets before referrers. Stable across runs: ties broken by input
 /// order of `nodes`, so the dry-run plan for the same repo state is
-/// reproducible.
+/// reproducible. Edge target lists are walked in given order; callers
+/// who want deterministic cycle-path messages should pre-sort/dedup.
 pub fn topo_sort(nodes: &[String], edges: &BTreeMap<String, Vec<String>>) -> Result<Vec<String>, Cycle> {
     let in_set: BTreeSet<&str> = nodes.iter().map(String::as_str).collect();
     let mut visited: BTreeSet<String> = BTreeSet::new();
@@ -120,12 +120,10 @@ fn visit(
     on_stack_set.insert(node.to_string());
 
     if let Some(targets) = edges.get(node) {
-        // Iterate targets in stable order so cycle paths are deterministic.
-        let mut sorted: Vec<&String> = targets.iter().filter(|t| in_set.contains(t.as_str())).collect();
-        sorted.sort();
-        sorted.dedup();
-        for t in sorted {
-            visit(t, edges, in_set, visited, on_stack, on_stack_set, out)?;
+        for t in targets {
+            if in_set.contains(t.as_str()) {
+                visit(t, edges, in_set, visited, on_stack, on_stack_set, out)?;
+            }
         }
     }
 
@@ -149,77 +147,62 @@ fn visit(
 pub fn reorder_content_block_diffs_by_dependency(
     diffs: Vec<ResourceDiff>,
 ) -> Result<Vec<ResourceDiff>, Cycle> {
-    let mut content_blocks: Vec<ResourceDiff> = Vec::new();
     let mut others: Vec<ResourceDiff> = Vec::new();
+    let mut inactionable: Vec<ResourceDiff> = Vec::new();
+    let mut actionable_names: Vec<String> = Vec::new();
+    let mut by_name: BTreeMap<String, ResourceDiff> = BTreeMap::new();
+    let mut edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
     for d in diffs {
         match d {
-            ResourceDiff::ContentBlock(_) => content_blocks.push(d),
-            _ => others.push(d),
-        }
-    }
-    if content_blocks.is_empty() {
-        return Ok(others);
-    }
-
-    // Split actionable (carry a body) vs non-actionable (no body to
-    // parse, no write to fire). Only actionable blocks participate in
-    // topo-sort.
-    let mut actionable_names: Vec<String> = Vec::new();
-    let mut actionable_by_name: BTreeMap<String, ResourceDiff> = BTreeMap::new();
-    let mut inactionable: Vec<ResourceDiff> = Vec::new();
-
-    for d in content_blocks {
-        let actionable_body: Option<(&str, &ContentBlock)> = match &d {
-            ResourceDiff::ContentBlock(cb) if !cb.orphan => match &cb.op {
-                DiffOp::Added(body) => Some((cb.name.as_str(), body)),
-                DiffOp::Modified { to, .. } => Some((cb.name.as_str(), to)),
-                _ => None,
-            },
-            _ => None,
-        };
-        if let Some((name, _body)) = actionable_body {
-            actionable_names.push(name.to_string());
-            actionable_by_name.insert(name.to_string(), d);
-        } else {
-            inactionable.push(d);
-        }
-    }
-
-    // Build edges: referrer → [targets] limited to actionable names.
-    // Self-references (a block including itself) are dropped — they
-    // are a Braze-side problem, not an apply-order problem, and we
-    // don't want them to surface here as cycles.
-    let mut edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for name in &actionable_names {
-        let body = match actionable_by_name.get(name).expect("just inserted") {
-            ResourceDiff::ContentBlock(cb) => match &cb.op {
-                DiffOp::Added(b) => &b.content,
-                DiffOp::Modified { to, .. } => &to.content,
-                _ => unreachable!("split above"),
-            },
-            _ => unreachable!("split above"),
-        };
-        let refs: Vec<String> = extract_block_references(body)
-            .into_iter()
-            .filter(|t| t != name)
-            .collect();
-        if !refs.is_empty() {
-            edges.insert(name.clone(), refs);
+            ResourceDiff::ContentBlock(cb) => {
+                let body: Option<&str> = if cb.orphan {
+                    None
+                } else {
+                    match &cb.op {
+                        DiffOp::Added(b) => Some(b.content.as_str()),
+                        DiffOp::Modified { to, .. } => Some(to.content.as_str()),
+                        _ => None,
+                    }
+                };
+                match body {
+                    Some(b) => {
+                        let name = cb.name.clone();
+                        // Self-references are a Braze-side problem, not
+                        // an apply-order problem — drop them so they
+                        // don't surface as false-positive cycles.
+                        let mut refs: Vec<String> = extract_block_references(b)
+                            .into_iter()
+                            .filter(|t| *t != name)
+                            .collect();
+                        refs.sort();
+                        refs.dedup();
+                        if !refs.is_empty() {
+                            edges.insert(name.clone(), refs);
+                        }
+                        actionable_names.push(name.clone());
+                        by_name.insert(name, ResourceDiff::ContentBlock(cb));
+                    }
+                    None => inactionable.push(ResourceDiff::ContentBlock(cb)),
+                }
+            }
+            other => others.push(other),
         }
     }
 
     let sorted_names = topo_sort(&actionable_names, &edges)?;
 
-    let mut out = Vec::with_capacity(others.len() + actionable_names.len() + inactionable.len());
+    let mut out = Vec::with_capacity(others.len() + sorted_names.len() + inactionable.len());
     // Non-content_block diffs keep their original relative position
-    // before the content_block group, mirroring the per-kind iteration
-    // order of `apply::run`.
+    // before the content_block group, mirroring `apply::run`'s per-kind
+    // iteration order. Inactionable blocks trail — apply order doesn't
+    // affect them and trailing keeps the dry-run plan readable.
     out.extend(others);
     for n in &sorted_names {
         out.push(
-            actionable_by_name
+            by_name
                 .remove(n)
-                .expect("topo_sort returns names from actionable set"),
+                .expect("topo_sort returns names from input set"),
         );
     }
     out.extend(inactionable);
@@ -230,7 +213,7 @@ pub fn reorder_content_block_diffs_by_dependency(
 mod tests {
     use super::*;
     use crate::diff::content_block::ContentBlockDiff;
-    use crate::resource::ContentBlockState;
+    use crate::resource::{ContentBlock, ContentBlockState};
 
     fn cb(name: &str, body: &str) -> ContentBlock {
         ContentBlock {

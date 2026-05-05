@@ -108,11 +108,11 @@ pub struct ResourceConfig {
     pub apply_order: ApplyOrder,
 }
 
-/// Apply-time ordering policy. Default `Dependency` — strictly better
-/// than alphabetical when a content_block references another block,
-/// equivalent when none does. `Alphabetical` preserves pre-v0.11.0
-/// behavior for callers who built tooling around the exact apply
-/// sequence.
+/// Apply-time ordering policy. `Dependency` topo-sorts content_blocks
+/// so a referrer is never created before its target (see
+/// `diff::content_block_order`). `Alphabetical` skips that pass and
+/// applies in name order — kept for callers who built tooling around
+/// the exact apply sequence.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ApplyOrder {

@@ -1220,21 +1220,32 @@ async fn apply_custom_attribute_batches_both_directions() {
 }
 
 // =====================================================================
-// Content Block apply order (v0.11.0)
+// Content Block apply order
 // =====================================================================
 //
 // Topological apply: when a local block references another via the
 // Liquid `{{content_blocks.${target}}}` include, the target must be
 // created first because Braze validates the body at create time and
-// returns an opaque HTTP 500 if the reference doesn't resolve. These
-// tests pin the new ordering and the cycle-detection guard rail.
+// returns an opaque HTTP 500 if the reference doesn't resolve.
+
+async fn received_create_names(server: &MockServer) -> Vec<String> {
+    server
+        .received_requests()
+        .await
+        .expect("recording is on by default")
+        .iter()
+        .filter(|r| {
+            r.method == wiremock::http::Method::POST && r.url.path() == "/content_blocks/create"
+        })
+        .map(|r| {
+            let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+            v.get("name").and_then(|n| n.as_str()).unwrap().to_string()
+        })
+        .collect()
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn content_block_apply_creates_dependency_target_before_referrer() {
-    // a_referrer (alphabetically first) references b_target. Pre-v0.11.0
-    // this would create a_referrer first and trip Braze's forward-ref
-    // 500. We assert that POSTs land in dependency order: b_target
-    // before a_referrer.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/content_blocks/list"))
@@ -1277,24 +1288,10 @@ async fn content_block_apply_creates_dependency_target_before_referrer() {
     .await
     .unwrap();
 
-    // Inspect the received request log: pull out the create POSTs in
-    // order and assert b_target lands first. Wiremock records every
-    // request the server received in the order it received it, so the
-    // index of each create call is the apply order.
-    let received = server
-        .received_requests()
-        .await
-        .expect("recording is on by default");
-    let create_names: Vec<String> = received
-        .iter()
-        .filter(|r| r.method == wiremock::http::Method::POST && r.url.path() == "/content_blocks/create")
-        .map(|r| {
-            let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
-            v.get("name").and_then(|n| n.as_str()).unwrap().to_string()
-        })
-        .collect();
+    // Wiremock records requests in receive order, so create-call index
+    // is the apply order.
     assert_eq!(
-        create_names,
+        received_create_names(&server).await,
         vec!["b_target".to_string(), "a_referrer".to_string()],
         "dependency target must be created before referrer"
     );
@@ -1302,9 +1299,8 @@ async fn content_block_apply_creates_dependency_target_before_referrer() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn content_block_apply_aborts_on_reference_cycle_before_any_write() {
-    // A → B → A. Topo-sort must reject this with a named-block error
-    // before any HTTP write goes out. `.expect(0)` on POST proves no
-    // create call fires.
+    // `.expect(0)` on POST proves no create call fires before the
+    // cycle is reported.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/content_blocks/list"))
@@ -1350,10 +1346,8 @@ async fn content_block_apply_aborts_on_reference_cycle_before_any_write() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn content_block_apply_alphabetical_opt_out_preserves_input_order() {
-    // With `apply_order: alphabetical` the topo pass is skipped and the
-    // forward reference would explode against real Braze. Here we just
-    // assert ordering: a_referrer first (alphabetical), b_target
-    // second — i.e. the v0.10 behavior is opt-in-able.
+    // With `apply_order: alphabetical` the topo pass is skipped; we
+    // assert a_referrer comes first (alphabetical), b_target second.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/content_blocks/list"))
@@ -1373,9 +1367,8 @@ async fn content_block_apply_alphabetical_opt_out_preserves_input_order() {
         .await;
 
     let tmp = tempfile::tempdir().unwrap();
-    // Hand-write config with apply_order override; write_config doesn't
-    // surface the field and we don't want to grow that helper for one
-    // test.
+    // write_config doesn't surface apply_order; hand-write the YAML
+    // rather than grow the helper for one test.
     let config_path = tmp.path().join("braze-sync.config.yaml");
     let yaml = format!(
         "version: 1
@@ -1415,18 +1408,9 @@ resources:
     .await
     .unwrap();
 
-    let received = server.received_requests().await.unwrap();
-    let create_names: Vec<String> = received
-        .iter()
-        .filter(|r| r.method == wiremock::http::Method::POST && r.url.path() == "/content_blocks/create")
-        .map(|r| {
-            let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
-            v.get("name").and_then(|n| n.as_str()).unwrap().to_string()
-        })
-        .collect();
     assert_eq!(
-        create_names,
+        received_create_names(&server).await,
         vec!["a_referrer".to_string(), "b_target".to_string()],
-        "alphabetical opt-out must preserve pre-v0.11 ordering"
+        "alphabetical opt-out must preserve input order"
     );
 }

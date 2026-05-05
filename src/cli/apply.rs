@@ -149,11 +149,10 @@ pub async fn run(
     // kind so tag drift cannot sneak past a per-kind apply.
     enforce_tag_preflight(config_dir, &resolved, &summary)?;
 
-    // Content_block apply-order pass. Targets must precede referrers
-    // because Braze validates `{{content_blocks.${other}}}` includes at
-    // create time and rejects forward references with an opaque HTTP
-    // 500. Done before plan-print so the dry-run preview reflects the
-    // exact order writes will fire.
+    // Targets must precede referrers because Braze validates
+    // `{{content_blocks.${other}}}` includes at create time and rejects
+    // forward references with an opaque HTTP 500. Done before
+    // plan-print so the dry-run preview reflects actual write order.
     if matches!(
         resolved.resources.content_block.apply_order,
         ApplyOrder::Dependency
