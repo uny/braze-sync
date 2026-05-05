@@ -110,7 +110,10 @@ fn visit<'a>(
     if on_stack_set.contains(node) {
         // Cycle: cut the prefix before the first occurrence and append
         // the closing node so the message reads `A → B → C → A`.
-        let start = on_stack.iter().position(|n| *n == node).unwrap_or(0);
+        let start = on_stack
+            .iter()
+            .position(|n| *n == node)
+            .expect("on_stack and on_stack_set must stay in sync");
         let mut path: Vec<String> = on_stack[start..].iter().map(|s| (*s).to_owned()).collect();
         path.push(node.to_owned());
         return Err(Cycle { path });

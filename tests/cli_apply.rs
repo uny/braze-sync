@@ -1273,6 +1273,35 @@ async fn content_block_apply_creates_dependency_target_before_referrer() {
     );
     write_local_content_block(tmp.path(), "b_target", "leaf body\n");
 
+    // Dry-run first: the plan must list b_target before a_referrer so
+    // operators see the actual write sequence before passing --confirm.
+    let dry_run = tokio::task::spawn_blocking({
+        let cfg = config_path.clone();
+        move || {
+            Command::cargo_bin("braze-sync")
+                .unwrap()
+                .env("BRAZE_API_KEY", "test-key")
+                .args(["--config", cfg.to_str().unwrap()])
+                .args(["apply", "--resource", "content_block"])
+                .output()
+                .unwrap()
+        }
+    })
+    .await
+    .unwrap();
+    assert!(dry_run.status.success(), "dry-run must succeed");
+    let dry_stdout = String::from_utf8_lossy(&dry_run.stdout);
+    let pos_target = dry_stdout
+        .find("Content Block: b_target")
+        .expect("plan must list b_target");
+    let pos_referrer = dry_stdout
+        .find("Content Block: a_referrer")
+        .expect("plan must list a_referrer");
+    assert!(
+        pos_target < pos_referrer,
+        "dry-run plan must list b_target before a_referrer; got:\n{dry_stdout}"
+    );
+
     tokio::task::spawn_blocking({
         let cfg = config_path.clone();
         move || {
@@ -1392,6 +1421,35 @@ resources:
         "see {{content_blocks.${b_target}}}\n",
     );
     write_local_content_block(tmp.path(), "b_target", "leaf\n");
+
+    // Dry-run first: with apply_order=alphabetical the topo pass is
+    // skipped so the plan must echo input/alphabetical order.
+    let dry_run = tokio::task::spawn_blocking({
+        let cfg = config_path.clone();
+        move || {
+            Command::cargo_bin("braze-sync")
+                .unwrap()
+                .env("BRAZE_API_KEY", "test-key")
+                .args(["--config", cfg.to_str().unwrap()])
+                .args(["apply", "--resource", "content_block"])
+                .output()
+                .unwrap()
+        }
+    })
+    .await
+    .unwrap();
+    assert!(dry_run.status.success(), "dry-run must succeed");
+    let dry_stdout = String::from_utf8_lossy(&dry_run.stdout);
+    let pos_referrer = dry_stdout
+        .find("Content Block: a_referrer")
+        .expect("plan must list a_referrer");
+    let pos_target = dry_stdout
+        .find("Content Block: b_target")
+        .expect("plan must list b_target");
+    assert!(
+        pos_referrer < pos_target,
+        "dry-run plan under alphabetical mode must keep a_referrer before b_target; got:\n{dry_stdout}"
+    );
 
     tokio::task::spawn_blocking({
         let cfg = config_path.clone();
