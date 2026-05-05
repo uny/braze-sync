@@ -34,10 +34,8 @@ use std::sync::OnceLock;
 fn ref_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(
-            r"\{\{\s*content_blocks\.\$\{\s*([^\s}|]+)\s*\}(?:\s*\|[^}]*)?\s*\}\}",
-        )
-        .expect("static regex")
+        Regex::new(r"\{\{\s*content_blocks\.\$\{\s*([^\s}|]+)\s*\}(?:\s*\|[^}]*)?\s*\}\}")
+            .expect("static regex")
     })
 }
 
@@ -73,7 +71,10 @@ impl std::fmt::Display for Cycle {
 /// order of `nodes`, so the dry-run plan for the same repo state is
 /// reproducible. Edge target lists are walked in given order; callers
 /// who want deterministic cycle-path messages should pre-sort/dedup.
-pub fn topo_sort(nodes: &[String], edges: &BTreeMap<String, Vec<String>>) -> Result<Vec<String>, Cycle> {
+pub fn topo_sort(
+    nodes: &[String],
+    edges: &BTreeMap<String, Vec<String>>,
+) -> Result<Vec<String>, Cycle> {
     let in_set: BTreeSet<&str> = nodes.iter().map(String::as_str).collect();
     let mut visited: BTreeSet<String> = BTreeSet::new();
     let mut on_stack: Vec<String> = Vec::new();
@@ -384,10 +385,7 @@ mod tests {
         //   d
         // d must come first; b and c before a.
         let diffs = vec![
-            added(
-                "a",
-                "{{content_blocks.${b}}} and {{content_blocks.${c}}}",
-            ),
+            added("a", "{{content_blocks.${b}}} and {{content_blocks.${c}}}"),
             added("b", "{{content_blocks.${d}}}"),
             added("c", "{{content_blocks.${d}}}"),
             added("d", "leaf"),

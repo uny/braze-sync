@@ -7,7 +7,7 @@ versions follow [semver](https://semver.org/). Per IMPLEMENTATION.md
 changes; v1.0 freezes the public surface (CLI flags, config schema,
 file formats, JSON output, exit codes) for the full v1.x line.
 
-## [Unreleased]
+## [0.11.0] — 2026-05-05
 
 ### Added
 
