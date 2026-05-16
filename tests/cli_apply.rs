@@ -250,6 +250,100 @@ async fn confirm_with_allow_destructive_calls_delete_and_exits_zero() {
     .unwrap();
 }
 
+/// Local-side absence of a catalog must produce a top-level DELETE
+/// against `/catalogs/{name}` and skip the per-field DELETE loop — one
+/// remote call drops the schema and all items.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn confirm_with_allow_destructive_deletes_entire_catalog_in_one_call() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/catalogs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "catalogs": [
+                {"name": "cardiology", "fields": [
+                    {"name": "id", "type": "string"},
+                    {"name": "legacy", "type": "string"}
+                ]}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/catalogs/cardiology"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // Per-field DELETEs must NOT fire when the whole catalog is dropped.
+    Mock::given(method("DELETE"))
+        .and(path("/catalogs/cardiology/fields/legacy"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    // No local schema for "cardiology" — diff produces top-level Removed.
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args([
+                "apply",
+                "--resource",
+                "catalog_schema",
+                "--confirm",
+                "--allow-destructive",
+            ])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
+
+/// Top-level catalog removal is destructive and must be gated by
+/// `--allow-destructive`; without it, apply exits 6 and issues no
+/// DELETE.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn confirm_without_allow_destructive_blocks_full_catalog_delete() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/catalogs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "catalogs": [
+                {"name": "cardiology", "fields": [{"name": "id", "type": "string"}]}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    // No local schema for "cardiology".
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "catalog_schema", "--confirm"])
+            .assert()
+            .failure()
+            .code(6);
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn confirm_with_new_catalog_posts_create_and_skips_per_field_post() {
     let server = MockServer::start().await;
