@@ -148,13 +148,10 @@ impl BrazeClient {
     }
 
     /// `DELETE /catalogs/{name}` — drop an entire catalog schema and all its
-    /// items. **Destructive** and irreversible on the Braze side: the items
-    /// table is gone, not soft-deleted.
+    /// items. **Destructive** and irreversible on the Braze side: items are
+    /// not soft-deleted.
     ///
-    /// 404 stays as `Http { status: 404, .. }` rather than being mapped to
-    /// `NotFound`, matching `delete_catalog_field`: a 404 here means "the
-    /// catalog you wanted to delete is already gone" — drift the user should
-    /// see, not a silent no-op.
+    /// 404 handling matches `delete_catalog_field` — see there.
     pub async fn delete_catalog(&self, catalog_name: &str) -> Result<(), BrazeApiError> {
         let req = self.delete(&["catalogs", catalog_name]);
         self.send_ok(req).await
