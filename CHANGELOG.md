@@ -7,6 +7,23 @@ versions follow [semver](https://semver.org/). Per IMPLEMENTATION.md
 changes; v1.0 freezes the public surface (CLI flags, config schema,
 file formats, JSON output, exit codes) for the full v1.x line.
 
+## [0.12.0] — 2026-05-16
+
+### Added
+
+- **Catalog schema deletion.** `apply` now drops a catalog from Braze
+  when its directory is removed locally, via the synchronous
+  `DELETE /catalogs/{name}` endpoint. The top-level delete short-
+  circuits the per-field DELETE loop because one call drops the
+  schema and all items at once. Among managed resources this was the
+  last destructive endpoint Braze exposes that braze-sync had not yet
+  wrapped — content_block and email_template have no DELETE API on
+  Braze's side, and custom_attribute / tag have no per-entity delete
+  surface at all. The existing destructive-op gate is reused, so
+  `--allow-destructive` is required in addition to `--confirm`; a 404
+  from Braze is surfaced as drift (`Http { status: 404, .. }`) rather
+  than silently treated as success, matching `delete_catalog_field`.
+
 ## [0.11.0] — 2026-05-05
 
 ### Added
