@@ -146,6 +146,19 @@ impl BrazeClient {
         let req = self.delete(&["catalogs", catalog_name, "fields", field_name]);
         self.send_ok(req).await
     }
+
+    /// `DELETE /catalogs/{name}` — drop an entire catalog schema and all its
+    /// items. **Destructive** and irreversible on the Braze side: the items
+    /// table is gone, not soft-deleted.
+    ///
+    /// 404 stays as `Http { status: 404, .. }` rather than being mapped to
+    /// `NotFound`, matching `delete_catalog_field`: a 404 here means "the
+    /// catalog you wanted to delete is already gone" — drift the user should
+    /// see, not a silent no-op.
+    pub async fn delete_catalog(&self, catalog_name: &str) -> Result<(), BrazeApiError> {
+        let req = self.delete(&["catalogs", catalog_name]);
+        self.send_ok(req).await
+    }
 }
 
 #[derive(Serialize)]
@@ -758,6 +771,59 @@ mod tests {
             .delete_catalog_field("cardiology", "x")
             .await
             .unwrap_err();
+        match err {
+            BrazeApiError::Http { status, body } => {
+                assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+                assert!(body.contains("oops"));
+            }
+            other => panic!("expected Http, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_catalog_happy_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/catalogs/cardiology"))
+            .and(header("authorization", "Bearer test-key"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        client.delete_catalog("cardiology").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_catalog_404_stays_as_http_not_mapped_to_not_found() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/catalogs/missing"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let err = client.delete_catalog("missing").await.unwrap_err();
+        match err {
+            BrazeApiError::Http { status, .. } => {
+                assert_eq!(status, StatusCode::NOT_FOUND);
+            }
+            other => panic!("expected Http(404), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_catalog_server_error_returns_http() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/catalogs/cardiology"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("oops"))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let err = client.delete_catalog("cardiology").await.unwrap_err();
         match err {
             BrazeApiError::Http { status, body } => {
                 assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);

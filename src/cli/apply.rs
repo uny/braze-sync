@@ -351,17 +351,6 @@ fn enforce_tag_preflight(
 fn check_for_unsupported_ops(summary: &DiffSummary) -> anyhow::Result<()> {
     for diff in &summary.diffs {
         if let ResourceDiff::CatalogSchema(d) = diff {
-            match &d.op {
-                DiffOp::Added(_) => {}
-                DiffOp::Removed(_) => {
-                    return Err(anyhow!(
-                        "deleting catalog '{}' (top-level) is not supported by braze-sync; \
-                         only field-level changes can be applied",
-                        d.name
-                    ));
-                }
-                _ => {}
-            }
             // Field type change would require delete-then-add, which is
             // data-losing on the field — refuse rather than silently drop.
             for fd in &d.field_diffs {
@@ -470,6 +459,18 @@ async fn apply_catalog_schema(
             .create_catalog(cat)
             .await
             .with_context(|| format!("creating catalog '{}'", d.name))?;
+        return Ok(1);
+    }
+
+    // Top-level delete short-circuits the field loop: `DELETE /catalogs/{name}`
+    // drops the schema and all items in one call, so per-field DELETEs would
+    // be redundant (and would 404 once the catalog is gone).
+    if let DiffOp::Removed(_) = &d.op {
+        tracing::info!(catalog = %d.name, "deleting catalog");
+        client
+            .delete_catalog(&d.name)
+            .await
+            .with_context(|| format!("deleting catalog '{}'", d.name))?;
         return Ok(1);
     }
 
