@@ -8,7 +8,7 @@ synchronize it to Braze with the same workflow you'd use for
 detection in CI, and an `--allow-destructive` gate that has to be
 crossed explicitly before anything is dropped.
 
-## Status: v0.10.0 (5 resources + init)
+## Status: v0.12.0 (5 resources + init)
 
 braze-sync manages Braze **configuration** as code. The five managed
 resource kinds are:
@@ -87,9 +87,9 @@ cargo install --path .
 
    This writes a commented `braze-sync.config.yaml` (pointing at the
    EU default endpoint — edit if your instance is elsewhere) plus
-   empty `catalogs/`, `content_blocks/`, `email_templates/`, and
-   `custom_attributes/` directories. Safe to re-run: existing configs
-   are kept unless `--force` is passed.
+   empty `catalogs/`, `content_blocks/`, `email_templates/`,
+   `custom_attributes/`, and `tags/` directories. Safe to re-run:
+   existing configs are kept unless `--force` is passed.
 
 2. Set your Braze API key in an environment variable:
 
@@ -136,13 +136,13 @@ cargo install --path .
 ## Safety by default
 
 `braze-sync apply` is **dry-run by default**. You must pass `--confirm`
-to write to Braze. Destructive operations (field deletes) require an
-additional `--allow-destructive` flag — `apply` exits with code **6**
-if you try to drop a field without it.
+to write to Braze. Destructive operations (catalog deletes, field
+deletes) require an additional `--allow-destructive` flag — `apply`
+exits with code **6** if you try to drop a catalog or field without it.
 
 ```bash
-braze-sync apply --confirm                     # add fields ok, drop fields → exit 6
-braze-sync apply --confirm --allow-destructive # field drops permitted
+braze-sync apply --confirm                     # add fields ok, deletes → exit 6
+braze-sync apply --confirm --allow-destructive # catalog/field deletes permitted
 ```
 
 API keys never live in the config file. The config only references the
@@ -154,10 +154,6 @@ that `tracing` / `Debug` / panic messages cannot leak it.
 
 These will be lifted across the v0.x → v1.0 milestones:
 
-- **No catalog delete.** `apply` creates new catalogs and adds fields,
-  but it will not delete a catalog that exists in Braze and is missing
-  from Git — the side effect (loss of all items) is too large to do
-  implicitly. Drop the catalog manually in the Braze dashboard.
 - **No field type changes.** Changing a field's type from `string` to
   `number` (or similar) is not auto-applied because the operation is
   data-losing on the field. Drop the field manually in Braze, then
