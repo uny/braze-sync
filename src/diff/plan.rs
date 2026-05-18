@@ -1,9 +1,8 @@
 //! Plan file schema and matching for `diff --plan-out` / `apply --plan`.
 //!
-//! See `docs/local/feat-apply-plan-locking.md`. The plan file freezes the
-//! set of actionable ops produced by `diff` so that `apply` can refuse to
-//! run when the live Braze state has drifted since the plan was generated
-//! (Terraform-style plan/apply lock).
+//! The plan file freezes the set of actionable ops produced by `diff` so
+//! that `apply` can refuse to run when the live Braze state has drifted
+//! since the plan was generated (Terraform-style plan/apply lock).
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -16,8 +15,7 @@ use crate::resource::ResourceKind;
 
 pub const CURRENT_PLAN_VERSION: u32 = 1;
 
-/// Warn at apply time when the saved plan is older than this. 24h matches
-/// the proposal in `docs/local/feat-apply-plan-locking.md` §3.3.
+/// Warn at apply time when the saved plan is older than this.
 pub const STALE_PLAN_WARN_THRESHOLD: chrono::TimeDelta = chrono::TimeDelta::hours(24);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,8 +45,8 @@ pub struct PlanOp {
 
 /// The coarse op classification used for plan locking. Field-level
 /// payloads are deliberately excluded so the plan file stays safe to
-/// publish as a CI artifact (§3.1) and so the apply-time comparison
-/// tolerates benign content edits made between plan and apply (§3.2).
+/// publish as a CI artifact and so the apply-time comparison tolerates
+/// benign content edits made between plan and apply.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanOpType {
@@ -92,31 +90,38 @@ impl PlanFile {
         std::fs::write(path, json)
     }
 
-    /// Multiset equality over `(kind, name, op_type)`. Order-independent.
-    pub fn ops_match(&self, other: &[PlanOp]) -> bool {
-        let saved: BTreeSet<&PlanOp> = self.ops.iter().collect();
-        let fresh: BTreeSet<&PlanOp> = other.iter().collect();
-        saved == fresh
-    }
-
-    /// Names that are in `self.ops` but not in `other` (lost since plan).
-    pub fn missing_in(&self, other: &[PlanOp]) -> Vec<PlanOp> {
-        let fresh: BTreeSet<&PlanOp> = other.iter().collect();
-        self.ops
+    /// Compare saved ops against `fresh` (multiset over `(kind, name, op_type)`,
+    /// order-independent). Builds each side's set once.
+    pub fn diff_ops(&self, fresh: &[PlanOp]) -> PlanOpsDiff {
+        let saved_set: BTreeSet<&PlanOp> = self.ops.iter().collect();
+        let fresh_set: BTreeSet<&PlanOp> = fresh.iter().collect();
+        let missing = self
+            .ops
             .iter()
-            .filter(|op| !fresh.contains(op))
+            .filter(|op| !fresh_set.contains(op))
             .cloned()
-            .collect()
-    }
-
-    /// Names that are in `other` but not in `self.ops` (appeared since plan).
-    pub fn extra_in(&self, other: &[PlanOp]) -> Vec<PlanOp> {
-        let saved: BTreeSet<&PlanOp> = self.ops.iter().collect();
-        other
+            .collect();
+        let extra = fresh
             .iter()
-            .filter(|op| !saved.contains(op))
+            .filter(|op| !saved_set.contains(op))
             .cloned()
-            .collect()
+            .collect();
+        PlanOpsDiff { missing, extra }
+    }
+}
+
+/// Result of comparing a saved plan's ops against a freshly-computed list.
+#[derive(Debug, Default)]
+pub struct PlanOpsDiff {
+    /// In saved plan but not in fresh (resolved or absorbed remotely).
+    pub missing: Vec<PlanOp>,
+    /// In fresh but not in saved plan (new drift since plan).
+    pub extra: Vec<PlanOp>,
+}
+
+impl PlanOpsDiff {
+    pub fn is_match(&self) -> bool {
+        self.missing.is_empty() && self.extra.is_empty()
     }
 }
 
@@ -155,32 +160,25 @@ fn classify(diff: &ResourceDiff) -> Option<PlanOpType> {
                 }
             }
         },
-        ResourceDiff::ContentBlock(d) => {
-            if d.orphan {
-                return Some(PlanOpType::Orphan);
-            }
-            match &d.op {
-                DiffOp::Added(_) => Some(PlanOpType::Add),
-                DiffOp::Modified { .. } => Some(PlanOpType::Modify),
-                DiffOp::Removed(_) | DiffOp::Unchanged => None,
-            }
-        }
-        ResourceDiff::EmailTemplate(d) => {
-            if d.orphan {
-                return Some(PlanOpType::Orphan);
-            }
-            match &d.op {
-                DiffOp::Added(_) => Some(PlanOpType::Add),
-                DiffOp::Modified { .. } => Some(PlanOpType::Modify),
-                DiffOp::Removed(_) | DiffOp::Unchanged => None,
-            }
-        }
+        ResourceDiff::ContentBlock(d) => classify_orphanable(d.orphan, &d.op),
+        ResourceDiff::EmailTemplate(d) => classify_orphanable(d.orphan, &d.op),
         ResourceDiff::CustomAttribute(d) => match &d.op {
             CustomAttributeOp::DeprecationToggled { to: true, .. } => Some(PlanOpType::Deprecate),
             CustomAttributeOp::DeprecationToggled { to: false, .. } => Some(PlanOpType::Reactivate),
             _ => None,
         },
         ResourceDiff::Tag(_) => None,
+    }
+}
+
+fn classify_orphanable<T>(orphan: bool, op: &DiffOp<T>) -> Option<PlanOpType> {
+    if orphan {
+        return Some(PlanOpType::Orphan);
+    }
+    match op {
+        DiffOp::Added(_) => Some(PlanOpType::Add),
+        DiffOp::Modified { .. } => Some(PlanOpType::Modify),
+        DiffOp::Removed(_) | DiffOp::Unchanged => None,
     }
 }
 
@@ -216,7 +214,7 @@ mod tests {
             op(ResourceKind::CatalogSchema, "x", PlanOpType::Add),
             op(ResourceKind::ContentBlock, "a", PlanOpType::Modify),
         ];
-        assert!(plan.ops_match(&fresh));
+        assert!(plan.diff_ops(&fresh).is_match());
     }
 
     #[test]
@@ -233,9 +231,10 @@ mod tests {
             ops: vec![op(ResourceKind::ContentBlock, "a", PlanOpType::Modify)],
         };
         let fresh = vec![op(ResourceKind::ContentBlock, "a", PlanOpType::Orphan)];
-        assert!(!plan.ops_match(&fresh));
-        assert_eq!(plan.missing_in(&fresh).len(), 1);
-        assert_eq!(plan.extra_in(&fresh).len(), 1);
+        let diff = plan.diff_ops(&fresh);
+        assert!(!diff.is_match());
+        assert_eq!(diff.missing.len(), 1);
+        assert_eq!(diff.extra.len(), 1);
     }
 
     #[test]
@@ -253,7 +252,7 @@ mod tests {
         };
         let json = serde_json::to_string(&plan).unwrap();
         let round: PlanFile = serde_json::from_str(&json).unwrap();
-        assert!(plan.ops_match(&round.ops));
+        assert!(plan.diff_ops(&round.ops).is_match());
         assert_eq!(round.scope, plan.scope);
     }
 }

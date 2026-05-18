@@ -81,8 +81,7 @@ pub async fn run(
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
-    // Load the saved plan early so a scope/env mismatch is rejected before
-    // any Braze API call. Version/staleness produce stderr warnings.
+    // Reject scope/env mismatch before any Braze API call.
     let saved_plan = if let Some(path) = &args.plan {
         let plan = PlanFile::read_from(path)
             .with_context(|| format!("reading plan file {}", path.display()))?;
@@ -196,8 +195,7 @@ pub async fn run(
     eprintln!("{mode_label}");
     print!("{}", format.formatter().format(&summary));
 
-    // Plan-lock check. Done after reorder + print so the operator sees the
-    // fresh plan even on mismatch, but before any actionable / write logic.
+    // Print the fresh plan first so the operator sees it even on mismatch.
     if let Some(saved) = &saved_plan {
         check_plan_ops(saved, &summary)?;
         eprintln!("✓ Plan matches saved plan ({} op(s)).", saved.ops.len());
@@ -437,21 +435,20 @@ fn warn_on_plan_metadata(plan: &PlanFile) {
 /// Returns `Error::PlanDrift` on any (kind, name, op_type) mismatch.
 fn check_plan_ops(saved: &PlanFile, fresh: &DiffSummary) -> anyhow::Result<()> {
     let fresh_ops = plan::collect_ops(fresh);
-    if saved.ops_match(&fresh_ops) {
+    let diff = saved.diff_ops(&fresh_ops);
+    if diff.is_match() {
         return Ok(());
     }
     eprintln!("✗ plan drift: saved plan and fresh plan differ");
-    let missing = saved.missing_in(&fresh_ops);
-    if !missing.is_empty() {
+    if !diff.missing.is_empty() {
         eprintln!("  ops in saved plan but not in fresh plan (resolved or absorbed remotely):");
-        for op in &missing {
+        for op in &diff.missing {
             eprintln!("    - {} '{}' [{:?}]", op.kind.as_str(), op.name, op.op);
         }
     }
-    let extra = saved.extra_in(&fresh_ops);
-    if !extra.is_empty() {
+    if !diff.extra.is_empty() {
         eprintln!("  ops in fresh plan but not in saved plan (new drift since plan):");
-        for op in &extra {
+        for op in &diff.extra {
             eprintln!("    - {} '{}' [{:?}]", op.kind.as_str(), op.name, op.op);
         }
     }
