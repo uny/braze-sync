@@ -69,7 +69,7 @@ similar = "2"
 # `clock` feature can't be narrowed to UTC-only, so that crate is in the
 # tree even though we never touch `Local`. `default-features = false`
 # still drops the `wasmbind` default (we don't target WASM).
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 
 # Misc
 url = { version = "2", features = ["serde"] }
