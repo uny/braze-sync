@@ -46,6 +46,9 @@ pub enum Error {
     #[error("Destructive change blocked: pass --allow-destructive to proceed")]
     DestructiveBlocked,
 
+    #[error("Plan drift: saved plan does not match the freshly-computed plan")]
+    PlanDrift,
+
     #[error("Rate limit exhausted after {retries} retries")]
     RateLimitExhausted { retries: u32 },
 }

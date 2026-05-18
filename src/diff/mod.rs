@@ -14,6 +14,7 @@ pub mod content_block_order;
 pub mod custom_attribute;
 pub mod email_template;
 pub mod orphan;
+pub mod plan;
 pub mod tag;
 
 #[derive(Debug, Clone)]

@@ -274,6 +274,7 @@ fn exit_code_for(err: &anyhow::Error) -> i32 {
                 // next entry.
                 Error::Api(_) => {}
                 Error::DestructiveBlocked => return 6,
+                Error::PlanDrift => return 7,
                 Error::DriftDetected { .. } => return 2,
                 Error::Config(_) | Error::MissingEnv(_) => return 3,
                 Error::RateLimitExhausted { .. } => return 5,

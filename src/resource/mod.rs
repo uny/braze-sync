@@ -33,8 +33,21 @@ pub enum Resource {
 
 /// Lightweight tag for filtering / CLI args. Mirrors [`Resource`] but
 /// without the payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, clap::ValueEnum)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    clap::ValueEnum,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[clap(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum ResourceKind {
     CatalogSchema,
     ContentBlock,
