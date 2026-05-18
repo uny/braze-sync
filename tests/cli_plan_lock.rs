@@ -189,6 +189,16 @@ async fn apply_plan_environment_mismatch_exits_7_before_api_call() {
         .expect(0)
         .mount(&server)
         .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
 
     let tmp = tempfile::tempdir().unwrap();
     let config_path = write_config(tmp.path(), &server.uri());
@@ -211,6 +221,57 @@ async fn apply_plan_environment_mismatch_exits_7_before_api_call() {
             .env("BRAZE_API_KEY", "test-key")
             .args(["--config", config_path.to_str().unwrap()])
             .args(["apply", "--confirm", &plan_in])
+            .assert()
+            .failure()
+            .code(7);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_plan_archive_orphans_mismatch_exits_7_before_api_call() {
+    // Plan was generated *without* --archive-orphans but apply passes the
+    // flag (or vice versa). The frozen op set would imply different
+    // writes between the two modes, so the lock must reject before any
+    // API call.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    let plan_path = tmp.path().join("plan.json");
+
+    let plan_json = serde_json::json!({
+        "version": 1,
+        "generated_at": "2026-05-18T00:00:00Z",
+        "braze_sync_version": env!("CARGO_PKG_VERSION"),
+        "scope": {"environment": "test", "archive_orphans": false},
+        "ops": []
+    });
+    std::fs::write(&plan_path, serde_json::to_vec_pretty(&plan_json).unwrap()).unwrap();
+
+    let plan_in = format!("--plan={}", plan_path.display());
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--confirm", "--archive-orphans", &plan_in])
             .assert()
             .failure()
             .code(7);

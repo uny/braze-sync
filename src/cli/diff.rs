@@ -51,6 +51,13 @@ pub struct DiffArgs {
     /// when Braze has drifted since the plan was generated.
     #[arg(long, value_name = "PATH")]
     pub plan_out: Option<PathBuf>,
+
+    /// Record `--archive-orphans` intent in the plan file. `diff` itself
+    /// does not write to Braze; this only persists the operator's intent
+    /// so `apply --plan` can reject a mode mismatch (orphan ops would
+    /// otherwise silently no-op or fire depending on the apply flag).
+    #[arg(long, requires = "plan_out")]
+    pub archive_orphans: bool,
 }
 
 pub async fn run(
@@ -140,10 +147,15 @@ pub async fn run(
             resolved.environment_name.clone(),
             args.resource,
             args.name.clone(),
+            args.archive_orphans,
         );
         plan.write_to(path)
             .with_context(|| format!("writing plan file to {}", path.display()))?;
-        eprintln!("✓ Wrote plan ({} op(s)) to {}", plan.ops.len(), path.display());
+        eprintln!(
+            "✓ Wrote plan ({} op(s)) to {}",
+            plan.ops.len(),
+            path.display()
+        );
     }
 
     if args.fail_on_drift && summary.changed_count() > 0 {

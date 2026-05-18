@@ -6,7 +6,6 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::diff::custom_attribute::CustomAttributeOp;
@@ -34,6 +33,12 @@ pub struct PlanScope {
     pub resource: Option<ResourceKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Whether the plan was generated with the intent to archive orphans
+    /// at apply time. `Orphan` ops only actually write when `apply
+    /// --archive-orphans` is set, so the apply flag must match the plan
+    /// scope or the frozen op set would not reflect the real write set.
+    #[serde(default)]
+    pub archive_orphans: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -64,6 +69,7 @@ impl PlanFile {
         environment: impl Into<String>,
         resource: Option<ResourceKind>,
         name: Option<String>,
+        archive_orphans: bool,
     ) -> Self {
         Self {
             version: CURRENT_PLAN_VERSION,
@@ -73,6 +79,7 @@ impl PlanFile {
                 environment: environment.into(),
                 resource,
                 name,
+                archive_orphans,
             },
             ops: collect_ops(summary),
         }
@@ -90,22 +97,37 @@ impl PlanFile {
         std::fs::write(path, json)
     }
 
-    /// Compare saved ops against `fresh` (multiset over `(kind, name, op_type)`,
-    /// order-independent). Builds each side's set once.
+    /// Compare saved ops against `fresh` as a multiset over `(kind, name,
+    /// op_type)`, order-independent. `collect_ops` is invariant-by-design
+    /// unique per `(kind, name)` today, but we use a merge walk rather
+    /// than a set so duplicates would surface as drift instead of being
+    /// silently collapsed.
     pub fn diff_ops(&self, fresh: &[PlanOp]) -> PlanOpsDiff {
-        let saved_set: BTreeSet<&PlanOp> = self.ops.iter().collect();
-        let fresh_set: BTreeSet<&PlanOp> = fresh.iter().collect();
-        let missing = self
-            .ops
-            .iter()
-            .filter(|op| !fresh_set.contains(op))
-            .cloned()
-            .collect();
-        let extra = fresh
-            .iter()
-            .filter(|op| !saved_set.contains(op))
-            .cloned()
-            .collect();
+        let mut saved: Vec<&PlanOp> = self.ops.iter().collect();
+        let mut fresh_sorted: Vec<&PlanOp> = fresh.iter().collect();
+        saved.sort();
+        fresh_sorted.sort();
+        let (mut i, mut j) = (0, 0);
+        let mut missing = Vec::new();
+        let mut extra = Vec::new();
+        while i < saved.len() && j < fresh_sorted.len() {
+            match saved[i].cmp(fresh_sorted[j]) {
+                std::cmp::Ordering::Less => {
+                    missing.push(saved[i].clone());
+                    i += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    extra.push(fresh_sorted[j].clone());
+                    j += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    i += 1;
+                    j += 1;
+                }
+            }
+        }
+        missing.extend(saved[i..].iter().map(|&op| op.clone()));
+        extra.extend(fresh_sorted[j..].iter().map(|&op| op.clone()));
         PlanOpsDiff { missing, extra }
     }
 }
@@ -204,6 +226,7 @@ mod tests {
                 environment: "dev".into(),
                 resource: None,
                 name: None,
+                archive_orphans: false,
             },
             ops: vec![
                 op(ResourceKind::ContentBlock, "a", PlanOpType::Modify),
@@ -227,6 +250,7 @@ mod tests {
                 environment: "dev".into(),
                 resource: None,
                 name: None,
+                archive_orphans: false,
             },
             ops: vec![op(ResourceKind::ContentBlock, "a", PlanOpType::Modify)],
         };
@@ -235,6 +259,39 @@ mod tests {
         assert!(!diff.is_match());
         assert_eq!(diff.missing.len(), 1);
         assert_eq!(diff.extra.len(), 1);
+    }
+
+    #[test]
+    fn duplicate_ops_are_treated_as_multiset() {
+        // Hand-crafted: two identical ops on either side should match,
+        // but `n` on one side and `n+1` on the other should surface as
+        // a single extra (set semantics would collapse to a match).
+        let plan = PlanFile {
+            version: 1,
+            generated_at: Utc::now(),
+            braze_sync_version: "test".into(),
+            scope: PlanScope {
+                environment: "dev".into(),
+                resource: None,
+                name: None,
+                archive_orphans: false,
+            },
+            ops: vec![
+                op(ResourceKind::ContentBlock, "a", PlanOpType::Modify),
+                op(ResourceKind::ContentBlock, "a", PlanOpType::Modify),
+            ],
+        };
+        let fresh_dup = vec![
+            op(ResourceKind::ContentBlock, "a", PlanOpType::Modify),
+            op(ResourceKind::ContentBlock, "a", PlanOpType::Modify),
+        ];
+        assert!(plan.diff_ops(&fresh_dup).is_match());
+
+        let fresh_one = vec![op(ResourceKind::ContentBlock, "a", PlanOpType::Modify)];
+        let diff = plan.diff_ops(&fresh_one);
+        assert!(!diff.is_match(), "should detect missing duplicate");
+        assert_eq!(diff.missing.len(), 1);
+        assert!(diff.extra.is_empty());
     }
 
     #[test]
@@ -247,6 +304,7 @@ mod tests {
                 environment: "dev".into(),
                 resource: Some(ResourceKind::ContentBlock),
                 name: None,
+                archive_orphans: true,
             },
             ops: vec![op(ResourceKind::ContentBlock, "hero", PlanOpType::Add)],
         };

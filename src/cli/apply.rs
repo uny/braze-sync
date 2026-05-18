@@ -373,11 +373,7 @@ fn enforce_tag_preflight(
 }
 
 /// Reject obvious plan-vs-CLI mismatches before doing any remote work.
-fn check_plan_scope(
-    plan: &PlanFile,
-    environment: &str,
-    args: &ApplyArgs,
-) -> anyhow::Result<()> {
+fn check_plan_scope(plan: &PlanFile, environment: &str, args: &ApplyArgs) -> anyhow::Result<()> {
     if plan.version != plan::CURRENT_PLAN_VERSION {
         return Err(anyhow!(
             "plan file version {} is not supported by this binary \
@@ -406,6 +402,16 @@ fn check_plan_scope(
         eprintln!(
             "✗ plan drift: plan scope --name={:?} but apply --name={:?}",
             plan.scope.name, args.name,
+        );
+        return Err(Error::PlanDrift.into());
+    }
+    // Orphan ops only fire writes when --archive-orphans is set, so the
+    // plan-time and apply-time intents must agree or the frozen op set
+    // would not reflect the real write set.
+    if plan.scope.archive_orphans != args.archive_orphans {
+        eprintln!(
+            "✗ plan drift: plan scope --archive-orphans={} but apply --archive-orphans={}",
+            plan.scope.archive_orphans, args.archive_orphans,
         );
         return Err(Error::PlanDrift.into());
     }
