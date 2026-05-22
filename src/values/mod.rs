@@ -13,8 +13,14 @@
 //!   tokens in a body string. Resolution takes a flat `(type, key) -> value`
 //!   lookup so it stays resource-shape-agnostic.
 
+pub mod integration;
 pub mod placeholder;
 pub mod schema;
+
+pub use integration::{
+    format_failures, load_values_for_env, preflight_values, resolve_content_block_in_place,
+    resolve_email_template_in_place, values_file_path, PreflightArgs, ResolutionFailure,
+};
 
 pub use placeholder::{
     extract_placeholders, find_suspicious_placeholders, resolve_placeholders, LookupKey,
