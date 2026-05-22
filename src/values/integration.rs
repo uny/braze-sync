@@ -333,7 +333,7 @@ pub fn format_failures(
 ) -> Error {
     let mut msg = String::new();
     msg.push_str(&format!(
-        "Cannot apply: {} placeholder resolution failure(s)\n",
+        "Cannot continue: {} placeholder resolution failure(s)\n",
         failures.iter().map(|f| f.errors.len()).sum::<usize>(),
     ));
     for f in failures {

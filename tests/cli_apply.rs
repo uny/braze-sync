@@ -1652,11 +1652,7 @@ async fn content_block_apply_aborts_when_placeholder_unresolved() {
 
     let tmp = tempfile::tempdir().unwrap();
     let config_path = common::write_config(tmp.path(), &server.uri());
-    common::write_local_content_block(
-        tmp.path(),
-        "promo",
-        "cta=__BRAZESYNC.lid.cta__\n",
-    );
+    common::write_local_content_block(tmp.path(), "promo", "cta=__BRAZESYNC.lid.cta__\n");
     // Intentionally no values file written.
 
     tokio::task::spawn_blocking(move || {
@@ -1741,7 +1737,11 @@ async fn apply_non_cb_et_kind_ignores_malformed_values_file() {
     write_local_custom_attribute_registry(tmp.path(), "attributes: []\n");
     // Deliberately broken YAML — must NOT be read when running a
     // custom_attribute-only apply.
-    common::write_values_file(tmp.path(), "test", ":\n  - this is not: valid: yaml: at all\n");
+    common::write_values_file(
+        tmp.path(),
+        "test",
+        ":\n  - this is not: valid: yaml: at all\n",
+    );
 
     tokio::task::spawn_blocking(move || {
         Command::cargo_bin("braze-sync")

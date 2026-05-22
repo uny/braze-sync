@@ -806,3 +806,79 @@ content_block:
         "expected no drift after values resolution, got:\n{stdout}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn email_template_diff_no_drift_when_placeholders_resolve_to_remote() {
+    // Parity with the content_block no-drift test: confirm the
+    // email_template diff path also resolves `__BRAZESYNC.*__` before
+    // comparison. lid is field-scoped per RFC §2.2 — the placeholder
+    // lives in body_html, so the value must be declared under
+    // `email_template.welcome.body_html.lid`.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "templates": [{"email_template_id": "id-w", "template_name": "welcome"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/info"))
+        .and(query_param("email_template_id", "id-w"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "template_name": "welcome",
+            "subject": "Hi",
+            "body": "<a>ai8kexrxcp03</a>",
+            "plaintext_body": "Hi",
+            "tags": [],
+            "message": "success"
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_email_template(
+        tmp.path(),
+        "welcome",
+        "Hi",
+        "<a>__BRAZESYNC.lid.cta__</a>",
+        "Hi",
+    );
+    common::write_values_file(
+        tmp.path(),
+        "test",
+        r#"version: 1
+email_template:
+  welcome:
+    body_html:
+      lid:
+        cta:
+          value: ai8kexrxcp03
+          url: https://example.com/cta
+"#,
+    );
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["diff", "--resource", "email_template"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("0 changed") || stdout.contains("No changes"),
+        "expected no drift after values resolution, got:\n{stdout}"
+    );
+}
