@@ -4,7 +4,11 @@ use crate::braze::error::BrazeApiError;
 use crate::braze::BrazeClient;
 use crate::config::{is_excluded, ResolvedConfig};
 use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io, tag_io};
-use crate::resource::{CustomAttributeRegistry, ResourceKind, Tag, TagRegistry};
+use crate::resource::{ContentBlock, CustomAttributeRegistry, EmailTemplate, ResourceKind, Tag, TagRegistry};
+use crate::values::{
+    refresh_content_block_values, refresh_email_template_values, values_file_path, ExportUpdates,
+    ValuesFile,
+};
 use anyhow::Context as _;
 use clap::Args;
 use futures::stream::{StreamExt, TryStreamExt};
@@ -40,6 +44,20 @@ pub async fn run(
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
+    // Load existing values file so per-resource refresh can extend it
+    // in place. Absent file is fine — it will only be written back if
+    // at least one resource has placeholders.
+    let values_path = values_file_path(config_dir, &resolved);
+    let mut values = if values_path.exists() {
+        ValuesFile::load(&values_path)?
+    } else {
+        ValuesFile {
+            version: crate::values::schema::SUPPORTED_VERSION,
+            ..Default::default()
+        }
+    };
+    let mut all_updates = ExportUpdates::default();
+
     let mut total_written: usize = 0;
     for kind in kinds {
         // `custom_attribute` ignores `--name` (registry is a single file),
@@ -64,26 +82,30 @@ pub async fn run(
                 total_written += n;
             }
             ResourceKind::ContentBlock => {
-                let n = export_content_blocks(
+                let (n, updates) = export_content_blocks(
                     &client,
                     &content_blocks_root,
                     args.name.as_deref(),
                     resolved.excludes_for(ResourceKind::ContentBlock),
+                    &mut values,
                 )
                 .await
                 .context("exporting content_block")?;
+                all_updates.merge(updates);
                 eprintln!("✓ content_block: exported {n} resource(s)");
                 total_written += n;
             }
             ResourceKind::EmailTemplate => {
-                let n = export_email_templates(
+                let (n, updates) = export_email_templates(
                     &client,
                     &email_templates_root,
                     args.name.as_deref(),
                     resolved.excludes_for(ResourceKind::EmailTemplate),
+                    &mut values,
                 )
                 .await
                 .context("exporting email_template")?;
+                all_updates.merge(updates);
                 eprintln!("✓ email_template: exported {n} resource(s)");
                 total_written += n;
             }
@@ -124,6 +146,26 @@ pub async fn run(
         }
     }
 
+    // Write the values file back if any resource contributed updates.
+    // Empty maps still serialize cleanly, so we guard on "did we
+    // actually touch anything" to avoid creating an empty file for
+    // workspaces that don't use placeholders at all.
+    if all_updates.lid_updates + all_updates.cb_id_updates > 0 {
+        values.save(&values_path)?;
+        eprintln!(
+            "✓ values: refreshed {} lid + {} cb_id entry(ies) in {}",
+            all_updates.lid_updates,
+            all_updates.cb_id_updates,
+            values_path.display()
+        );
+    }
+    for w in &all_updates.orphan_warnings {
+        eprintln!("⚠ {w}");
+    }
+    for w in &all_updates.ambiguity_warnings {
+        eprintln!("⚠ {w}");
+    }
+
     eprintln!("done: {total_written} resource(s) written");
     Ok(())
 }
@@ -161,12 +203,18 @@ async fn export_catalog_schemas(
 /// Lists first to discover ids, then fetches `/info` per block. With
 /// `--name`, the list still happens (to translate name → id) but only
 /// the matching block's body is fetched.
+///
+/// When a local template with `__BRAZESYNC.*__` placeholders exists for
+/// a given name, this function preserves the local body (the
+/// templatized form is the source of truth) and instead refreshes the
+/// per-env values entries from the remote body (RFC §2.5 "既存リソース").
 async fn export_content_blocks(
     client: &BrazeClient,
     content_blocks_root: &Path,
     name_filter: Option<&str>,
     excludes: &[Regex],
-) -> anyhow::Result<usize> {
+    values: &mut ValuesFile,
+) -> anyhow::Result<(usize, ExportUpdates)> {
     let summaries = client.list_content_blocks().await?;
     let targets: Vec<_> = summaries
         .into_iter()
@@ -178,37 +226,59 @@ async fn export_content_blocks(
         if let Some(name) = name_filter {
             eprintln!("⚠ content_block: '{name}' not found in Braze");
         }
-        return Ok(0);
+        return Ok((0, ExportUpdates::default()));
     }
 
-    let blocks: Vec<crate::resource::ContentBlock> =
-        futures::stream::iter(targets.iter().map(|s| {
-            let name = s.name.as_str();
-            let id = s.content_block_id.as_str();
-            async move {
-                client
-                    .get_content_block(id)
-                    .await
-                    .with_context(|| format!("fetching content block '{name}'"))
+    let blocks: Vec<ContentBlock> = futures::stream::iter(targets.iter().map(|s| {
+        let name = s.name.as_str();
+        let id = s.content_block_id.as_str();
+        async move {
+            client
+                .get_content_block(id)
+                .await
+                .with_context(|| format!("fetching content block '{name}'"))
+        }
+    }))
+    .buffer_unordered(FETCH_CONCURRENCY)
+    .try_collect()
+    .await?;
+
+    let mut updates = ExportUpdates::default();
+    for remote in &blocks {
+        let local_path = content_blocks_root.join(format!("{}.liquid", remote.name));
+        let local = if local_path.exists() {
+            Some(content_block_io::read_content_block_file(&local_path)?)
+        } else {
+            None
+        };
+
+        let mut to_save = remote.clone();
+        if let Some(local) = local.as_ref() {
+            if local.content.contains("__BRAZESYNC.") {
+                let report = refresh_content_block_values(local, remote, values);
+                updates.merge(report);
+                // Source of truth for templated bodies is local — write
+                // it back unchanged so placeholders survive the round trip.
+                to_save.content = local.content.clone();
             }
-        }))
-        .buffer_unordered(FETCH_CONCURRENCY)
-        .try_collect()
-        .await?;
-
-    for cb in &blocks {
-        content_block_io::save_content_block(content_blocks_root, cb)?;
+        }
+        content_block_io::save_content_block(content_blocks_root, &to_save)?;
     }
-    Ok(blocks.len())
+    Ok((blocks.len(), updates))
 }
 
-/// Same list-then-fetch pattern as content blocks.
+/// Same list-then-fetch pattern as content blocks. Per-field placeholder
+/// preservation: each of `subject`, `body_html`, `body_plaintext`,
+/// `preheader` is independently checked for `__BRAZESYNC.*__` content
+/// and, when present, kept from the local template instead of being
+/// overwritten by the remote body.
 async fn export_email_templates(
     client: &BrazeClient,
     email_templates_root: &Path,
     name_filter: Option<&str>,
     excludes: &[Regex],
-) -> anyhow::Result<usize> {
+    values: &mut ValuesFile,
+) -> anyhow::Result<(usize, ExportUpdates)> {
     let summaries = client.list_email_templates().await?;
     let targets: Vec<_> = summaries
         .into_iter()
@@ -220,28 +290,68 @@ async fn export_email_templates(
         if let Some(name) = name_filter {
             eprintln!("⚠ email_template: '{name}' not found in Braze");
         }
-        return Ok(0);
+        return Ok((0, ExportUpdates::default()));
     }
 
-    let templates: Vec<crate::resource::EmailTemplate> =
-        futures::stream::iter(targets.iter().map(|s| {
-            let name = s.name.as_str();
-            let id = s.email_template_id.as_str();
-            async move {
-                client
-                    .get_email_template(id)
-                    .await
-                    .with_context(|| format!("fetching email template '{name}'"))
+    let templates: Vec<EmailTemplate> = futures::stream::iter(targets.iter().map(|s| {
+        let name = s.name.as_str();
+        let id = s.email_template_id.as_str();
+        async move {
+            client
+                .get_email_template(id)
+                .await
+                .with_context(|| format!("fetching email template '{name}'"))
+        }
+    }))
+    .buffer_unordered(FETCH_CONCURRENCY)
+    .try_collect()
+    .await?;
+
+    let mut updates = ExportUpdates::default();
+    for remote in &templates {
+        let local_dir = email_templates_root.join(&remote.name);
+        let local = if local_dir.is_dir() {
+            Some(email_template_io::read_email_template_dir(&local_dir)?)
+        } else {
+            None
+        };
+
+        let mut to_save = remote.clone();
+        if let Some(local) = local.as_ref() {
+            let any_placeholder = local.subject.contains("__BRAZESYNC.")
+                || local.body_html.contains("__BRAZESYNC.")
+                || local.body_plaintext.contains("__BRAZESYNC.")
+                || local
+                    .preheader
+                    .as_deref()
+                    .is_some_and(|p| p.contains("__BRAZESYNC."));
+            if any_placeholder {
+                let report = refresh_email_template_values(local, remote, values);
+                updates.merge(report);
+                // Preserve per-field local body when it contains a
+                // placeholder. Fields without placeholders take the
+                // remote value so non-templated drift still round-trips.
+                if local.subject.contains("__BRAZESYNC.") {
+                    to_save.subject = local.subject.clone();
+                }
+                if local.body_html.contains("__BRAZESYNC.") {
+                    to_save.body_html = local.body_html.clone();
+                }
+                if local.body_plaintext.contains("__BRAZESYNC.") {
+                    to_save.body_plaintext = local.body_plaintext.clone();
+                }
+                if local
+                    .preheader
+                    .as_deref()
+                    .is_some_and(|p| p.contains("__BRAZESYNC."))
+                {
+                    to_save.preheader = local.preheader.clone();
+                }
             }
-        }))
-        .buffer_unordered(FETCH_CONCURRENCY)
-        .try_collect()
-        .await?;
-
-    for et in &templates {
-        email_template_io::save_email_template(email_templates_root, et)?;
+        }
+        email_template_io::save_email_template(email_templates_root, &to_save)?;
     }
-    Ok(templates.len())
+    Ok((templates.len(), updates))
 }
 
 /// Aggregate tag names from local content_block + email_template files.
