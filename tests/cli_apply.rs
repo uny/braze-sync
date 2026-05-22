@@ -1719,3 +1719,39 @@ async fn content_block_apply_works_without_values_file_when_no_placeholders() {
     .await
     .unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_non_cb_et_kind_ignores_malformed_values_file() {
+    // Regression: pre-flight must not parse the values file when the
+    // selected kind has no placeholder semantics. Before the fix, a
+    // malformed values/<env>.yaml aborted `apply --resource <tag|
+    // custom_attribute|catalog_schema>` even though those kinds never
+    // consume the file.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/custom_attributes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "attributes": []
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    write_local_custom_attribute_registry(tmp.path(), "attributes: []\n");
+    // Deliberately broken YAML — must NOT be read when running a
+    // custom_attribute-only apply.
+    common::write_values_file(tmp.path(), "test", ":\n  - this is not: valid: yaml: at all\n");
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "custom_attribute", "--confirm"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}

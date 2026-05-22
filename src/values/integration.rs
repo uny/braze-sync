@@ -268,13 +268,23 @@ pub struct PreflightArgs<'a> {
 pub fn preflight_values(args: PreflightArgs<'_>) -> Result<Option<ValuesFile>> {
     use crate::resource::ResourceKind;
 
+    // Skip values-file IO entirely when no placeholder-bearing kind is
+    // selected. Otherwise a malformed `values/<env>.yaml` would abort
+    // unrelated commands like `apply --resource tag` even though tag /
+    // catalog_schema / custom_attribute never consume the values file.
+    let has_cb = args.kinds.contains(&ResourceKind::ContentBlock);
+    let has_et = args.kinds.contains(&ResourceKind::EmailTemplate);
+    if !has_cb && !has_et {
+        return Ok(None);
+    }
+
     let values_path = values_file_path(args.config_dir, args.resolved);
     let values = load_values_for_env(args.config_dir, args.resolved)?;
     let values_loaded = values.is_some();
 
     let mut failures: Vec<ResolutionFailure> = Vec::new();
 
-    if args.kinds.contains(&ResourceKind::ContentBlock) && args.content_blocks_root.exists() {
+    if has_cb && args.content_blocks_root.exists() {
         let mut locals =
             crate::fs::content_block_io::load_all_content_blocks(args.content_blocks_root)
                 .map_err(|e| Error::Config(format!("loading content_block locals: {e}")))?;
@@ -289,7 +299,7 @@ pub fn preflight_values(args: PreflightArgs<'_>) -> Result<Option<ValuesFile>> {
         }
     }
 
-    if args.kinds.contains(&ResourceKind::EmailTemplate) && args.email_templates_root.exists() {
+    if has_et && args.email_templates_root.exists() {
         let mut locals =
             crate::fs::email_template_io::load_all_email_templates(args.email_templates_root)
                 .map_err(|e| Error::Config(format!("loading email_template locals: {e}")))?;
