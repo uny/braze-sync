@@ -62,51 +62,74 @@ impl Placeholder {
     }
 }
 
-/// Strict placeholder regex per RFC §2.3.
-fn strict_re() -> &'static Regex {
+const PREFIX: &str = "__BRAZESYNC.";
+const CLOSE: &str = "__";
+
+fn key_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"__BRAZESYNC\.(lid|cb_id|custom|global)\.([a-z][a-z0-9_]*)__")
-            .expect("strict placeholder regex is valid")
-    })
+    RE.get_or_init(|| Regex::new(r"^[a-z][a-z0-9_]*$").expect("key regex is valid"))
 }
 
 /// Loose envelope-only regex per RFC §2.3 warning rule. Catches typos like
 /// `__BRAZSYNC.…__` or unknown types like `__BRAZESYNC.url.foo__` so they
-/// can be surfaced as warnings rather than silently passing through.
+/// can be surfaced as warnings rather than silently passing through. The
+/// inner classes deliberately allow `_` so typo-shaped placeholders whose
+/// key contains an underscore (e.g. `spring_sale`) are still caught.
 fn loose_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"__BRAZE?SYNC\.[^_\s]+\.[^_\s]+__")
+        Regex::new(r"__BRAZE?SYNC\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+__")
             .expect("loose placeholder regex is valid")
     })
 }
 
-/// Extract every strict-matching `__BRAZESYNC.<type>.<key>__` occurrence
-/// in `body`, in order of appearance.
+/// Extract every strict `__BRAZESYNC.<type>.<key>__` occurrence in `body`,
+/// in order of appearance. Parsed by anchoring on the literal `__BRAZESYNC.`
+/// prefix and the *nearest* closing `__`, so the envelope is honored even
+/// when `<key>` legitimately contains underscores. A regex with a greedy
+/// `[a-z0-9_]*` key class would otherwise swallow text across a `__`
+/// boundary and merge two intended placeholders into one.
 pub fn extract_placeholders(body: &str) -> Vec<Placeholder> {
-    strict_re()
-        .captures_iter(body)
-        .filter_map(|cap| {
-            let whole = cap.get(0)?;
-            let ty = PlaceholderType::parse(cap.get(1)?.as_str())?;
-            let key = cap.get(2)?.as_str().to_string();
-            Some(Placeholder {
-                ty,
-                key,
-                start: whole.start(),
-                end: whole.end(),
-            })
-        })
-        .collect()
+    let mut out = Vec::new();
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i + PREFIX.len() <= bytes.len() {
+        let Some(rel) = body[i..].find(PREFIX) else {
+            break;
+        };
+        let start = i + rel;
+        let inner_start = start + PREFIX.len();
+        let Some(rel_close) = body[inner_start..].find(CLOSE) else {
+            break;
+        };
+        let close_start = inner_start + rel_close;
+        let end = close_start + CLOSE.len();
+        let inner = &body[inner_start..close_start];
+        if let Some((ty_str, key)) = inner.split_once('.') {
+            if let (Some(ty), true) = (PlaceholderType::parse(ty_str), key_re().is_match(key)) {
+                out.push(Placeholder {
+                    ty,
+                    key: key.to_string(),
+                    start,
+                    end,
+                });
+                i = end;
+                continue;
+            }
+        }
+        // Not a valid strict placeholder; skip past the opening `__` so the
+        // remainder is still scanned (and may be surfaced by the loose pass).
+        i = start + CLOSE.len();
+    }
+    out
 }
 
 /// Find loose envelope matches that don't satisfy the strict pattern.
 /// Caller surfaces these as warnings (RFC §2.3).
 pub fn find_suspicious_placeholders(body: &str) -> Vec<String> {
-    let strict_spans: Vec<(usize, usize)> = strict_re()
-        .find_iter(body)
-        .map(|m| (m.start(), m.end()))
+    let strict_spans: Vec<(usize, usize)> = extract_placeholders(body)
+        .into_iter()
+        .map(|p| (p.start, p.end))
         .collect();
     loose_re()
         .find_iter(body)
@@ -286,5 +309,52 @@ mod tests {
         let body = "no placeholders here";
         let map = BTreeMap::new();
         assert_eq!(resolve_placeholders(body, &map).unwrap(), body);
+    }
+
+    #[test]
+    fn suspicious_catches_typo_with_underscore_key() {
+        // Regression: loose regex used to use `[^_\s]+` which excluded
+        // underscores, silently letting `__BRAZSYNC.lid.spring_sale__`
+        // (missing `E`, underscored key) through without a warning.
+        let body = "__BRAZSYNC.lid.spring_sale__";
+        let warns = find_suspicious_placeholders(body);
+        assert_eq!(warns, vec!["__BRAZSYNC.lid.spring_sale__".to_string()]);
+    }
+
+    #[test]
+    fn does_not_swallow_text_across_envelope_boundary() {
+        // Regression: a regex with a greedy `[a-z0-9_]*` key class merged
+        // `__BRAZESYNC.lid.foo__hello__BRAZESYNC.lid.bar__` into one
+        // placeholder with key=`foo__hello`. The parser must stop at the
+        // nearest `__` so both placeholders are recovered.
+        let body = "__BRAZESYNC.lid.foo__hello__BRAZESYNC.lid.bar__";
+        let ps = extract_placeholders(body);
+        assert_eq!(ps.len(), 2);
+        assert_eq!(ps[0].key, "foo");
+        assert_eq!(ps[1].key, "bar");
+        assert_eq!(&body[ps[0].start..ps[0].end], "__BRAZESYNC.lid.foo__");
+        assert_eq!(&body[ps[1].start..ps[1].end], "__BRAZESYNC.lid.bar__");
+    }
+
+    #[test]
+    fn adjacent_placeholders_share_no_underscore() {
+        // `____` between two placeholders: prior greedy regex captured
+        // key=`foo__`. The parser should treat the inner `__` as the close.
+        let body = "__BRAZESYNC.lid.foo____BRAZESYNC.lid.bar__";
+        let ps = extract_placeholders(body);
+        assert_eq!(ps.len(), 2);
+        assert_eq!(ps[0].key, "foo");
+        assert_eq!(ps[1].key, "bar");
+    }
+
+    #[test]
+    fn underscored_keys_still_extract() {
+        // Sanity: legitimate underscored keys (RFC §2.3 allows them) are
+        // not broken by the boundary-respecting parser.
+        let body = "__BRAZESYNC.lid.spring_sale__ x __BRAZESYNC.custom.api_host__";
+        let ps = extract_placeholders(body);
+        assert_eq!(ps.len(), 2);
+        assert_eq!(ps[0].key, "spring_sale");
+        assert_eq!(ps[1].key, "api_host");
     }
 }
