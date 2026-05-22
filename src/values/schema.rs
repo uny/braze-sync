@@ -199,9 +199,7 @@ impl ValuesFile {
 
 fn check_key(key: &str, scope: &str, errors: &mut Vec<String>) {
     if !key_re().is_match(key) {
-        errors.push(format!(
-            "{scope}: key '{key}' must match [a-z][a-z0-9_]*"
-        ));
+        errors.push(format!("{scope}: key '{key}' must match [a-z][a-z0-9_]*"));
     }
 }
 
