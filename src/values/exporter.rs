@@ -11,7 +11,7 @@
 //! report of how many entries were touched and any warnings the
 //! operator should see.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::resource::{ContentBlock, EmailTemplate};
 use crate::values::correlation::{
@@ -82,6 +82,13 @@ pub fn refresh_content_block_values(
     );
 
     flag_orphans(cb_entry, &referenced, &local.name, &mut report);
+    flag_missing_entries(
+        cb_entry.lid.keys(),
+        cb_entry.cb_id.keys(),
+        &referenced,
+        &format!("content_block '{}'", local.name),
+        &mut report,
+    );
     report
 }
 
@@ -128,28 +135,37 @@ pub fn refresh_email_template_values(
         &mut report,
     );
     // subject / preheader: anchor-based lid match isn't covered in this
-    // first cut; we still refresh cb_id (rare in these fields) so users
-    // who template a {{content_blocks.${…}}} include get correct values.
-    refresh_field(
-        &mut et_entry.subject,
-        &[],
+    // first cut, so we deliberately skip refresh_lid_entries here —
+    // calling it with empty pairs would emit "url not found" warnings
+    // for every existing entry. cb_id refresh is still performed so
+    // users who template a {{content_blocks.${…}}} include get correct
+    // values. preheader is refreshed even when remote.preheader is None
+    // so any existing cb_id entry surfaces a "no token found" warning
+    // instead of silently keeping a stale value.
+    refresh_cb_id_entries(
+        &mut et_entry.subject.cb_id,
         &extract_cb_id_values(&remote.subject),
-        &local.name,
-        "subject",
+        &format!("email_template '{}' (subject) cb_id", local.name),
         &mut report,
     );
-    if let Some(preheader) = remote.preheader.as_deref() {
-        refresh_field(
-            &mut et_entry.preheader,
-            &[],
-            &extract_cb_id_values(preheader),
-            &local.name,
-            "preheader",
-            &mut report,
-        );
-    }
+    let preheader_body = remote.preheader.as_deref().unwrap_or("");
+    refresh_cb_id_entries(
+        &mut et_entry.preheader.cb_id,
+        &extract_cb_id_values(preheader_body),
+        &format!("email_template '{}' (preheader) cb_id", local.name),
+        &mut report,
+    );
 
     flag_email_template_orphans(
+        et_entry,
+        &subject_refs,
+        &preheader_refs,
+        &body_html_refs,
+        &body_plain_refs,
+        &local.name,
+        &mut report,
+    );
+    flag_email_template_missing_entries(
         et_entry,
         &subject_refs,
         &preheader_refs,
@@ -190,47 +206,72 @@ impl ReferencedKeys {
 }
 
 fn refresh_lid_entries(
-    entries: &mut std::collections::BTreeMap<String, crate::values::schema::LidEntry>,
+    entries: &mut BTreeMap<String, crate::values::schema::LidEntry>,
     remote_pairs: &[LidCorrelation],
     scope_label: &str,
     report: &mut ExportUpdates,
 ) {
+    // Group remote matches by normalized URL so multiple local entries
+    // sharing one URL each consume a distinct remote occurrence (in
+    // BTreeMap key order = entries iteration order). Without this,
+    // collisions silently collapsed to matches[0] for every key.
+    let mut by_url: BTreeMap<String, VecDeque<&LidCorrelation>> = BTreeMap::new();
+    let mut remote_count: BTreeMap<String, usize> = BTreeMap::new();
+    for p in remote_pairs {
+        by_url.entry(p.url.clone()).or_default().push_back(p);
+        *remote_count.entry(p.url.clone()).or_default() += 1;
+    }
+    let mut local_demand: BTreeMap<String, usize> = BTreeMap::new();
+    for entry in entries.values() {
+        if let Some(url) = &entry.url {
+            *local_demand.entry(normalize_url(url)).or_default() += 1;
+        }
+    }
+
     for (key, entry) in entries.iter_mut() {
         let Some(url) = entry.url.clone() else {
+            // Anchor-only entries are explicitly out of scope for the
+            // current refresh implementation. Emit a warning rather
+            // than silently skipping so the operator knows the stale
+            // value persisted.
+            report.ambiguity_warnings.push(format!(
+                "{scope_label}.{key}: entry has no `url` anchor — anchor-only correlation \
+                 is not implemented; keeping existing value"
+            ));
             continue;
         };
         let needle = normalize_url(&url);
-        let matches: Vec<&LidCorrelation> = remote_pairs.iter().filter(|p| p.url == needle).collect();
-        match matches.len() {
-            0 => {
-                report.ambiguity_warnings.push(format!(
-                    "{scope_label}.{key}: url '{needle}' not found in remote body — keeping existing value"
-                ));
-            }
-            1 => {
-                let new_value = matches[0].value.clone();
-                if entry.value.as_deref() != Some(new_value.as_str()) {
-                    entry.value = Some(new_value);
-                    report.lid_updates += 1;
-                }
-            }
-            _ => {
-                report.ambiguity_warnings.push(format!(
-                    "{scope_label}.{key}: url '{needle}' matched {} times in remote body — applied positional (first); review",
-                    matches.len()
-                ));
-                let new_value = matches[0].value.clone();
-                if entry.value.as_deref() != Some(new_value.as_str()) {
-                    entry.value = Some(new_value);
-                    report.lid_updates += 1;
-                }
-            }
+        let remote_n = *remote_count.get(&needle).unwrap_or(&0);
+        let local_n = *local_demand.get(&needle).unwrap_or(&1);
+        let pick = by_url
+            .get_mut(&needle)
+            .and_then(|bucket| bucket.pop_front());
+        let Some(pick) = pick else {
+            report.ambiguity_warnings.push(format!(
+                "{scope_label}.{key}: url '{needle}' not found in remote body \
+                 (expected {local_n}, got {remote_n}) — keeping existing value"
+            ));
+            continue;
+        };
+        // Note ambiguity only when assignment was non-trivial: either
+        // multiple local entries share this URL (positional fallback),
+        // or remote has more occurrences than local demands (extras
+        // discarded).
+        if local_n > 1 || remote_n > local_n {
+            report.ambiguity_warnings.push(format!(
+                "{scope_label}.{key}: url '{needle}' matched {remote_n} time(s) in remote body \
+                 across {local_n} local entry(ies) — applied positional (by key order); review"
+            ));
+        }
+        if entry.value.as_deref() != Some(pick.value.as_str()) {
+            entry.value = Some(pick.value.clone());
+            report.lid_updates += 1;
         }
     }
 }
 
 fn refresh_cb_id_entries(
-    entries: &mut std::collections::BTreeMap<String, crate::values::schema::CbIdEntry>,
+    entries: &mut BTreeMap<String, crate::values::schema::CbIdEntry>,
     remote_pairs: &[crate::values::correlation::CbIdCorrelation],
     scope_label: &str,
     report: &mut ExportUpdates,
@@ -347,6 +388,63 @@ fn flag_email_template_orphans(
                 ));
             }
         }
+    }
+}
+
+/// Symmetric to [`flag_orphans`]: warn for placeholder references in
+/// the local template that have no corresponding values entry. apply /
+/// diff pre-flight would fail on these anyway, but surfacing them at
+/// export time tells the operator what to add before they run apply.
+fn flag_missing_entries<'a>(
+    lid_keys: impl Iterator<Item = &'a String>,
+    cb_id_keys: impl Iterator<Item = &'a String>,
+    referenced: &ReferencedKeys,
+    scope_label: &str,
+    report: &mut ExportUpdates,
+) {
+    let lid_present: BTreeSet<&String> = lid_keys.collect();
+    for key in &referenced.lid {
+        if !lid_present.contains(key) {
+            report.orphan_warnings.push(format!(
+                "{scope_label}: placeholder __BRAZESYNC.lid.{key}__ has no entry in values \
+                 (add `lid.{key}: {{ value: …, url: … }}` or run apply pre-flight will fail)"
+            ));
+        }
+    }
+    let cb_id_present: BTreeSet<&String> = cb_id_keys.collect();
+    for key in &referenced.cb_id {
+        if !cb_id_present.contains(key) {
+            report.orphan_warnings.push(format!(
+                "{scope_label}: placeholder __BRAZESYNC.cb_id.{key}__ has no entry in values \
+                 (add `cb_id.{key}: {{ value: … }}` or run apply pre-flight will fail)"
+            ));
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn flag_email_template_missing_entries(
+    et_entry: &EmailTemplateValues,
+    subject_refs: &ReferencedKeys,
+    preheader_refs: &ReferencedKeys,
+    body_html_refs: &ReferencedKeys,
+    body_plain_refs: &ReferencedKeys,
+    name: &str,
+    report: &mut ExportUpdates,
+) {
+    for (field_name, field, refs) in [
+        ("subject", &et_entry.subject, subject_refs),
+        ("preheader", &et_entry.preheader, preheader_refs),
+        ("body_html", &et_entry.body_html, body_html_refs),
+        ("body_plaintext", &et_entry.body_plaintext, body_plain_refs),
+    ] {
+        flag_missing_entries(
+            field.lid.keys(),
+            field.cb_id.keys(),
+            refs,
+            &format!("email_template '{name}' ({field_name})"),
+            report,
+        );
     }
 }
 
@@ -604,6 +702,221 @@ mod tests {
                 .value
                 .as_deref(),
             Some("cb7")
+        );
+    }
+
+    #[test]
+    fn lid_entry_without_url_anchor_emits_warning_and_is_skipped() {
+        // Regression: anchor-only LidEntries (url=None) used to be
+        // silently skipped, hiding stale values from the operator.
+        let local = cb("promo", "<a>__BRAZESYNC.lid.cta__</a>");
+        let remote = cb(
+            "promo",
+            r#"<a href="https://example.com/cta">{{ x | lid: 'newlidvalue1' }}</a>"#,
+        );
+        let mut values = ValuesFile {
+            version: 1,
+            ..Default::default()
+        };
+        values.content_block.insert(
+            "promo".into(),
+            ContentBlockValues {
+                lid: [(
+                    "cta".to_string(),
+                    LidEntry {
+                        value: Some("oldvalueeeee".into()),
+                        url: None,
+                        anchor: Some("anchor-only".into()),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            },
+        );
+        let r = refresh_content_block_values(&local, &remote, &mut values);
+        assert_eq!(r.lid_updates, 0);
+        assert!(
+            r.ambiguity_warnings.iter().any(|w| w.contains("no `url` anchor")),
+            "expected anchor-only warning, got: {:?}",
+            r.ambiguity_warnings
+        );
+    }
+
+    #[test]
+    fn distinct_local_entries_sharing_url_get_distinct_remote_values() {
+        // Regression: two local placeholder keys with the same anchor
+        // URL used to both receive matches[0]; with positional
+        // assignment they should each consume a distinct remote
+        // occurrence (in BTreeMap key order).
+        let local = cb(
+            "promo",
+            r#"<a href="https://example.com/cta">__BRAZESYNC.lid.cta_a__</a>
+               <a href="https://example.com/cta">__BRAZESYNC.lid.cta_b__</a>"#,
+        );
+        let remote = cb(
+            "promo",
+            r#"<a href="https://example.com/cta">{{ x | lid: 'lidaaaaaaa1' }}</a>
+               <a href="https://example.com/cta">{{ x | lid: 'lidbbbbbbb2' }}</a>"#,
+        );
+        let mut values = ValuesFile {
+            version: 1,
+            ..Default::default()
+        };
+        values.content_block.insert(
+            "promo".into(),
+            ContentBlockValues {
+                lid: [
+                    (
+                        "cta_a".to_string(),
+                        LidEntry {
+                            value: Some("oldoldoldold".into()),
+                            url: Some("https://example.com/cta".into()),
+                            anchor: None,
+                        },
+                    ),
+                    (
+                        "cta_b".to_string(),
+                        LidEntry {
+                            value: Some("oldoldoldolb".into()),
+                            url: Some("https://example.com/cta".into()),
+                            anchor: None,
+                        },
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            },
+        );
+        let r = refresh_content_block_values(&local, &remote, &mut values);
+        assert_eq!(r.lid_updates, 2);
+        // BTreeMap iteration is alphabetical: cta_a then cta_b.
+        let cta_a = &values.content_block["promo"].lid["cta_a"];
+        let cta_b = &values.content_block["promo"].lid["cta_b"];
+        assert_eq!(cta_a.value.as_deref(), Some("lidaaaaaaa1"));
+        assert_eq!(cta_b.value.as_deref(), Some("lidbbbbbbb2"));
+        assert!(
+            r.ambiguity_warnings.iter().any(|w| w.contains("positional")),
+            "expected positional warning, got: {:?}",
+            r.ambiguity_warnings
+        );
+    }
+
+    #[test]
+    fn referenced_placeholder_without_values_entry_emits_warning() {
+        // Regression: a brand-new __BRAZESYNC.lid.new_cta__ in the
+        // local template with no matching values entry used to be
+        // silently ignored at export time.
+        let local = cb(
+            "promo",
+            r#"<a href="https://example.com/x">__BRAZESYNC.lid.new_cta__</a>"#,
+        );
+        let remote = cb(
+            "promo",
+            r#"<a href="https://example.com/x">{{ x | lid: 'somelidval1' }}</a>"#,
+        );
+        let mut values = ValuesFile {
+            version: 1,
+            ..Default::default()
+        };
+        let r = refresh_content_block_values(&local, &remote, &mut values);
+        assert!(
+            r.orphan_warnings
+                .iter()
+                .any(|w| w.contains("__BRAZESYNC.lid.new_cta__")),
+            "expected missing-entry warning, got: {:?}",
+            r.orphan_warnings
+        );
+    }
+
+    #[test]
+    fn subject_with_existing_lid_entry_does_not_warn_about_missing_url() {
+        // Regression: subject's refresh_field used to be called with
+        // an empty html_pairs slice, which made refresh_lid_entries
+        // emit a spurious "url ... not found in remote body" warning
+        // for every existing subject.lid entry. subject lid refresh
+        // is intentionally out of scope, so neither update nor warn.
+        let mut local = et("welcome");
+        local.subject = "{{ x | lid: '__BRAZESYNC.lid.s_lid__' }}Hi".into();
+
+        let mut remote = et("welcome");
+        remote.subject = "{{ x | lid: 'somelidnew1' }}Hi".into();
+
+        let mut values = ValuesFile {
+            version: 1,
+            ..Default::default()
+        };
+        values.email_template.insert(
+            "welcome".into(),
+            EmailTemplateValues {
+                subject: FieldValues {
+                    lid: [(
+                        "s_lid".to_string(),
+                        LidEntry {
+                            value: Some("oldlidvalu1".into()),
+                            url: Some("https://example.com/s".into()),
+                            anchor: None,
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let r = refresh_email_template_values(&local, &remote, &mut values);
+        assert!(
+            !r.ambiguity_warnings
+                .iter()
+                .any(|w| w.contains("not found in remote body")),
+            "subject lid refresh is unsupported; should not warn 'not found' for it, got: {:?}",
+            r.ambiguity_warnings
+        );
+    }
+
+    #[test]
+    fn preheader_none_in_remote_warns_about_missing_cb_id_token() {
+        // Regression: when remote.preheader was None the whole
+        // refresh_field call was skipped, so an existing preheader
+        // cb_id entry was silently left stale with no warning.
+        let mut local = et("welcome");
+        local.preheader = Some("__BRAZESYNC.cb_id.shared__".into());
+
+        let mut remote = et("welcome");
+        remote.preheader = None;
+
+        let mut values = ValuesFile {
+            version: 1,
+            ..Default::default()
+        };
+        values.email_template.insert(
+            "welcome".into(),
+            EmailTemplateValues {
+                preheader: FieldValues {
+                    cb_id: [(
+                        "shared".to_string(),
+                        CbIdEntry {
+                            value: Some("cb1".into()),
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let r = refresh_email_template_values(&local, &remote, &mut values);
+        assert!(
+            r.ambiguity_warnings
+                .iter()
+                .any(|w| w.contains("preheader") && w.contains("no `${shared} | id:`")),
+            "expected preheader missing-token warning, got: {:?}",
+            r.ambiguity_warnings
         );
     }
 

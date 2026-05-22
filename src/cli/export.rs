@@ -6,8 +6,8 @@ use crate::config::{is_excluded, ResolvedConfig};
 use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io, tag_io};
 use crate::resource::{ContentBlock, CustomAttributeRegistry, EmailTemplate, ResourceKind, Tag, TagRegistry};
 use crate::values::{
-    refresh_content_block_values, refresh_email_template_values, values_file_path, ExportUpdates,
-    ValuesFile,
+    extract_placeholders, refresh_content_block_values, refresh_email_template_values,
+    values_file_path, ExportUpdates, ValuesFile,
 };
 use anyhow::Context as _;
 use clap::Args;
@@ -48,7 +48,18 @@ pub async fn run(
     // in place. Absent file is fine — it will only be written back if
     // at least one resource has placeholders.
     let values_path = values_file_path(config_dir, &resolved);
-    let mut values = if values_path.exists() {
+    // Only the placeholder-bearing kinds consume the values file. Loading
+    // it unconditionally would abort exports of unrelated kinds (tag,
+    // catalog_schema, custom_attribute) whenever a pre-existing values
+    // file is malformed — see preflight_values in integration.rs for the
+    // matching gate.
+    let needs_values = kinds.iter().any(|k| {
+        matches!(
+            k,
+            ResourceKind::ContentBlock | ResourceKind::EmailTemplate
+        )
+    });
+    let mut values = if needs_values && values_path.exists() {
         ValuesFile::load(&values_path)?
     } else {
         ValuesFile {
@@ -254,7 +265,11 @@ async fn export_content_blocks(
 
         let mut to_save = remote.clone();
         if let Some(local) = local.as_ref() {
-            if local.content.contains("__BRAZESYNC.") {
+            // Strict parse — a substring check would match documentation
+            // comments that happen to mention the placeholder convention
+            // and silently suppress remote-body updates for non-templated
+            // resources.
+            if !extract_placeholders(&local.content).is_empty() {
                 let report = refresh_content_block_values(local, remote, values);
                 updates.merge(report);
                 // Source of truth for templated bodies is local — write
@@ -318,33 +333,31 @@ async fn export_email_templates(
 
         let mut to_save = remote.clone();
         if let Some(local) = local.as_ref() {
-            let any_placeholder = local.subject.contains("__BRAZESYNC.")
-                || local.body_html.contains("__BRAZESYNC.")
-                || local.body_plaintext.contains("__BRAZESYNC.")
-                || local
-                    .preheader
-                    .as_deref()
-                    .is_some_and(|p| p.contains("__BRAZESYNC."));
-            if any_placeholder {
+            // Strict parse per field — see content_block path for the
+            // same rationale (substring match is too eager).
+            let subject_has = !extract_placeholders(&local.subject).is_empty();
+            let body_html_has = !extract_placeholders(&local.body_html).is_empty();
+            let body_plain_has = !extract_placeholders(&local.body_plaintext).is_empty();
+            let preheader_has = local
+                .preheader
+                .as_deref()
+                .is_some_and(|p| !extract_placeholders(p).is_empty());
+            if subject_has || body_html_has || body_plain_has || preheader_has {
                 let report = refresh_email_template_values(local, remote, values);
                 updates.merge(report);
                 // Preserve per-field local body when it contains a
                 // placeholder. Fields without placeholders take the
                 // remote value so non-templated drift still round-trips.
-                if local.subject.contains("__BRAZESYNC.") {
+                if subject_has {
                     to_save.subject = local.subject.clone();
                 }
-                if local.body_html.contains("__BRAZESYNC.") {
+                if body_html_has {
                     to_save.body_html = local.body_html.clone();
                 }
-                if local.body_plaintext.contains("__BRAZESYNC.") {
+                if body_plain_has {
                     to_save.body_plaintext = local.body_plaintext.clone();
                 }
-                if local
-                    .preheader
-                    .as_deref()
-                    .is_some_and(|p| p.contains("__BRAZESYNC."))
-                {
+                if preheader_has {
                     to_save.preheader = local.preheader.clone();
                 }
             }
