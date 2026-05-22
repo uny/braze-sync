@@ -22,6 +22,7 @@ use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::error::Error;
 use crate::format::OutputFormat;
 use crate::resource::ResourceKind;
+use crate::values::{preflight_values, PreflightArgs};
 use anyhow::{anyhow, Context as _};
 use clap::Args;
 use std::path::{Path, PathBuf};
@@ -92,6 +93,28 @@ pub async fn run(
         None
     };
 
+    // Pre-flight: resolve all `__BRAZESYNC.*__` placeholders before any
+    // Braze API call (RFC `feat-per-env-values.md` §2.4 / §3 Q7). Sits
+    // alongside `enforce_tag_preflight()` below — both are "no API
+    // calls have happened yet, refuse known-bad work" gates.
+    let values = preflight_values(PreflightArgs {
+        config_dir,
+        resolved: &resolved,
+        content_blocks_root: &content_blocks_root,
+        email_templates_root: &email_templates_root,
+        kinds: &kinds,
+        cb_name_filter: args
+            .name
+            .as_deref()
+            .filter(|_| args.resource == Some(ResourceKind::ContentBlock)),
+        et_name_filter: args
+            .name
+            .as_deref()
+            .filter(|_| args.resource == Some(ResourceKind::EmailTemplate)),
+        cb_excludes: resolved.excludes_for(ResourceKind::ContentBlock),
+        et_excludes: resolved.excludes_for(ResourceKind::EmailTemplate),
+    })?;
+
     let mut summary = DiffSummary::default();
     let mut content_block_id_index: Option<ContentBlockIdIndex> = None;
     let mut email_template_id_index: Option<EmailTemplateIdIndex> = None;
@@ -117,6 +140,7 @@ pub async fn run(
                     &content_blocks_root,
                     args.name.as_deref(),
                     resolved.excludes_for(ResourceKind::ContentBlock),
+                    values.as_ref(),
                 )
                 .await
                 .context("computing content_block plan")?;
@@ -129,6 +153,7 @@ pub async fn run(
                     &email_templates_root,
                     args.name.as_deref(),
                     resolved.excludes_for(ResourceKind::EmailTemplate),
+                    values.as_ref(),
                 )
                 .await
                 .context("computing email_template plan")?;

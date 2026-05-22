@@ -137,6 +137,14 @@ pub fn write_local_content_block_with_tags(dir: &Path, name: &str, body: &str, t
     fs::write(cb_dir.join(format!("{name}.liquid")), text).unwrap();
 }
 
+/// Write a per-env values file to `<dir>/values/<env>.yaml`. Used by
+/// integration tests for the `__BRAZESYNC.*__` placeholder feature.
+pub fn write_values_file(dir: &Path, env: &str, yaml_body: &str) {
+    let v_dir = dir.join("values");
+    fs::create_dir_all(&v_dir).unwrap();
+    fs::write(v_dir.join(format!("{env}.yaml")), yaml_body).unwrap();
+}
+
 /// Write a local email template directory under `<dir>/email_templates/<name>/`.
 pub fn write_local_email_template(
     dir: &Path,

@@ -1566,3 +1566,192 @@ resources:
         "alphabetical opt-out must preserve input order"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn content_block_apply_resolves_placeholders_from_values_file() {
+    // Apply must POST the *resolved* body, not the raw template. The diff
+    // computation must see the resolved body too, otherwise every apply
+    // run shows a phantom "Modified" diff against the remote.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/content_blocks/create"))
+        .and(body_json(json!({
+            "name": "promo",
+            "content": "host=api-prod.example.com cta=ai8kexrxcp03\n",
+            "tags": [],
+            "state": "active"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_block_id": "new-id-1",
+            "message": "success"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    common::write_local_content_block(
+        tmp.path(),
+        "promo",
+        "host=__BRAZESYNC.global.host__ cta=__BRAZESYNC.lid.cta__\n",
+    );
+    common::write_values_file(
+        tmp.path(),
+        "test",
+        r#"version: 1
+globals:
+  custom:
+    host:
+      value: api-prod.example.com
+content_block:
+  promo:
+    lid:
+      cta:
+        value: ai8kexrxcp03
+        url: https://example.com/cta
+"#,
+    );
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "content_block", "--confirm"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn content_block_apply_aborts_when_placeholder_unresolved() {
+    // Pre-flight must catch unresolved placeholders BEFORE any API call.
+    // Both list and create are mocked with .expect(0) so a slip would fail
+    // the test loudly.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    common::write_local_content_block(tmp.path(), "promo", "cta=__BRAZESYNC.lid.cta__\n");
+    // Intentionally no values file written.
+
+    tokio::task::spawn_blocking(move || {
+        let assert = Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "content_block", "--confirm"])
+            .assert()
+            .failure();
+        let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+        assert!(
+            stderr.contains("__BRAZESYNC.lid.cta__"),
+            "expected pre-flight error to name the unresolved placeholder, got:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("No values file was loaded"),
+            "expected missing-file hint, got:\n{stderr}"
+        );
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn content_block_apply_works_without_values_file_when_no_placeholders() {
+    // Backwards compat: existing users without placeholders must keep
+    // working with no values file present.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/content_blocks/create"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_block_id": "new-id-1",
+            "message": "success"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    common::write_local_content_block(tmp.path(), "plain", "Hello world\n");
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "content_block", "--confirm"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_non_cb_et_kind_ignores_malformed_values_file() {
+    // Regression: pre-flight must not parse the values file when the
+    // selected kind has no placeholder semantics. Before the fix, a
+    // malformed values/<env>.yaml aborted `apply --resource <tag|
+    // custom_attribute|catalog_schema>` even though those kinds never
+    // consume the file.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/custom_attributes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "attributes": []
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    write_local_custom_attribute_registry(tmp.path(), "attributes: []\n");
+    // Deliberately broken YAML — must NOT be read when running a
+    // custom_attribute-only apply.
+    common::write_values_file(
+        tmp.path(),
+        "test",
+        ":\n  - this is not: valid: yaml: at all\n",
+    );
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "custom_attribute", "--confirm"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}

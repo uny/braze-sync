@@ -22,6 +22,10 @@ use crate::error::Error;
 use crate::format::OutputFormat;
 use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io, tag_io};
 use crate::resource::{Catalog, ContentBlock, EmailTemplate, ResourceKind};
+use crate::values::{
+    preflight_values, resolve_content_block_in_place, resolve_email_template_in_place,
+    PreflightArgs, ValuesFile,
+};
 use anyhow::Context as _;
 use clap::Args;
 use futures::stream::{StreamExt, TryStreamExt};
@@ -74,6 +78,28 @@ pub async fn run(
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
+    // Pre-flight: resolve all `__BRAZESYNC.*__` placeholders before any
+    // Braze API call (RFC `feat-per-env-values.md` §2.4). Returns the
+    // loaded values file (or None when absent and no placeholders are
+    // present), so downstream compute_*_plan calls can reuse it.
+    let values = preflight_values(PreflightArgs {
+        config_dir,
+        resolved: &resolved,
+        content_blocks_root: &content_blocks_root,
+        email_templates_root: &email_templates_root,
+        kinds: &kinds,
+        cb_name_filter: args
+            .name
+            .as_deref()
+            .filter(|_| args.resource == Some(ResourceKind::ContentBlock)),
+        et_name_filter: args
+            .name
+            .as_deref()
+            .filter(|_| args.resource == Some(ResourceKind::EmailTemplate)),
+        cb_excludes: resolved.excludes_for(ResourceKind::ContentBlock),
+        et_excludes: resolved.excludes_for(ResourceKind::EmailTemplate),
+    })?;
+
     let mut summary = DiffSummary::default();
     for kind in kinds {
         if warn_if_name_excluded(kind, args.name.as_deref(), resolved.excludes_for(kind)) {
@@ -97,6 +123,7 @@ pub async fn run(
                     &content_blocks_root,
                     args.name.as_deref(),
                     resolved.excludes_for(ResourceKind::ContentBlock),
+                    values.as_ref(),
                 )
                 .await
                 .context("computing content_block diff")?;
@@ -108,6 +135,7 @@ pub async fn run(
                     &email_templates_root,
                     args.name.as_deref(),
                     resolved.excludes_for(ResourceKind::EmailTemplate),
+                    values.as_ref(),
                 )
                 .await
                 .context("computing email_template diff")?;
@@ -223,12 +251,31 @@ pub(crate) async fn compute_content_block_plan(
     content_blocks_root: &Path,
     name_filter: Option<&str>,
     excludes: &[Regex],
+    values: Option<&ValuesFile>,
 ) -> anyhow::Result<(Vec<ResourceDiff>, ContentBlockIdIndex)> {
     let mut local = content_block_io::load_all_content_blocks(content_blocks_root)?;
     if let Some(name) = name_filter {
         local.retain(|c| c.name == name);
     }
     local.retain(|c| !is_excluded(&c.name, excludes));
+
+    // Resolve `__BRAZESYNC.*__` placeholders before any API call so the
+    // diff compares apples to apples (resolved Git body ↔ remote body).
+    // Pre-flight in the entry layer already verifies this can't fail,
+    // but the per-resource check stays as a defense in depth — and it
+    // is the *only* gate when this helper is called from a future
+    // caller that bypasses the entry-layer pre-flight.
+    for cb in &mut local {
+        if let Err(f) = resolve_content_block_in_place(cb, values) {
+            return Err(anyhow::anyhow!(
+                "internal: unresolved placeholders in content_block '{}' \
+                 reached compute layer (pre-flight should have caught this); \
+                 {} error(s)",
+                f.resource_name,
+                f.errors.len()
+            ));
+        }
+    }
 
     let mut summaries = client.list_content_blocks().await?;
     if let Some(name) = name_filter {
@@ -309,12 +356,27 @@ pub(crate) async fn compute_email_template_plan(
     email_templates_root: &Path,
     name_filter: Option<&str>,
     excludes: &[Regex],
+    values: Option<&ValuesFile>,
 ) -> anyhow::Result<(Vec<ResourceDiff>, EmailTemplateIdIndex)> {
     let mut local = email_template_io::load_all_email_templates(email_templates_root)?;
     if let Some(name) = name_filter {
         local.retain(|t| t.name == name);
     }
     local.retain(|t| !is_excluded(&t.name, excludes));
+
+    // Defense in depth — entry-layer pre-flight is the user-facing
+    // gate; this only fires when the helper is called outside that path.
+    for et in &mut local {
+        if let Err(failures) = resolve_email_template_in_place(et, values) {
+            return Err(anyhow::anyhow!(
+                "internal: unresolved placeholders in email_template '{}' \
+                 reached compute layer (pre-flight should have caught this); \
+                 {} field(s) failed",
+                et.name,
+                failures.len()
+            ));
+        }
+    }
 
     let mut summaries = client.list_email_templates().await?;
     if let Some(name) = name_filter {
