@@ -167,6 +167,115 @@ fn templatize_rejects_unknown_from_env() {
 }
 
 #[test]
+fn templatize_preserves_globals_custom_in_existing_canonical() {
+    // Re-running templatize must NOT clobber operator-curated entries
+    // (globals.custom, untouched resource entries) in the canonical
+    // values file. It should merge new detections on top instead.
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_multi_env_config(tmp.path());
+    write_local_content_block(
+        tmp.path(),
+        "promo",
+        "<a href=\"https://example.com/cta\">{{ x | lid: 'ai8kexrxcp03' }}go</a>",
+    );
+
+    let v_dir = tmp.path().join("values");
+    fs::create_dir_all(&v_dir).unwrap();
+    fs::write(
+        v_dir.join("prod.yaml"),
+        "version: 1\n\
+         globals:\n  custom:\n    api_host:\n      value: api.example.com\n\
+         content_block:\n  legacy_block:\n    cb_id:\n      shared:\n        value: cb99\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("braze-sync")
+        .unwrap()
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["templatize", "--from-env", "prod"])
+        .assert()
+        .success();
+
+    let prod = fs::read_to_string(v_dir.join("prod.yaml")).unwrap();
+    assert!(
+        prod.contains("api.example.com"),
+        "globals.custom must survive merge, got:\n{prod}"
+    );
+    assert!(
+        prod.contains("legacy_block") && prod.contains("cb99"),
+        "untouched resource entries must survive merge, got:\n{prod}"
+    );
+    assert!(
+        prod.contains("ai8kexrxcp03"),
+        "newly-detected lid must be merged in, got:\n{prod}"
+    );
+}
+
+#[test]
+fn templatize_repeated_cb_id_name_yields_single_key() {
+    // Same `${NAME}` referenced twice → one cb_id entry (not name + name_2).
+    // Otherwise Phase 3 export refresh leaves the `_2` slot stale forever.
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_multi_env_config(tmp.path());
+    write_local_content_block(
+        tmp.path(),
+        "duo",
+        "header {{content_blocks.${promo} | id: 'cb10'}} \
+         footer {{content_blocks.${promo} | id: 'cb10'}}",
+    );
+
+    Command::cargo_bin("braze-sync")
+        .unwrap()
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["templatize", "--from-env", "prod"])
+        .assert()
+        .success();
+
+    let prod = fs::read_to_string(tmp.path().join("values").join("prod.yaml")).unwrap();
+    assert!(prod.contains("promo:"), "expected `promo` cb_id key, got:\n{prod}");
+    assert!(
+        !prod.contains("promo_2"),
+        "repeated ${{promo}} must NOT create a `promo_2` key, got:\n{prod}"
+    );
+}
+
+#[test]
+fn templatize_picks_up_remaining_raw_lid_after_partial_migration() {
+    // Mixed state: one placeholder already in place, one raw lid still
+    // present. Re-running templatize must finish the migration rather
+    // than report "already templated" and skip.
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_multi_env_config(tmp.path());
+    write_local_content_block(
+        tmp.path(),
+        "promo",
+        "<a href=\"https://example.com/cta\">{{ x | lid: '__BRAZESYNC.lid.cta__' }}A</a>\n\
+         <a href=\"https://example.com/promo\">{{ x | lid: 'rawvalue1234' }}B</a>",
+    );
+
+    Command::cargo_bin("braze-sync")
+        .unwrap()
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["templatize", "--from-env", "prod"])
+        .assert()
+        .success();
+
+    let body = fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
+    assert!(
+        body.contains("__BRAZESYNC.lid.cta__"),
+        "existing placeholder must be preserved, got:\n{body}"
+    );
+    assert!(
+        body.contains("__BRAZESYNC.lid.promo__"),
+        "remaining raw lid must now be templated, got:\n{body}"
+    );
+    assert!(
+        !body.contains("rawvalue1234"),
+        "raw lid value must be removed, got:\n{body}"
+    );
+}
+
+#[test]
 fn templatize_does_not_overwrite_existing_skeleton() {
     // If a non-canonical env already has values populated (e.g. user
     // ran `export --env=dev` after a previous templatize), re-running

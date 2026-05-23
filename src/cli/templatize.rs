@@ -64,9 +64,24 @@ pub async fn run(
     let content_blocks_root = config_dir.join(&cfg.resources.content_block.path);
     let email_templates_root = config_dir.join(&cfg.resources.email_template.path);
 
-    let mut canonical = ValuesFile {
-        version: SUPPORTED_VERSION,
-        ..Default::default()
+    // If a values file for the canonical env already exists, load it as
+    // the base so re-runs preserve operator-curated content (e.g.
+    // `globals.custom`, entries for resources not touched this run,
+    // and existing placeholder keys from earlier partial migrations).
+    // Fresh runs start from an empty document.
+    let canonical_path = values_path_for(config_dir, cfg, &args.from_env);
+    let mut canonical = if canonical_path.exists() {
+        ValuesFile::load(&canonical_path).with_context(|| {
+            format!(
+                "loading existing canonical values file {} before merge",
+                canonical_path.display()
+            )
+        })?
+    } else {
+        ValuesFile {
+            version: SUPPORTED_VERSION,
+            ..Default::default()
+        }
     };
     let mut summary = RunSummary::default();
     let mut content_block_rewrites: Vec<(PathBuf, ContentBlock)> = Vec::new();
@@ -216,7 +231,6 @@ pub async fn run(
     // Build skeleton file contents for every non-canonical env. Same
     // key structure, same correlation metadata, but `value: null` so
     // apply pre-flight aborts until export populates it.
-    let canonical_path = values_path_for(config_dir, cfg, &args.from_env);
     let mut skeleton_paths: Vec<(String, PathBuf, ValuesFile)> = Vec::new();
     for env_name in cfg.environments.keys() {
         if env_name == &args.from_env {
@@ -243,6 +257,11 @@ pub async fn run(
         eprintln!("  ⚠ {w}");
     }
 
+    if summary.touched_resources == 0 {
+        eprintln!("nothing to templatize.");
+        return Ok(());
+    }
+
     if args.dry_run {
         eprintln!("(dry-run) would write:");
         eprintln!("  • {}", canonical_path.display());
@@ -250,11 +269,6 @@ pub async fn run(
             eprintln!("  • {} (skeleton for env '{}')", path.display(), env);
         }
         eprintln!("  • {} resource file(s) rewritten in place", content_block_rewrites.len() + email_template_rewrites.len());
-        return Ok(());
-    }
-
-    if summary.touched_resources == 0 {
-        eprintln!("nothing to templatize.");
         return Ok(());
     }
 

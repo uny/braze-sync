@@ -75,23 +75,23 @@ pub struct TemplatizedField {
 /// Detect every `| lid: '<value>'` and `{{content_blocks.${NAME} | id: 'cbN'}}`
 /// in `body`, rewrite to `__BRAZESYNC.<type>.<key>__` placeholders,
 /// and return the rewritten body together with the per-occurrence
-/// detection metadata. Idempotent: bodies that already contain
-/// `__BRAZESYNC.` are returned unchanged with an empty `entries`
-/// vector — callers use this to skip already-templated resources.
+/// detection metadata. Idempotent by construction: detection regexes
+/// require raw lid (`[a-z0-9]{8,}`) / cb_id (`cb[0-9]+`) literals, so
+/// already-templated `__BRAZESYNC.*__` placeholders never re-match.
+/// This means a partially-templatized body (existing placeholders
+/// alongside remaining raw values) still gets the raw values picked up,
+/// instead of being silently skipped.
 pub fn templatize_body(body: &str, field: FieldKind) -> TemplatizedField {
-    if body.contains("__BRAZESYNC.") {
-        return TemplatizedField {
-            new_body: body.to_string(),
-            entries: Vec::new(),
-            warnings: Vec::new(),
-        };
-    }
-
     let mut spans: Vec<DetectionSpan> = Vec::new();
     // Order matters per RFC §3 Q3 connumber fallback: detect lids in
     // appearance order, dedup keys by sequential suffix.
     let mut used_lid_keys: BTreeMap<String, usize> = BTreeMap::new();
     let mut used_cb_id_keys: BTreeMap<String, usize> = BTreeMap::new();
+    // Repeated `${NAME}` cb_id references must reuse the same key so
+    // export refresh (which correlates by NAME) can match every
+    // occurrence. Without this, the second `${promo}` would slug to
+    // `promo_2` and refresh would never find a remote match.
+    let mut cb_id_name_to_key: BTreeMap<String, String> = BTreeMap::new();
     let mut warnings: Vec<String> = Vec::new();
 
     // --- lid detection ---
@@ -108,6 +108,18 @@ pub fn templatize_body(body: &str, field: FieldKind) -> TemplatizedField {
             warnings.push(format!(
                 "lid '{value}' at byte {} has no URL anchor; using sequential key '{key}'",
                 whole.start()
+            ));
+        }
+        if matches!(field, FieldKind::EmailSubject | FieldKind::EmailPreheader) {
+            // Phase 3 export does NOT refresh subject/preheader lid
+            // entries (see exporter.rs refresh path). Skeleton files
+            // produced for other envs will therefore stay `value: null`
+            // until manually edited. Surface this once per detection so
+            // the operator knows the canonical/skeleton gap exists.
+            warnings.push(format!(
+                "lid '{value}' detected in subject/preheader (key '{key}'); \
+                 `export` does not refresh these — non-canonical env \
+                 values files must be edited manually"
             ));
         }
         spans.push(DetectionSpan {
@@ -130,7 +142,16 @@ pub fn templatize_body(body: &str, field: FieldKind) -> TemplatizedField {
             .or(m.get(3))
             .map(|g| g.as_str().to_string())
             .expect("cbN capture present");
-        let key = unique_key(slug_for_cb_id(&name), &mut used_cb_id_keys);
+        // Same `${NAME}` referenced twice in one body → reuse the
+        // first key so export refresh matches every occurrence.
+        let key = match cb_id_name_to_key.get(&name) {
+            Some(prior) => prior.clone(),
+            None => {
+                let k = unique_key(slug_for_cb_id(&name), &mut used_cb_id_keys);
+                cb_id_name_to_key.insert(name.clone(), k.clone());
+                k
+            }
+        };
         // Preserve the original `${NAME}` form so cb_id correlation in
         // export keeps working.
         let replacement = format!(
@@ -321,18 +342,58 @@ mod tests {
     }
 
     #[test]
-    fn subject_lid_falls_back_to_link_prefix_no_warning() {
-        // subject has no URL anchor by design — no warning, just the
-        // sequential `link_` key per slug_for_lid rules.
+    fn subject_lid_warns_about_export_refresh_gap() {
+        // subject has no URL anchor — slug falls back to `link_`. The
+        // CLI must surface that `export` won't refresh this entry for
+        // other envs so the operator knows to maintain values manually.
         let body = "Hello {{x | lid: 'ai8kexrxcp03'}} world";
         let r = templatize_body(body, FieldKind::EmailSubject);
-        assert!(r.warnings.is_empty());
+        assert!(
+            r.warnings.iter().any(|w| w.contains("export") && w.contains("subject")),
+            "expected manual-maintenance warning, got: {:?}",
+            r.warnings
+        );
         match &r.entries[0] {
             DetectedEntry::Lid { key, url, .. } => {
                 assert_eq!(key, "link_");
                 assert!(url.is_none());
             }
             _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn repeated_cb_id_name_reuses_key() {
+        // RFC: same `${NAME}` resolves to the same content_block. The
+        // values file must have ONE entry for it, not `name` + `name_2`,
+        // otherwise export refresh can never populate the duplicates.
+        let body = "{{content_blocks.${promo} | id: 'cb10'}} ... \
+                    {{content_blocks.${promo} | id: 'cb10'}}";
+        let r = templatize_body(body, FieldKind::ContentBlock);
+        assert_eq!(r.entries.len(), 2, "both occurrences detected");
+        assert_eq!(r.entries[0].key(), "promo");
+        assert_eq!(
+            r.entries[1].key(),
+            "promo",
+            "same ${{NAME}} must reuse the key"
+        );
+    }
+
+    #[test]
+    fn partially_templatized_body_picks_up_remaining_raw_lid() {
+        // Mixed state: one lid already templated, another still raw.
+        // The raw one MUST be detected (no early-return short-circuit).
+        let body = r#"
+<a href="https://example.com/cta">{{ x | lid: '__BRAZESYNC.lid.cta__' }}A</a>
+<a href="https://example.com/promo">{{ x | lid: 'rawvalue1234' }}B</a>"#;
+        let r = templatize_body(body, FieldKind::ContentBlock);
+        assert_eq!(r.entries.len(), 1, "the raw lid must be detected");
+        match &r.entries[0] {
+            DetectedEntry::Lid { key, value, .. } => {
+                assert_eq!(key, "promo");
+                assert_eq!(value, "rawvalue1234");
+            }
+            _ => panic!("expected Lid"),
         }
     }
 
