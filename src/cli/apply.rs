@@ -118,7 +118,8 @@ pub async fn run(
     let mut summary = DiffSummary::default();
     let mut content_block_id_index: Option<ContentBlockIdIndex> = None;
     let mut email_template_id_index: Option<EmailTemplateIdIndex> = None;
-    for kind in kinds {
+    for kind in &kinds {
+        let kind = *kind;
         if warn_if_name_excluded(kind, args.name.as_deref(), resolved.excludes_for(kind)) {
             continue;
         }
@@ -232,10 +233,14 @@ pub async fn run(
                 resolved: &resolved,
                 content_blocks_root: &content_blocks_root,
                 email_templates_root: &email_templates_root,
-                kinds: &[
-                    ResourceKind::ContentBlock,
-                    ResourceKind::EmailTemplate,
-                ],
+                // Use the same kinds the operator scoped this apply to
+                // (check_plan_scope has already verified args.resource ==
+                // plan.scope.resource). Hardcoding [CB, ET] here would
+                // produce ET hashes that are absent from a saved plan
+                // built with `diff --resource content_block --plan-out`,
+                // and `check_plan_values_hashes` would report them as
+                // `extra` → spurious PlanDrift.
+                kinds: &kinds,
                 cb_name_filter: args
                     .name
                     .as_deref()

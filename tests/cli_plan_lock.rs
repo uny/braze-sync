@@ -468,3 +468,90 @@ content_block:
     .await
     .unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plan_lock_scoped_resource_ignores_other_kind_placeholders() {
+    // Regression: when `diff --resource content_block --plan-out` and
+    // `apply --resource content_block --plan` run against a repo that
+    // also contains a placeholder-bearing email_template on disk, the
+    // apply-side hash recomputation must use the same kinds as the
+    // saved plan (here: [content_block] only). Otherwise it would hash
+    // the out-of-scope email_template and `check_plan_values_hashes`
+    // would report it as `extra` → spurious PlanDrift exit 7.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/content_blocks/create"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_block_id": "new-id-1",
+            "message": "success"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    common::write_local_content_block(
+        tmp.path(),
+        "promo",
+        "cta=__BRAZESYNC.lid.cta__\n",
+    );
+    // Out-of-scope email_template with placeholders. Apply must not
+    // hash it when --resource content_block restricts the kind set.
+    common::write_local_email_template(
+        tmp.path(),
+        "welcome",
+        "subj=__BRAZESYNC.lid.headline__",
+        "<p>hi __BRAZESYNC.lid.headline__</p>",
+        "hi __BRAZESYNC.lid.headline__",
+    );
+    common::write_values_file(
+        tmp.path(),
+        "test",
+        r#"version: 1
+content_block:
+  promo:
+    lid:
+      cta:
+        value: stableidvalue
+        url: https://example.com/cta
+"#,
+    );
+
+    let plan_path = tmp.path().join("plan.json");
+    let plan_out = format!("--plan-out={}", plan_path.display());
+    let config_str = config_path.to_str().unwrap().to_string();
+    let plan_out_clone = plan_out.clone();
+    let config_str_clone = config_str.clone();
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", &config_str_clone])
+            .args(["diff", "--resource", "content_block", &plan_out_clone])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    let plan_in = format!("--plan={}", plan_path.display());
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", &config_str])
+            .args(["apply", "--resource", "content_block", "--confirm", &plan_in])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
