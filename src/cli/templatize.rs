@@ -47,11 +47,7 @@ pub struct TemplatizeArgs {
     pub dry_run: bool,
 }
 
-pub async fn run(
-    args: &TemplatizeArgs,
-    cfg: &ConfigFile,
-    config_dir: &Path,
-) -> anyhow::Result<()> {
+pub async fn run(args: &TemplatizeArgs, cfg: &ConfigFile, config_dir: &Path) -> anyhow::Result<()> {
     if !cfg.environments.contains_key(&args.from_env) {
         let known: Vec<&str> = cfg.environments.keys().map(String::as_str).collect();
         return Err(anyhow!(
@@ -104,10 +100,7 @@ pub async fn run(
                 continue;
             }
 
-            let entry = canonical
-                .content_block
-                .entry(cb.name.clone())
-                .or_default();
+            let entry = canonical.content_block.entry(cb.name.clone()).or_default();
             apply_entries_content_block(entry, &result.entries);
             for w in &result.warnings {
                 summary
@@ -138,8 +131,7 @@ pub async fn run(
 
             let subject_r = templatize_body(&et.subject, FieldKind::EmailSubject);
             let body_html_r = templatize_body(&et.body_html, FieldKind::EmailHtmlBody);
-            let body_plain_r =
-                templatize_body(&et.body_plaintext, FieldKind::EmailPlainBody);
+            let body_plain_r = templatize_body(&et.body_plaintext, FieldKind::EmailPlainBody);
             let preheader_r = et
                 .preheader
                 .as_ref()
@@ -148,9 +140,7 @@ pub async fn run(
             let any_rewrite = !(subject_r.entries.is_empty()
                 && body_html_r.entries.is_empty()
                 && body_plain_r.entries.is_empty()
-                && preheader_r
-                    .as_ref()
-                    .is_none_or(|r| r.entries.is_empty()));
+                && preheader_r.as_ref().is_none_or(|r| r.entries.is_empty()));
 
             if !any_rewrite {
                 if already_templated {
@@ -162,10 +152,7 @@ pub async fn run(
                 continue;
             }
 
-            let entry = canonical
-                .email_template
-                .entry(et.name.clone())
-                .or_default();
+            let entry = canonical.email_template.entry(et.name.clone()).or_default();
             apply_entries_email_template_field(
                 &mut entry.subject,
                 &subject_r.entries,
@@ -223,8 +210,7 @@ pub async fn run(
             if let Some(r) = preheader_r {
                 et.preheader = Some(r.new_body);
             }
-            email_template_rewrites
-                .push((email_templates_root.join(&et.name), et));
+            email_template_rewrites.push((email_templates_root.join(&et.name), et));
         }
     }
 
@@ -242,10 +228,7 @@ pub async fn run(
     }
 
     // Emit summary to stderr regardless of dry-run.
-    eprintln!(
-        "templatize summary (--from-env={}):",
-        args.from_env
-    );
+    eprintln!("templatize summary (--from-env={}):", args.from_env);
     eprintln!(
         "  • touched {} resource(s); {} lid + {} cb_id rewrite(s)",
         summary.touched_resources, summary.lid_rewrites, summary.cb_id_rewrites
@@ -268,7 +251,10 @@ pub async fn run(
         for (env, path, _) in &skeleton_paths {
             eprintln!("  • {} (skeleton for env '{}')", path.display(), env);
         }
-        eprintln!("  • {} resource file(s) rewritten in place", content_block_rewrites.len() + email_template_rewrites.len());
+        eprintln!(
+            "  • {} resource file(s) rewritten in place",
+            content_block_rewrites.len() + email_template_rewrites.len()
+        );
         return Ok(());
     }
 
@@ -276,6 +262,7 @@ pub async fn run(
     // depends on it, and a failed rewrite later still leaves a usable
     // values file for the from-env.
     canonical.save(&canonical_path)?;
+    let mut written_skeletons: Vec<(String, PathBuf)> = Vec::new();
     for (env, path, skeleton) in &skeleton_paths {
         // Refuse to overwrite an existing skeleton: a user may have
         // already exported real values for that env.
@@ -288,23 +275,22 @@ pub async fn run(
             continue;
         }
         skeleton.save(path)?;
+        written_skeletons.push((env.clone(), path.clone()));
     }
     for (path, cb) in &content_block_rewrites {
-        content_block_io::save_content_block(
-            path.parent().unwrap_or_else(|| Path::new(".")),
-            cb,
-        )?;
+        content_block_io::save_content_block(path.parent().unwrap_or_else(|| Path::new(".")), cb)?;
     }
     for (_, et) in &email_template_rewrites {
         email_template_io::save_email_template(&email_templates_root, et)?;
     }
 
     eprintln!("✓ templatize: wrote {}", canonical_path.display());
-    for (env, path, _) in &skeleton_paths {
-        if !path.exists() {
-            continue;
-        }
-        eprintln!("✓ templatize: wrote {} (skeleton for '{}')", path.display(), env);
+    for (env, path) in &written_skeletons {
+        eprintln!(
+            "✓ templatize: wrote {} (skeleton for '{}')",
+            path.display(),
+            env
+        );
     }
     Ok(())
 }
@@ -331,10 +317,7 @@ fn count_cb_id(entries: &[DetectedEntry]) -> usize {
         .count()
 }
 
-fn apply_entries_content_block(
-    cb_values: &mut ContentBlockValues,
-    entries: &[DetectedEntry],
-) {
+fn apply_entries_content_block(cb_values: &mut ContentBlockValues, entries: &[DetectedEntry]) {
     for entry in entries {
         match entry {
             DetectedEntry::Lid { key, value, url } => {
@@ -417,9 +400,10 @@ impl ValuesFile {
         };
         // globals.custom keeps its keys (user-managed) but values blank.
         for k in self.globals.custom.keys() {
-            out.globals
-                .custom
-                .insert(k.clone(), crate::values::schema::CustomEntry { value: None });
+            out.globals.custom.insert(
+                k.clone(),
+                crate::values::schema::CustomEntry { value: None },
+            );
         }
         for (name, src) in &self.content_block {
             let dst = out.content_block.entry(name.clone()).or_default();

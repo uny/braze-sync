@@ -46,8 +46,7 @@ fn templatize_rewrites_body_and_writes_canonical_and_skeleton() {
         .success();
 
     // Body is rewritten in place.
-    let body =
-        fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
+    let body = fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
     assert!(
         body.contains("__BRAZESYNC.lid.cta__"),
         "expected placeholder in rewritten body, got:\n{body}"
@@ -58,8 +57,7 @@ fn templatize_rewrites_body_and_writes_canonical_and_skeleton() {
     );
 
     // Canonical values file has the actual value.
-    let canonical =
-        fs::read_to_string(tmp.path().join("values").join("prod.yaml")).unwrap();
+    let canonical = fs::read_to_string(tmp.path().join("values").join("prod.yaml")).unwrap();
     assert!(
         canonical.contains("ai8kexrxcp03"),
         "canonical (--from-env) values must contain the extracted lid, got:\n{canonical}"
@@ -105,8 +103,7 @@ fn templatize_dry_run_does_not_touch_files() {
         .success();
 
     // Body unchanged.
-    let after =
-        fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
+    let after = fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
     assert_eq!(before, after);
     // No values file created.
     assert!(!tmp.path().join("values").join("prod.yaml").exists());
@@ -139,8 +136,7 @@ fn templatize_skips_already_templated_resources() {
     );
 
     // Body unchanged.
-    let body =
-        fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
+    let body = fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
     assert!(body.contains("__BRAZESYNC.lid.cta__"));
     // No canonical values file written because no rewrite occurred.
     assert!(!tmp.path().join("values").join("prod.yaml").exists());
@@ -232,7 +228,10 @@ fn templatize_repeated_cb_id_name_yields_single_key() {
         .success();
 
     let prod = fs::read_to_string(tmp.path().join("values").join("prod.yaml")).unwrap();
-    assert!(prod.contains("promo:"), "expected `promo` cb_id key, got:\n{prod}");
+    assert!(
+        prod.contains("promo:"),
+        "expected `promo` cb_id key, got:\n{prod}"
+    );
     assert!(
         !prod.contains("promo_2"),
         "repeated ${{promo}} must NOT create a `promo_2` key, got:\n{prod}"

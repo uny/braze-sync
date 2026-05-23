@@ -132,11 +132,7 @@ pub fn templatize_body(body: &str, field: FieldKind) -> TemplatizedField {
     // --- cb_id detection ---
     for m in cb_id_match_re().captures_iter(body) {
         let whole = m.get(0).expect("group 0 always present");
-        let name = m
-            .get(1)
-            .expect("name capture present")
-            .as_str()
-            .to_string();
+        let name = m.get(1).expect("name capture present").as_str().to_string();
         let value = m
             .get(2)
             .or(m.get(3))
@@ -154,9 +150,8 @@ pub fn templatize_body(body: &str, field: FieldKind) -> TemplatizedField {
         };
         // Preserve the original `${NAME}` form so cb_id correlation in
         // export keeps working.
-        let replacement = format!(
-            "{{{{content_blocks.${{{name}}} | id: '__BRAZESYNC.cb_id.{key}__'}}}}"
-        );
+        let replacement =
+            format!("{{{{content_blocks.${{{name}}} | id: '__BRAZESYNC.cb_id.{key}__'}}}}");
         spans.push(DetectionSpan {
             range: whole.range(),
             replacement,
@@ -262,7 +257,10 @@ fn url_path_tail(url: &str) -> String {
     // → `spring-sale`. Bare host or trailing slash → empty (caller
     // applies the `link_` fallback via slug_for_lid).
     let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
-    let path_start = after_scheme.find('/').map(|i| i + 1).unwrap_or(after_scheme.len());
+    let path_start = after_scheme
+        .find('/')
+        .map(|i| i + 1)
+        .unwrap_or(after_scheme.len());
     let path = &after_scheme[path_start..];
     path.rsplit('/')
         .find(|s| !s.is_empty())
@@ -349,7 +347,9 @@ mod tests {
         let body = "Hello {{x | lid: 'ai8kexrxcp03'}} world";
         let r = templatize_body(body, FieldKind::EmailSubject);
         assert!(
-            r.warnings.iter().any(|w| w.contains("export") && w.contains("subject")),
+            r.warnings
+                .iter()
+                .any(|w| w.contains("export") && w.contains("subject")),
             "expected manual-maintenance warning, got: {:?}",
             r.warnings
         );
@@ -409,7 +409,10 @@ mod tests {
 
     #[test]
     fn url_path_tail_uses_last_nonempty_segment() {
-        assert_eq!(url_path_tail("https://example.com/promo/spring-sale"), "spring-sale");
+        assert_eq!(
+            url_path_tail("https://example.com/promo/spring-sale"),
+            "spring-sale"
+        );
         assert_eq!(url_path_tail("https://example.com/"), "");
         assert_eq!(url_path_tail("https://example.com"), "");
     }
