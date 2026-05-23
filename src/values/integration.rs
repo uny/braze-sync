@@ -16,7 +16,8 @@ use crate::config::ResolvedConfig;
 use crate::error::{Error, Result};
 use crate::resource::{ContentBlock, EmailTemplate};
 use crate::values::placeholder::{
-    resolve_placeholders, LookupKey, PlaceholderType, ResolutionError,
+    find_suspicious_placeholders, resolve_placeholders, LookupKey, PlaceholderType,
+    ResolutionError,
 };
 use crate::values::schema::{default_values_path, ValuesFile};
 
@@ -233,6 +234,32 @@ fn build_email_template_lookup(
     out
 }
 
+/// RFC §2.3: surface envelope-shaped tokens that don't match the strict
+/// placeholder grammar as warnings, so typos like `__BRAZSYNC.lid.foo__`
+/// (missing E) or unknown types like `__BRAZESYNC.url.foo__` don't pass
+/// through silently. These wouldn't trigger the unresolved-key abort
+/// because the strict extractor returns nothing for them.
+fn warn_suspicious(
+    kind: &str,
+    name: &str,
+    field: Option<&str>,
+    suspicious: Vec<String>,
+) {
+    if suspicious.is_empty() {
+        return;
+    }
+    let scope = match field {
+        Some(f) => format!("{kind} '{name}' ({f})"),
+        None => format!("{kind} '{name}'"),
+    };
+    for s in suspicious {
+        eprintln!(
+            "WARN: {scope}: suspicious placeholder `{s}` — strict form is \
+             __BRAZESYNC.<lid|cb_id|custom|global>.<key>__"
+        );
+    }
+}
+
 fn insert_globals(out: &mut BTreeMap<LookupKey, String>, vf: &ValuesFile) {
     for (k, e) in &vf.globals.custom {
         if let Some(v) = &e.value {
@@ -293,6 +320,12 @@ pub fn preflight_values(args: PreflightArgs<'_>) -> Result<Option<ValuesFile>> {
         }
         locals.retain(|c| !crate::config::is_excluded(&c.name, args.cb_excludes));
         for mut cb in locals {
+            warn_suspicious(
+                "content_block",
+                &cb.name,
+                None,
+                find_suspicious_placeholders(&cb.content),
+            );
             if let Err(f) = resolve_content_block_in_place(&mut cb, values.as_ref()) {
                 failures.push(f);
             }
@@ -308,6 +341,19 @@ pub fn preflight_values(args: PreflightArgs<'_>) -> Result<Option<ValuesFile>> {
         }
         locals.retain(|t| !crate::config::is_excluded(&t.name, args.et_excludes));
         for mut t in locals {
+            for (field, body) in [
+                ("subject", t.subject.as_str()),
+                ("body_html", t.body_html.as_str()),
+                ("body_plaintext", t.body_plaintext.as_str()),
+                ("preheader", t.preheader.as_deref().unwrap_or("")),
+            ] {
+                warn_suspicious(
+                    "email_template",
+                    &t.name,
+                    Some(field),
+                    find_suspicious_placeholders(body),
+                );
+            }
             if let Err(per_field_failures) =
                 resolve_email_template_in_place(&mut t, values.as_ref())
             {
@@ -484,6 +530,12 @@ pub fn format_failures(
                         start,
                         ty.as_str(),
                         key,
+                    ));
+                }
+                ResolutionError::DuplicateLidKey { key, count } => {
+                    msg.push_str(&format!(
+                        "    - __BRAZESYNC.lid.{key}__ referenced {count} times; lid IDs \
+                         are per-click-context — use a distinct key per occurrence\n",
                     ));
                 }
             }

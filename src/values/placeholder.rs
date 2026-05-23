@@ -151,6 +151,13 @@ pub enum ResolutionError {
         key: String,
         start: usize,
     },
+    /// Same `lid` key referenced more than once in a single body / field.
+    /// RFC §5 edge case: lid is a per-click-context ID so re-use is
+    /// conceptually wrong — abort rather than substitute the same value.
+    DuplicateLidKey {
+        key: String,
+        count: usize,
+    },
 }
 
 /// Flat key for the resolver's lookup table.
@@ -171,6 +178,20 @@ pub fn resolve_placeholders(
 ) -> Result<String, Vec<ResolutionError>> {
     let placeholders = extract_placeholders(body);
     let mut errors = Vec::new();
+
+    // RFC §5: lid re-use within one body is conceptually wrong. Detect
+    // and surface as an aggregated failure (deterministic key order).
+    let mut lid_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for ph in &placeholders {
+        if matches!(ph.ty, PlaceholderType::Lid) {
+            *lid_counts.entry(ph.key.clone()).or_insert(0) += 1;
+        }
+    }
+    for (key, count) in lid_counts {
+        if count > 1 {
+            errors.push(ResolutionError::DuplicateLidKey { key, count });
+        }
+    }
 
     for ph in &placeholders {
         let key: LookupKey = (ph.ty, ph.key.clone());
@@ -287,6 +308,7 @@ mod tests {
             .iter()
             .map(|e| match e {
                 ResolutionError::UnknownKey { ty, key, .. } => (*ty, key.clone()),
+                ResolutionError::DuplicateLidKey { .. } => unreachable!(),
             })
             .collect();
         assert!(keys.contains(&(PlaceholderType::CbId, "b".to_string())));
@@ -302,6 +324,27 @@ mod tests {
             end: 0,
         };
         assert_eq!(ph.literal(), "__BRAZESYNC.cb_id.cb_hero__");
+    }
+
+    #[test]
+    fn duplicate_lid_aborts_with_dedicated_error() {
+        // RFC §5: same lid key referenced twice in one body must abort.
+        let body = "<a>__BRAZESYNC.lid.cta__</a> <a>__BRAZESYNC.lid.cta__</a>";
+        let map = lookup(&[(PlaceholderType::Lid, "cta", "ai8kexrxcp03")]);
+        let err = resolve_placeholders(body, &map).unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolutionError::DuplicateLidKey { key, count } if key == "cta" && *count == 2
+        )));
+    }
+
+    #[test]
+    fn duplicate_cb_id_is_not_an_error() {
+        // cb_id / custom / global re-use is normal substitution per §5.
+        let body = "{{cb.__BRAZESYNC.cb_id.x__}} {{cb.__BRAZESYNC.cb_id.x__}}";
+        let map = lookup(&[(PlaceholderType::CbId, "x", "cb42")]);
+        let out = resolve_placeholders(body, &map).unwrap();
+        assert_eq!(out, "{{cb.cb42}} {{cb.cb42}}");
     }
 
     #[test]
