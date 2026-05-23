@@ -1,0 +1,355 @@
+//! Migration pass: raw-lid / raw-cb_id bodies → templated bodies + values.
+//!
+//! Powers `braze-sync templatize` (RFC §2.7). All functions in this
+//! module are pure — they take a body string + field kind, and return
+//! the rewritten body together with the per-occurrence detection
+//! metadata the CLI orchestrator uses to populate values files.
+
+use regex_lite::Regex;
+use std::collections::BTreeMap;
+use std::sync::OnceLock;
+
+use crate::values::correlation::{normalize_url, slug_for_cb_id, slug_for_lid};
+
+/// Which Liquid context the body belongs to. Determines:
+/// - what kind of URL anchor lid detection should look for (HTML vs raw)
+/// - whether lid detection without a URL anchor should produce a
+///   sequential `link_N` key (deferred for subject/preheader v0.14)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldKind {
+    ContentBlock,
+    EmailHtmlBody,
+    EmailPlainBody,
+    EmailSubject,
+    EmailPreheader,
+}
+
+impl FieldKind {
+    pub fn supports_html_anchor(self) -> bool {
+        matches!(self, FieldKind::ContentBlock | FieldKind::EmailHtmlBody)
+    }
+    pub fn supports_plaintext_anchor(self) -> bool {
+        matches!(self, FieldKind::EmailPlainBody)
+    }
+}
+
+/// One placeholder produced by templatization, with the metadata the
+/// caller needs to update `values/<env>.yaml`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DetectedEntry {
+    Lid {
+        key: String,
+        value: String,
+        /// Normalized URL anchor, when this field has one. `None` for
+        /// subject/preheader where lid auto-detection currently falls
+        /// back to a sequential `link_N` key (no URL to anchor on).
+        url: Option<String>,
+    },
+    CbId {
+        key: String,
+        value: String,
+        /// The original Liquid `${NAME}` identifier; recorded for
+        /// debugging and so the slug round-trips back.
+        name: String,
+    },
+}
+
+impl DetectedEntry {
+    pub fn key(&self) -> &str {
+        match self {
+            DetectedEntry::Lid { key, .. } | DetectedEntry::CbId { key, .. } => key,
+        }
+    }
+}
+
+/// Result of templatizing one body field.
+#[derive(Debug, Clone)]
+pub struct TemplatizedField {
+    pub new_body: String,
+    pub entries: Vec<DetectedEntry>,
+    /// Warnings the CLI should surface (e.g. lid in subject/preheader
+    /// where we don't have a robust anchor).
+    pub warnings: Vec<String>,
+}
+
+/// Detect every `| lid: '<value>'` and `{{content_blocks.${NAME} | id: 'cbN'}}`
+/// in `body`, rewrite to `__BRAZESYNC.<type>.<key>__` placeholders,
+/// and return the rewritten body together with the per-occurrence
+/// detection metadata. Idempotent: bodies that already contain
+/// `__BRAZESYNC.` are returned unchanged with an empty `entries`
+/// vector — callers use this to skip already-templated resources.
+pub fn templatize_body(body: &str, field: FieldKind) -> TemplatizedField {
+    if body.contains("__BRAZESYNC.") {
+        return TemplatizedField {
+            new_body: body.to_string(),
+            entries: Vec::new(),
+            warnings: Vec::new(),
+        };
+    }
+
+    let mut spans: Vec<DetectionSpan> = Vec::new();
+    // Order matters per RFC §3 Q3 connumber fallback: detect lids in
+    // appearance order, dedup keys by sequential suffix.
+    let mut used_lid_keys: BTreeMap<String, usize> = BTreeMap::new();
+    let mut used_cb_id_keys: BTreeMap<String, usize> = BTreeMap::new();
+    let mut warnings: Vec<String> = Vec::new();
+
+    // --- lid detection ---
+    for m in lid_match_re().captures_iter(body) {
+        let whole = m.get(0).expect("group 0 always present");
+        let value = m
+            .get(1)
+            .or(m.get(2))
+            .map(|g| g.as_str().to_string())
+            .expect("one of the value alternates matches");
+
+        let (url, key) = name_lid_for_field(body, whole.start(), field, &mut used_lid_keys);
+        if url.is_none() && !matches!(field, FieldKind::EmailSubject | FieldKind::EmailPreheader) {
+            warnings.push(format!(
+                "lid '{value}' at byte {} has no URL anchor; using sequential key '{key}'",
+                whole.start()
+            ));
+        }
+        spans.push(DetectionSpan {
+            range: whole.range(),
+            replacement: format!("| lid: '__BRAZESYNC.lid.{key}__'"),
+            entry: DetectedEntry::Lid { key, value, url },
+        });
+    }
+
+    // --- cb_id detection ---
+    for m in cb_id_match_re().captures_iter(body) {
+        let whole = m.get(0).expect("group 0 always present");
+        let name = m
+            .get(1)
+            .expect("name capture present")
+            .as_str()
+            .to_string();
+        let value = m
+            .get(2)
+            .or(m.get(3))
+            .map(|g| g.as_str().to_string())
+            .expect("cbN capture present");
+        let key = unique_key(slug_for_cb_id(&name), &mut used_cb_id_keys);
+        // Preserve the original `${NAME}` form so cb_id correlation in
+        // export keeps working.
+        let replacement = format!(
+            "{{{{content_blocks.${{{name}}} | id: '__BRAZESYNC.cb_id.{key}__'}}}}"
+        );
+        spans.push(DetectionSpan {
+            range: whole.range(),
+            replacement,
+            entry: DetectedEntry::CbId { key, value, name },
+        });
+    }
+
+    // Apply spans back-to-front so earlier byte offsets remain valid.
+    spans.sort_by_key(|s| s.range.start);
+    let mut new_body = body.to_string();
+    let mut entries_in_order: Vec<DetectedEntry> = Vec::with_capacity(spans.len());
+    for s in &spans {
+        entries_in_order.push(s.entry.clone());
+    }
+    for s in spans.into_iter().rev() {
+        new_body.replace_range(s.range, &s.replacement);
+    }
+
+    TemplatizedField {
+        new_body,
+        entries: entries_in_order,
+        warnings,
+    }
+}
+
+struct DetectionSpan {
+    range: std::ops::Range<usize>,
+    replacement: String,
+    entry: DetectedEntry,
+}
+
+fn lid_match_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        // RFC §2.7 step 2: pipe-anchored, dual-quote, min length 8.
+        Regex::new(r#"\|\s*lid:\s*(?:"([a-z0-9]{8,})"|'([a-z0-9]{8,})')"#)
+            .expect("lid match regex is valid")
+    })
+}
+
+fn cb_id_match_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r#"\{\{\s*content_blocks\.\$\{\s*([^\s}|]+)\s*\}\s*\|\s*id:\s*(?:"(cb[0-9]+)"|'(cb[0-9]+)')\s*\}\}"#,
+        )
+        .expect("cb_id match regex is valid")
+    })
+}
+
+fn href_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?i)<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')"#)
+            .expect("href regex is valid")
+    })
+}
+
+fn plaintext_url_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"https?://[^\s<>"']+"#).expect("plaintext URL regex is valid"))
+}
+
+fn name_lid_for_field(
+    body: &str,
+    lid_token_offset: usize,
+    field: FieldKind,
+    used: &mut BTreeMap<String, usize>,
+) -> (Option<String>, String) {
+    let url = preceding_url(body, lid_token_offset, field);
+    let key_source: String = match &url {
+        Some(u) => url_path_tail(u).to_string(),
+        None => String::new(),
+    };
+    let slug = slug_for_lid(&key_source);
+    let key = unique_key(slug, used);
+    (url, key)
+}
+
+fn preceding_url(body: &str, lid_token_offset: usize, field: FieldKind) -> Option<String> {
+    let prefix = &body[..lid_token_offset];
+    let raw = if field.supports_html_anchor() {
+        // Use the LAST href before the lid token.
+        href_re()
+            .captures_iter(prefix)
+            .last()
+            .and_then(|cap| cap.get(1).or(cap.get(2)))
+            .map(|m| m.as_str().to_string())
+    } else if field.supports_plaintext_anchor() {
+        plaintext_url_re()
+            .find_iter(prefix)
+            .last()
+            .map(|m| m.as_str().to_string())
+    } else {
+        None
+    };
+    raw.map(|r| normalize_url(&r))
+}
+
+fn url_path_tail(url: &str) -> String {
+    // Strip scheme://host and any leading slashes; take the last
+    // non-empty path component. `https://example.com/promo/spring-sale`
+    // → `spring-sale`. Bare host or trailing slash → empty (caller
+    // applies the `link_` fallback via slug_for_lid).
+    let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let path_start = after_scheme.find('/').map(|i| i + 1).unwrap_or(after_scheme.len());
+    let path = &after_scheme[path_start..];
+    path.rsplit('/')
+        .find(|s| !s.is_empty())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn unique_key(base: String, used: &mut BTreeMap<String, usize>) -> String {
+    let count = used.entry(base.clone()).or_insert(0);
+    *count += 1;
+    if *count == 1 {
+        base
+    } else {
+        format!("{base}_{count}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idempotent_on_already_templatized_body() {
+        let body = "<p>__BRAZESYNC.lid.cta__ kept verbatim</p>";
+        let r = templatize_body(body, FieldKind::ContentBlock);
+        assert_eq!(r.new_body, body);
+        assert!(r.entries.is_empty());
+    }
+
+    #[test]
+    fn rewrites_html_lid_with_url_anchor() {
+        let body = r#"<a href="https://example.com/spring-sale">{{x | lid: 'ai8kexrxcp03'}}</a>"#;
+        let r = templatize_body(body, FieldKind::ContentBlock);
+        assert!(r.new_body.contains("__BRAZESYNC.lid.spring_sale__"));
+        assert_eq!(r.entries.len(), 1);
+        match &r.entries[0] {
+            DetectedEntry::Lid { key, value, url } => {
+                assert_eq!(key, "spring_sale");
+                assert_eq!(value, "ai8kexrxcp03");
+                assert_eq!(url.as_deref(), Some("https://example.com/spring-sale"));
+            }
+            _ => panic!("expected Lid"),
+        }
+    }
+
+    #[test]
+    fn rewrites_cb_id_include() {
+        let body = "{{content_blocks.${promo_banner} | id: 'cb42'}}";
+        let r = templatize_body(body, FieldKind::ContentBlock);
+        assert!(r.new_body.contains("__BRAZESYNC.cb_id.promo_banner__"));
+        // Preserves ${NAME} so export correlation still works.
+        assert!(r.new_body.contains("${promo_banner}"));
+        assert_eq!(r.entries.len(), 1);
+    }
+
+    #[test]
+    fn dedupes_duplicate_url_with_sequential_suffix() {
+        let body = r#"
+<a href="https://example.com/cta">{{x | lid: 'ai8kexrxcp03'}}A</a>
+<a href="https://example.com/cta">{{x | lid: 'bj9lfsysxq14'}}B</a>"#;
+        let r = templatize_body(body, FieldKind::ContentBlock);
+        let keys: Vec<&str> = r.entries.iter().map(DetectedEntry::key).collect();
+        assert_eq!(keys, ["cta", "cta_2"]);
+    }
+
+    #[test]
+    fn plaintext_url_anchor_works() {
+        let body = "Click https://example.com/promo {{x | lid: 'ai8kexrxcp03'}} now.";
+        let r = templatize_body(body, FieldKind::EmailPlainBody);
+        match &r.entries[0] {
+            DetectedEntry::Lid { key, url, .. } => {
+                assert_eq!(key, "promo");
+                assert_eq!(url.as_deref(), Some("https://example.com/promo"));
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn subject_lid_falls_back_to_link_prefix_no_warning() {
+        // subject has no URL anchor by design — no warning, just the
+        // sequential `link_` key per slug_for_lid rules.
+        let body = "Hello {{x | lid: 'ai8kexrxcp03'}} world";
+        let r = templatize_body(body, FieldKind::EmailSubject);
+        assert!(r.warnings.is_empty());
+        match &r.entries[0] {
+            DetectedEntry::Lid { key, url, .. } => {
+                assert_eq!(key, "link_");
+                assert!(url.is_none());
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn html_lid_without_anchor_warns() {
+        // HTML body but the lid has no preceding <a href> — RFC says
+        // this should still produce a key but flag it for the operator.
+        let body = "{{x | lid: 'ai8kexrxcp03'}} just floating";
+        let r = templatize_body(body, FieldKind::EmailHtmlBody);
+        assert_eq!(r.entries.len(), 1);
+        assert!(!r.warnings.is_empty());
+    }
+
+    #[test]
+    fn url_path_tail_uses_last_nonempty_segment() {
+        assert_eq!(url_path_tail("https://example.com/promo/spring-sale"), "spring-sale");
+        assert_eq!(url_path_tail("https://example.com/"), "");
+        assert_eq!(url_path_tail("https://example.com"), "");
+    }
+}

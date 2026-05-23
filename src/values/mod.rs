@@ -18,6 +18,7 @@ pub mod exporter;
 pub mod integration;
 pub mod placeholder;
 pub mod schema;
+pub mod templatize;
 
 pub use correlation::{
     extract_cb_id_values, extract_html_lid_values, extract_plaintext_lid_values, normalize_url,
