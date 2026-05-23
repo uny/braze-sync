@@ -23,6 +23,7 @@ pub mod apply;
 pub mod diff;
 pub mod export;
 pub mod init;
+pub mod templatize;
 pub mod validate;
 
 /// Maximum concurrent in-flight Braze GET requests for fan-out fetches.
@@ -84,6 +85,9 @@ pub enum Command {
     Apply(apply::ApplyArgs),
     /// Validate local files (no Braze API access required)
     Validate(validate::ValidateArgs),
+    /// Migrate raw lid/cb_id bodies into templated bodies + per-env values.
+    /// Local-only operation; no Braze API access required.
+    Templatize(templatize::TemplatizeArgs),
 }
 
 /// Top-level CLI entry point. Returns the process exit code per
@@ -142,6 +146,13 @@ pub async fn run() -> i32 {
         return finish(validate::run(args, &cfg, &config_dir).await);
     }
 
+    // Templatize is local-only too — dispatch alongside validate
+    // before env resolution so a CI on a fork PR (no secrets) can
+    // still run migrations.
+    if let Command::Templatize(args) = &cli.command {
+        return finish(templatize::run(args, &cfg, &config_dir).await);
+    }
+
     // Stage 2: resolve the environment (api_key from env var, etc.).
     // Failure here is also exit 3 — typically a missing
     // BRAZE_*_API_KEY env var.
@@ -186,6 +197,9 @@ async fn dispatch(cli: &Cli, resolved: ResolvedConfig, config_dir: &Path) -> any
         }
         Command::Validate(_) => {
             unreachable!("validate is dispatched in cli::run before env resolution")
+        }
+        Command::Templatize(_) => {
+            unreachable!("templatize is dispatched in cli::run before env resolution")
         }
         Command::Init(_) => {
             unreachable!("init is dispatched in cli::run before config load")
