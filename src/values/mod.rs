@@ -27,8 +27,9 @@ pub use correlation::{
 pub use exporter::{refresh_content_block_values, refresh_email_template_values, ExportUpdates};
 
 pub use integration::{
-    format_failures, load_values_for_env, preflight_values, resolve_content_block_in_place,
-    resolve_email_template_in_place, values_file_path, PreflightArgs, ResolutionFailure,
+    compute_values_input_hashes, format_failures, load_values_for_env, preflight_values,
+    resolve_content_block_in_place, resolve_email_template_in_place, values_file_path,
+    PreflightArgs, ResolutionFailure,
 };
 
 pub use placeholder::{
