@@ -476,7 +476,10 @@ content_block:
 
         let s = serde_norway::to_string(&vf).unwrap();
         assert!(!s.contains("globals"), "empty globals leaked: {s}");
-        assert!(!s.contains("email_template"), "empty email_template leaked: {s}");
+        assert!(
+            !s.contains("email_template"),
+            "empty email_template leaked: {s}"
+        );
         assert!(!s.contains("cb_id"), "empty cb_id leaked: {s}");
         assert!(!s.contains("custom"), "empty custom leaked: {s}");
         assert!(!s.contains("anchor"), "None anchor leaked: {s}");
