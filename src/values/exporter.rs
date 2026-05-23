@@ -232,8 +232,14 @@ fn refresh_lid_entries(
         by_url.entry(p.url.clone()).or_default().push_back(p);
         *remote_count.entry(p.url.clone()).or_default() += 1;
     }
+    // Only referenced entries contribute to demand: an orphan sharing a
+    // URL with a referenced sibling must not inflate `local_n` into the
+    // "positional fallback" warning, nor consume a remote occurrence.
     let mut local_demand: BTreeMap<String, usize> = BTreeMap::new();
-    for entry in entries.values() {
+    for (key, entry) in entries.iter() {
+        if !referenced.contains(key) {
+            continue;
+        }
         if let Some(url) = &entry.url {
             *local_demand.entry(normalize_url(url)).or_default() += 1;
         }
@@ -241,20 +247,26 @@ fn refresh_lid_entries(
 
     // Assignment order = first appearance of each `lid` placeholder
     // in `local_body`. BTreeMap (alphabetical) order would swap values
-    // whenever alphabetical order differs from source order. Keys
-    // absent from the local body trail at the end so they still warn.
-    let mut order: Vec<String> = Vec::with_capacity(entries.len());
+    // whenever alphabetical order differs from source order. Only
+    // referenced keys participate so orphans cannot pop_front the URL
+    // bucket and steal a value from a referenced anchor-only sibling.
+    let mut order: Vec<String> = Vec::with_capacity(referenced.len());
     let mut seen: BTreeSet<String> = BTreeSet::new();
     for ph in extract_placeholders(local_body) {
         if !matches!(ph.ty, PlaceholderType::Lid) {
             continue;
         }
-        if entries.contains_key(&ph.key) && seen.insert(ph.key.clone()) {
+        if entries.contains_key(&ph.key)
+            && referenced.contains(&ph.key)
+            && seen.insert(ph.key.clone())
+        {
             order.push(ph.key);
         }
     }
-    for key in entries.keys() {
-        if !seen.contains(key) {
+    // Referenced keys missing from the placeholder scan still need to
+    // be visited so the "url not found" warning fires.
+    for key in referenced {
+        if entries.contains_key(key) && !seen.contains(key) {
             order.push(key.clone());
         }
     }
@@ -265,14 +277,11 @@ fn refresh_lid_entries(
             .expect("order keys are derived from entries");
         let Some(url) = entry.url.clone() else {
             // Anchor-only correlation is out of scope; warn so the
-            // operator knows the stale value persisted. Unreferenced
-            // keys are left to `flag_orphans` to avoid double-warning.
-            if referenced.contains(&key) {
-                report.ambiguity_warnings.push(format!(
-                    "{scope_label}.{key}: entry has no `url` anchor — anchor-only correlation \
-                     is not implemented; keeping existing value"
-                ));
-            }
+            // operator knows the stale value persisted.
+            report.ambiguity_warnings.push(format!(
+                "{scope_label}.{key}: entry has no `url` anchor — anchor-only correlation \
+                 is not implemented; keeping existing value"
+            ));
             continue;
         };
         let needle = normalize_url(&url);
@@ -282,12 +291,10 @@ fn refresh_lid_entries(
             .get_mut(&needle)
             .and_then(|bucket| bucket.pop_front());
         let Some(pick) = pick else {
-            if referenced.contains(&key) {
-                report.ambiguity_warnings.push(format!(
-                    "{scope_label}.{key}: url '{needle}' not found in remote body \
-                     (expected {local_n}, got {remote_n}) — keeping existing value"
-                ));
-            }
+            report.ambiguity_warnings.push(format!(
+                "{scope_label}.{key}: url '{needle}' not found in remote body \
+                 (expected {local_n}, got {remote_n}) — keeping existing value"
+            ));
             continue;
         };
         // Note ambiguity only when assignment was non-trivial: either
@@ -315,19 +322,20 @@ fn refresh_cb_id_entries(
     report: &mut ExportUpdates,
 ) {
     for (key, entry) in entries.iter_mut() {
+        // Orphans must not be rewritten even when a remote ${NAME}
+        // happens to slug-match the key — `flag_orphans` owns them.
+        if !referenced.contains(key) {
+            continue;
+        }
         let matches: Vec<&crate::values::correlation::CbIdCorrelation> =
             remote_pairs.iter().filter(|p| p.key == *key).collect();
         match matches.len() {
             0 => {
-                // Unreferenced keys are left to `flag_orphans` to avoid
-                // double-warning with contradictory remediation hints.
-                if referenced.contains(key) {
-                    report.ambiguity_warnings.push(format!(
-                        "{scope_label}.{key}: no `{{{{content_blocks.${{NAME}} | id: …}}}}` \
-                         include resolving to key '{key}' found in remote body — \
-                         keeping existing value"
-                    ));
-                }
+                report.ambiguity_warnings.push(format!(
+                    "{scope_label}.{key}: no `{{{{content_blocks.${{NAME}} | id: …}}}}` \
+                     include resolving to key '{key}' found in remote body — \
+                     keeping existing value"
+                ));
             }
             1 => {
                 let new_value = matches[0].value.clone();
@@ -1071,6 +1079,171 @@ mod tests {
             "expected orphan warning for stale_block, got: {:?}",
             r.orphan_warnings
         );
+    }
+
+    #[test]
+    fn orphan_lid_entry_value_is_not_mutated_even_when_url_matches_remote() {
+        let local = cb(
+            "promo",
+            r#"<a href="https://example.com/cta">{{ x | lid: '__BRAZESYNC.lid.cta__' }}go</a>"#,
+        );
+        let remote = cb(
+            "promo",
+            r#"<a href="https://example.com/cta">{{ x | lid: 'newlidvalue1' }}go</a>
+               <a href="https://example.com/stale">{{ x | lid: 'unwantedval1' }}x</a>"#,
+        );
+        let mut values = ValuesFile {
+            version: 1,
+            ..Default::default()
+        };
+        values.content_block.insert(
+            "promo".into(),
+            ContentBlockValues {
+                lid: [
+                    (
+                        "cta".to_string(),
+                        LidEntry {
+                            value: Some("oldlidvalue1".into()),
+                            url: Some("https://example.com/cta".into()),
+                            anchor: None,
+                        },
+                    ),
+                    (
+                        "legacy".to_string(),
+                        LidEntry {
+                            value: Some("preservedv1".into()),
+                            url: Some("https://example.com/stale".into()),
+                            anchor: None,
+                        },
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            },
+        );
+        let r = refresh_content_block_values(&local, &remote, &mut values);
+        assert_eq!(r.lid_updates, 1, "only the referenced entry should update");
+        assert_eq!(
+            values.content_block["promo"].lid["cta"].value.as_deref(),
+            Some("newlidvalue1")
+        );
+        assert_eq!(
+            values.content_block["promo"].lid["legacy"].value.as_deref(),
+            Some("preservedv1"),
+            "orphan lid value must be preserved"
+        );
+        assert!(
+            r.orphan_warnings.iter().any(|w| w.contains("legacy")),
+            "expected orphan warning for legacy, got: {:?}",
+            r.orphan_warnings
+        );
+    }
+
+    #[test]
+    fn orphan_cb_id_entry_value_is_not_mutated_even_when_remote_includes_name() {
+        let local = cb("page", "<p>__BRAZESYNC.lid.cta__</p>");
+        let remote = cb(
+            "page",
+            r#"<a href="https://example.com/x">{{ x | lid: 'lidvalueab1' }}</a>
+               {{content_blocks.${stale_block} | id: 'cb42'}}"#,
+        );
+        let mut values = ValuesFile {
+            version: 1,
+            ..Default::default()
+        };
+        values.content_block.insert(
+            "page".into(),
+            ContentBlockValues {
+                lid: [(
+                    "cta".to_string(),
+                    LidEntry {
+                        value: Some("oldlidvalu1".into()),
+                        url: Some("https://example.com/x".into()),
+                        anchor: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                cb_id: [(
+                    "stale_block".to_string(),
+                    CbIdEntry {
+                        value: Some("cb9".into()),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            },
+        );
+        let r = refresh_content_block_values(&local, &remote, &mut values);
+        assert_eq!(
+            r.cb_id_updates, 0,
+            "orphan cb_id must not count as an update"
+        );
+        assert_eq!(
+            values.content_block["page"].cb_id["stale_block"]
+                .value
+                .as_deref(),
+            Some("cb9"),
+            "orphan cb_id value must be preserved"
+        );
+        assert!(
+            r.orphan_warnings.iter().any(|w| w.contains("stale_block")),
+            "expected orphan warning, got: {:?}",
+            r.orphan_warnings
+        );
+    }
+
+    #[test]
+    fn duplicate_url_orphan_does_not_trigger_positional_warning() {
+        let local = cb(
+            "promo",
+            r#"<a href="https://example.com/cta">{{ x | lid: '__BRAZESYNC.lid.cta__' }}go</a>"#,
+        );
+        let remote = cb(
+            "promo",
+            r#"<a href="https://example.com/cta">{{ x | lid: 'newlidvalue1' }}go</a>"#,
+        );
+        let mut values = ValuesFile {
+            version: 1,
+            ..Default::default()
+        };
+        values.content_block.insert(
+            "promo".into(),
+            ContentBlockValues {
+                lid: [
+                    (
+                        "cta".to_string(),
+                        LidEntry {
+                            value: Some("oldlidvalue1".into()),
+                            url: Some("https://example.com/cta".into()),
+                            anchor: None,
+                        },
+                    ),
+                    (
+                        "stale".to_string(),
+                        LidEntry {
+                            value: Some("staaaalee1".into()),
+                            url: Some("https://example.com/cta".into()),
+                            anchor: None,
+                        },
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            },
+        );
+        let r = refresh_content_block_values(&local, &remote, &mut values);
+        assert!(
+            !r.ambiguity_warnings
+                .iter()
+                .any(|w| w.contains("cta") && w.contains("positional")),
+            "no positional warning expected, got: {:?}",
+            r.ambiguity_warnings
+        );
+        assert_eq!(r.lid_updates, 1);
     }
 
     #[test]
