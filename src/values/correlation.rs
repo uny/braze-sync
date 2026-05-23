@@ -82,10 +82,13 @@ fn cb_id_include_re() -> &'static Regex {
 }
 
 /// Trim trailing punctuation that a greedy URL match would otherwise
-/// swallow. Matches RFC §5 Edge case for `.`, `,`, `;`, `:`, `)`, `]`,
-/// `!`, `?`, `>`. When the URL is preceded by an opener `(` or `[`, the
-/// corresponding closer is trimmed even if other punctuation chars
-/// remain — Markdown-style `[text](https://…)` is the motivating case.
+/// swallow. Per RFC §5 Edge case, the following are *always* trimmed:
+/// `.`, `,`, `;`, `:`, `!`, `?`, `>`. The closers `)` and `]` are
+/// trimmed *only* when the URL is preceded by the corresponding opener
+/// (`(` or `[`) — Markdown-style `[text](https://…)` is the motivating
+/// case. This conservative rule preserves URLs that legitimately end
+/// in `)`/`]` (e.g., Wikipedia disambiguation pages) when no opener is
+/// present in the surrounding text.
 fn trim_trailing_punctuation(url: &str, preceded_by: Option<char>) -> &str {
     let pair_closer = match preceded_by {
         Some('(') => Some(')'),

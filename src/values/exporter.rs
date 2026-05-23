@@ -73,6 +73,8 @@ pub fn refresh_content_block_values(
     refresh_lid_entries(
         &mut cb_entry.lid,
         &html_pairs,
+        &local.content,
+        &referenced.lid,
         &format!("content_block '{}' lid", local.name),
         &mut report,
     );
@@ -81,6 +83,7 @@ pub fn refresh_content_block_values(
     refresh_cb_id_entries(
         &mut cb_entry.cb_id,
         &cb_id_pairs,
+        &referenced.cb_id,
         &format!("content_block '{}' cb_id", local.name),
         &mut report,
     );
@@ -123,6 +126,8 @@ pub fn refresh_email_template_values(
         &mut et_entry.body_html,
         &extract_html_lid_values(&remote.body_html),
         &extract_cb_id_values(&remote.body_html),
+        &local.body_html,
+        &body_html_refs,
         &local.name,
         "body_html",
         &mut report,
@@ -131,6 +136,8 @@ pub fn refresh_email_template_values(
         &mut et_entry.body_plaintext,
         &extract_plaintext_lid_values(&remote.body_plaintext),
         &extract_cb_id_values(&remote.body_plaintext),
+        &local.body_plaintext,
+        &body_plain_refs,
         &local.name,
         "body_plaintext",
         &mut report,
@@ -141,11 +148,13 @@ pub fn refresh_email_template_values(
     // for every existing entry. cb_id refresh is still performed so
     // users who template a {{content_blocks.${…}}} include get correct
     // values. preheader is refreshed even when remote.preheader is None
-    // so any existing cb_id entry surfaces a "no token found" warning
-    // instead of silently keeping a stale value.
+    // so any existing cb_id entry referenced by the local placeholder
+    // surfaces a "no token found" warning instead of silently keeping a
+    // stale value.
     refresh_cb_id_entries(
         &mut et_entry.subject.cb_id,
         &extract_cb_id_values(&remote.subject),
+        &subject_refs.cb_id,
         &format!("email_template '{}' (subject) cb_id", local.name),
         &mut report,
     );
@@ -153,6 +162,7 @@ pub fn refresh_email_template_values(
     refresh_cb_id_entries(
         &mut et_entry.preheader.cb_id,
         &extract_cb_id_values(preheader_body),
+        &preheader_refs.cb_id,
         &format!("email_template '{}' (preheader) cb_id", local.name),
         &mut report,
     );
@@ -209,13 +219,13 @@ impl ReferencedKeys {
 fn refresh_lid_entries(
     entries: &mut BTreeMap<String, crate::values::schema::LidEntry>,
     remote_pairs: &[LidCorrelation],
+    local_body: &str,
+    referenced: &BTreeSet<String>,
     scope_label: &str,
     report: &mut ExportUpdates,
 ) {
     // Group remote matches by normalized URL so multiple local entries
-    // sharing one URL each consume a distinct remote occurrence (in
-    // BTreeMap key order = entries iteration order). Without this,
-    // collisions silently collapsed to matches[0] for every key.
+    // sharing one URL each consume a distinct remote occurrence.
     let mut by_url: BTreeMap<String, VecDeque<&LidCorrelation>> = BTreeMap::new();
     let mut remote_count: BTreeMap<String, usize> = BTreeMap::new();
     for p in remote_pairs {
@@ -229,16 +239,40 @@ fn refresh_lid_entries(
         }
     }
 
-    for (key, entry) in entries.iter_mut() {
+    // Assignment order = first appearance of each `lid` placeholder
+    // in `local_body`. BTreeMap (alphabetical) order would swap values
+    // whenever alphabetical order differs from source order. Keys
+    // absent from the local body trail at the end so they still warn.
+    let mut order: Vec<String> = Vec::with_capacity(entries.len());
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for ph in extract_placeholders(local_body) {
+        if !matches!(ph.ty, PlaceholderType::Lid) {
+            continue;
+        }
+        if entries.contains_key(&ph.key) && seen.insert(ph.key.clone()) {
+            order.push(ph.key);
+        }
+    }
+    for key in entries.keys() {
+        if !seen.contains(key) {
+            order.push(key.clone());
+        }
+    }
+
+    for key in order {
+        let entry = entries
+            .get_mut(&key)
+            .expect("order keys are derived from entries");
         let Some(url) = entry.url.clone() else {
-            // Anchor-only entries are explicitly out of scope for the
-            // current refresh implementation. Emit a warning rather
-            // than silently skipping so the operator knows the stale
-            // value persisted.
-            report.ambiguity_warnings.push(format!(
-                "{scope_label}.{key}: entry has no `url` anchor — anchor-only correlation \
-                 is not implemented; keeping existing value"
-            ));
+            // Anchor-only correlation is out of scope; warn so the
+            // operator knows the stale value persisted. Unreferenced
+            // keys are left to `flag_orphans` to avoid double-warning.
+            if referenced.contains(&key) {
+                report.ambiguity_warnings.push(format!(
+                    "{scope_label}.{key}: entry has no `url` anchor — anchor-only correlation \
+                     is not implemented; keeping existing value"
+                ));
+            }
             continue;
         };
         let needle = normalize_url(&url);
@@ -248,10 +282,12 @@ fn refresh_lid_entries(
             .get_mut(&needle)
             .and_then(|bucket| bucket.pop_front());
         let Some(pick) = pick else {
-            report.ambiguity_warnings.push(format!(
-                "{scope_label}.{key}: url '{needle}' not found in remote body \
-                 (expected {local_n}, got {remote_n}) — keeping existing value"
-            ));
+            if referenced.contains(&key) {
+                report.ambiguity_warnings.push(format!(
+                    "{scope_label}.{key}: url '{needle}' not found in remote body \
+                     (expected {local_n}, got {remote_n}) — keeping existing value"
+                ));
+            }
             continue;
         };
         // Note ambiguity only when assignment was non-trivial: either
@@ -261,7 +297,7 @@ fn refresh_lid_entries(
         if local_n > 1 || remote_n > local_n {
             report.ambiguity_warnings.push(format!(
                 "{scope_label}.{key}: url '{needle}' matched {remote_n} time(s) in remote body \
-                 across {local_n} local entry(ies) — applied positional (by key order); review"
+                 across {local_n} local entry(ies) — applied positional (by local source order); review"
             ));
         }
         if entry.value.as_deref() != Some(pick.value.as_str()) {
@@ -274,19 +310,24 @@ fn refresh_lid_entries(
 fn refresh_cb_id_entries(
     entries: &mut BTreeMap<String, crate::values::schema::CbIdEntry>,
     remote_pairs: &[crate::values::correlation::CbIdCorrelation],
+    referenced: &BTreeSet<String>,
     scope_label: &str,
     report: &mut ExportUpdates,
 ) {
     for (key, entry) in entries.iter_mut() {
-        // cb_id key == slug(NAME). Match by key.
         let matches: Vec<&crate::values::correlation::CbIdCorrelation> =
             remote_pairs.iter().filter(|p| p.key == *key).collect();
         match matches.len() {
             0 => {
-                report.ambiguity_warnings.push(format!(
-                    "{scope_label}.{key}: no `${{{}}} | id:` token found in remote body — keeping existing value",
-                    key
-                ));
+                // Unreferenced keys are left to `flag_orphans` to avoid
+                // double-warning with contradictory remediation hints.
+                if referenced.contains(key) {
+                    report.ambiguity_warnings.push(format!(
+                        "{scope_label}.{key}: no `{{{{content_blocks.${{NAME}} | id: …}}}}` \
+                         include resolving to key '{key}' found in remote body — \
+                         keeping existing value"
+                    ));
+                }
             }
             1 => {
                 let new_value = matches[0].value.clone();
@@ -315,6 +356,8 @@ fn refresh_field(
     field: &mut FieldValues,
     html_pairs: &[LidCorrelation],
     cb_id_pairs: &[crate::values::correlation::CbIdCorrelation],
+    local_body: &str,
+    refs: &ReferencedKeys,
     resource: &str,
     field_name: &str,
     report: &mut ExportUpdates,
@@ -322,12 +365,15 @@ fn refresh_field(
     refresh_lid_entries(
         &mut field.lid,
         html_pairs,
+        local_body,
+        &refs.lid,
         &format!("email_template '{}' ({}) lid", resource, field_name),
         report,
     );
     refresh_cb_id_entries(
         &mut field.cb_id,
         cb_id_pairs,
+        &refs.cb_id,
         &format!("email_template '{}' ({}) cb_id", resource, field_name),
         report,
     );
@@ -785,7 +831,6 @@ mod tests {
         );
         let r = refresh_content_block_values(&local, &remote, &mut values);
         assert_eq!(r.lid_updates, 2);
-        // BTreeMap iteration is alphabetical: cta_a then cta_b.
         let cta_a = &values.content_block["promo"].lid["cta_a"];
         let cta_b = &values.content_block["promo"].lid["cta_b"];
         assert_eq!(cta_a.value.as_deref(), Some("lidaaaaaaa1"));
@@ -917,9 +962,114 @@ mod tests {
         assert!(
             r.ambiguity_warnings
                 .iter()
-                .any(|w| w.contains("preheader") && w.contains("no `${shared} | id:`")),
+                .any(|w| w.contains("preheader") && w.contains("key 'shared'")),
             "expected preheader missing-token warning, got: {:?}",
             r.ambiguity_warnings
+        );
+    }
+
+    #[test]
+    fn lid_assignment_uses_local_source_order_not_alphabetical_key_order() {
+        // Keys whose alphabetical order is the OPPOSITE of their source
+        // order, so a key-order assignment would silently swap values.
+        let local = cb(
+            "promo",
+            r#"<a href="https://example.com/cta">__BRAZESYNC.lid.zebra__</a>
+               <a href="https://example.com/cta">__BRAZESYNC.lid.apple__</a>"#,
+        );
+        let remote = cb(
+            "promo",
+            r#"<a href="https://example.com/cta">{{ x | lid: 'firstvalu1a' }}</a>
+               <a href="https://example.com/cta">{{ x | lid: 'secondval2b' }}</a>"#,
+        );
+        let mut values = ValuesFile {
+            version: 1,
+            ..Default::default()
+        };
+        values.content_block.insert(
+            "promo".into(),
+            ContentBlockValues {
+                lid: [
+                    (
+                        "apple".to_string(),
+                        LidEntry {
+                            value: Some("oldoldoldold".into()),
+                            url: Some("https://example.com/cta".into()),
+                            anchor: None,
+                        },
+                    ),
+                    (
+                        "zebra".to_string(),
+                        LidEntry {
+                            value: Some("oldoldoldolb".into()),
+                            url: Some("https://example.com/cta".into()),
+                            anchor: None,
+                        },
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            },
+        );
+        let r = refresh_content_block_values(&local, &remote, &mut values);
+        assert_eq!(r.lid_updates, 2);
+        let apple = &values.content_block["promo"].lid["apple"];
+        let zebra = &values.content_block["promo"].lid["zebra"];
+        assert_eq!(zebra.value.as_deref(), Some("firstvalu1a"));
+        assert_eq!(apple.value.as_deref(), Some("secondval2b"));
+    }
+
+    #[test]
+    fn orphan_cb_id_entry_does_not_emit_token_not_found_warning() {
+        // Needs at least one placeholder somewhere in local so the
+        // refresh runs at all; the cb_id key itself stays orphan.
+        let mut values = ValuesFile {
+            version: 1,
+            ..Default::default()
+        };
+        values.content_block.insert(
+            "page".into(),
+            ContentBlockValues {
+                cb_id: [(
+                    "stale_block".to_string(),
+                    CbIdEntry {
+                        value: Some("cb9".into()),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            },
+        );
+        let local = cb(
+            "page",
+            r#"<a href="https://example.com/x">__BRAZESYNC.lid.cta__</a>"#,
+        );
+        let remote = cb(
+            "page",
+            r#"<a href="https://example.com/x">{{ x | lid: 'lidvalueab1' }}</a>"#,
+        );
+        values.content_block.get_mut("page").unwrap().lid.insert(
+            "cta".to_string(),
+            LidEntry {
+                value: Some("oldlidvalu1".into()),
+                url: Some("https://example.com/x".into()),
+                anchor: None,
+            },
+        );
+        let r = refresh_content_block_values(&local, &remote, &mut values);
+        assert!(
+            !r.ambiguity_warnings
+                .iter()
+                .any(|w| w.contains("stale_block") && w.contains("include resolving")),
+            "orphan cb_id should not produce a 'token not found' warning, got: {:?}",
+            r.ambiguity_warnings
+        );
+        assert!(
+            r.orphan_warnings.iter().any(|w| w.contains("stale_block")),
+            "expected orphan warning for stale_block, got: {:?}",
+            r.orphan_warnings
         );
     }
 
