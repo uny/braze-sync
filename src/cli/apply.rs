@@ -261,7 +261,10 @@ pub async fn run(
             if saved.values_input_hashes.is_empty() {
                 String::new()
             } else {
-                format!(", {} values hash(es) verified", saved.values_input_hashes.len())
+                format!(
+                    ", {} values hash(es) verified",
+                    saved.values_input_hashes.len()
+                )
             }
         );
     }
@@ -554,9 +557,7 @@ fn check_plan_values_hashes(
         }
     }
     if !missing_in_fresh.is_empty() {
-        eprintln!(
-            "  resources in saved plan but no fresh hash (placeholders removed?):"
-        );
+        eprintln!("  resources in saved plan but no fresh hash (placeholders removed?):");
         for k in &missing_in_fresh {
             eprintln!("    - {k}");
         }

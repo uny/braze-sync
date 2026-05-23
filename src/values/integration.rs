@@ -386,10 +386,7 @@ pub fn compute_values_input_hashes(
             let any_ph = body_has_placeholders(&et.subject)
                 || body_has_placeholders(&et.body_html)
                 || body_has_placeholders(&et.body_plaintext)
-                || et
-                    .preheader
-                    .as_deref()
-                    .is_some_and(body_has_placeholders);
+                || et.preheader.as_deref().is_some_and(body_has_placeholders);
             if !any_ph {
                 continue;
             }

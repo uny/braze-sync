@@ -301,11 +301,7 @@ async fn plan_lock_aborts_when_consumed_values_change_between_plan_and_apply() {
 
     let tmp = tempfile::tempdir().unwrap();
     let config_path = write_config(tmp.path(), &server.uri());
-    common::write_local_content_block(
-        tmp.path(),
-        "promo",
-        "cta=__BRAZESYNC.lid.cta__\n",
-    );
+    common::write_local_content_block(tmp.path(), "promo", "cta=__BRAZESYNC.lid.cta__\n");
     common::write_values_file(
         tmp.path(),
         "test",
@@ -356,7 +352,13 @@ content_block:
             .unwrap()
             .env("BRAZE_API_KEY", "test-key")
             .args(["--config", &config_str])
-            .args(["apply", "--resource", "content_block", "--confirm", &plan_in])
+            .args([
+                "apply",
+                "--resource",
+                "content_block",
+                "--confirm",
+                &plan_in,
+            ])
             .assert()
             .failure()
             .code(7)
@@ -366,8 +368,7 @@ content_block:
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
     assert!(
         stderr.contains("plan drift")
-            && (stderr.contains("values inputs changed")
-                || stderr.contains("consumed values")),
+            && (stderr.contains("values inputs changed") || stderr.contains("consumed values")),
         "expected plan-drift values message, got:\n{stderr}"
     );
 }
@@ -398,11 +399,7 @@ async fn plan_lock_passes_when_unrelated_values_key_changes() {
 
     let tmp = tempfile::tempdir().unwrap();
     let config_path = write_config(tmp.path(), &server.uri());
-    common::write_local_content_block(
-        tmp.path(),
-        "promo",
-        "cta=__BRAZESYNC.lid.cta__\n",
-    );
+    common::write_local_content_block(tmp.path(), "promo", "cta=__BRAZESYNC.lid.cta__\n");
     // Two entries; only `cta` is consumed by the placeholder.
     common::write_values_file(
         tmp.path(),
@@ -461,7 +458,13 @@ content_block:
             .unwrap()
             .env("BRAZE_API_KEY", "test-key")
             .args(["--config", &config_str])
-            .args(["apply", "--resource", "content_block", "--confirm", &plan_in])
+            .args([
+                "apply",
+                "--resource",
+                "content_block",
+                "--confirm",
+                &plan_in,
+            ])
             .assert()
             .success();
     })
@@ -498,11 +501,7 @@ async fn plan_lock_scoped_resource_ignores_other_kind_placeholders() {
 
     let tmp = tempfile::tempdir().unwrap();
     let config_path = write_config(tmp.path(), &server.uri());
-    common::write_local_content_block(
-        tmp.path(),
-        "promo",
-        "cta=__BRAZESYNC.lid.cta__\n",
-    );
+    common::write_local_content_block(tmp.path(), "promo", "cta=__BRAZESYNC.lid.cta__\n");
     // Out-of-scope email_template with placeholders. Apply must not
     // hash it when --resource content_block restricts the kind set.
     common::write_local_email_template(
@@ -548,7 +547,13 @@ content_block:
             .unwrap()
             .env("BRAZE_API_KEY", "test-key")
             .args(["--config", &config_str])
-            .args(["apply", "--resource", "content_block", "--confirm", &plan_in])
+            .args([
+                "apply",
+                "--resource",
+                "content_block",
+                "--confirm",
+                &plan_in,
+            ])
             .assert()
             .success();
     })
