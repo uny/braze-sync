@@ -4,7 +4,9 @@ use crate::braze::error::BrazeApiError;
 use crate::braze::BrazeClient;
 use crate::config::{is_excluded, ResolvedConfig};
 use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io, tag_io};
-use crate::resource::{ContentBlock, CustomAttributeRegistry, EmailTemplate, ResourceKind, Tag, TagRegistry};
+use crate::resource::{
+    ContentBlock, CustomAttributeRegistry, EmailTemplate, ResourceKind, Tag, TagRegistry,
+};
 use crate::values::{
     extract_placeholders, refresh_content_block_values, refresh_email_template_values,
     values_file_path, ExportUpdates, ValuesFile,
@@ -53,12 +55,9 @@ pub async fn run(
     // catalog_schema, custom_attribute) whenever a pre-existing values
     // file is malformed — see preflight_values in integration.rs for the
     // matching gate.
-    let needs_values = kinds.iter().any(|k| {
-        matches!(
-            k,
-            ResourceKind::ContentBlock | ResourceKind::EmailTemplate
-        )
-    });
+    let needs_values = kinds
+        .iter()
+        .any(|k| matches!(k, ResourceKind::ContentBlock | ResourceKind::EmailTemplate));
     let mut values = if needs_values && values_path.exists() {
         ValuesFile::load(&values_path)?
     } else {
@@ -171,6 +170,9 @@ pub async fn run(
         );
     }
     for w in &all_updates.orphan_warnings {
+        eprintln!("⚠ {w}");
+    }
+    for w in &all_updates.missing_entry_warnings {
         eprintln!("⚠ {w}");
     }
     for w in &all_updates.ambiguity_warnings {

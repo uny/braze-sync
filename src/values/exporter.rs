@@ -29,6 +29,11 @@ pub struct ExportUpdates {
     /// values entries whose `__BRAZESYNC.*__` placeholder is no longer
     /// present in the local template (RFC §2.5 step 6).
     pub orphan_warnings: Vec<String>,
+    /// Placeholders referenced in the local template that have no
+    /// matching entry in the values file. Symmetric to `orphan_warnings`
+    /// (which is the inverse direction). Kept separate so operators can
+    /// distinguish "add to values" from "remove from values".
+    pub missing_entry_warnings: Vec<String>,
     /// values entries whose URL anchor could not be matched in the
     /// remote body (URL deleted in dashboard, multiple matches, etc).
     pub ambiguity_warnings: Vec<String>,
@@ -39,6 +44,8 @@ impl ExportUpdates {
         self.lid_updates += other.lid_updates;
         self.cb_id_updates += other.cb_id_updates;
         self.orphan_warnings.extend(other.orphan_warnings);
+        self.missing_entry_warnings
+            .extend(other.missing_entry_warnings);
         self.ambiguity_warnings.extend(other.ambiguity_warnings);
     }
 }
@@ -60,10 +67,7 @@ pub fn refresh_content_block_values(
         return report;
     }
 
-    let cb_entry = values
-        .content_block
-        .entry(local.name.clone())
-        .or_default();
+    let cb_entry = values.content_block.entry(local.name.clone()).or_default();
 
     let html_pairs = extract_html_lid_values(&remote.content);
     refresh_lid_entries(
@@ -113,10 +117,7 @@ pub fn refresh_email_template_values(
         return report;
     }
 
-    let et_entry = values
-        .email_template
-        .entry(local.name.clone())
-        .or_default();
+    let et_entry = values.email_template.entry(local.name.clone()).or_default();
 
     refresh_field(
         &mut et_entry.body_html,
@@ -405,7 +406,7 @@ fn flag_missing_entries<'a>(
     let lid_present: BTreeSet<&String> = lid_keys.collect();
     for key in &referenced.lid {
         if !lid_present.contains(key) {
-            report.orphan_warnings.push(format!(
+            report.missing_entry_warnings.push(format!(
                 "{scope_label}: placeholder __BRAZESYNC.lid.{key}__ has no entry in values \
                  (add `lid.{key}: {{ value: …, url: … }}` or run apply pre-flight will fail)"
             ));
@@ -414,7 +415,7 @@ fn flag_missing_entries<'a>(
     let cb_id_present: BTreeSet<&String> = cb_id_keys.collect();
     for key in &referenced.cb_id {
         if !cb_id_present.contains(key) {
-            report.orphan_warnings.push(format!(
+            report.missing_entry_warnings.push(format!(
                 "{scope_label}: placeholder __BRAZESYNC.cb_id.{key}__ has no entry in values \
                  (add `cb_id.{key}: {{ value: … }}` or run apply pre-flight will fail)"
             ));
@@ -566,10 +567,7 @@ mod tests {
             },
         );
         let r = refresh_content_block_values(&local, &remote, &mut values);
-        assert!(r
-            .orphan_warnings
-            .iter()
-            .any(|w| w.contains("stale_key")));
+        assert!(r.orphan_warnings.iter().any(|w| w.contains("stale_key")));
     }
 
     #[test]
@@ -578,10 +576,7 @@ mod tests {
             "page",
             "{{content_blocks.${promo_banner} | id: '__BRAZESYNC.cb_id.promo_banner__'}}",
         );
-        let remote = cb(
-            "page",
-            "{{content_blocks.${promo_banner} | id: 'cb99'}}",
-        );
+        let remote = cb("page", "{{content_blocks.${promo_banner} | id: 'cb99'}}");
         let mut values = ValuesFile {
             version: 1,
             ..Default::default()
@@ -636,10 +631,7 @@ mod tests {
         );
         let r = refresh_content_block_values(&local, &remote, &mut values);
         assert_eq!(r.lid_updates, 0);
-        assert!(r
-            .ambiguity_warnings
-            .iter()
-            .any(|w| w.contains("not found")));
+        assert!(r.ambiguity_warnings.iter().any(|w| w.contains("not found")));
     }
 
     #[test]
@@ -737,7 +729,9 @@ mod tests {
         let r = refresh_content_block_values(&local, &remote, &mut values);
         assert_eq!(r.lid_updates, 0);
         assert!(
-            r.ambiguity_warnings.iter().any(|w| w.contains("no `url` anchor")),
+            r.ambiguity_warnings
+                .iter()
+                .any(|w| w.contains("no `url` anchor")),
             "expected anchor-only warning, got: {:?}",
             r.ambiguity_warnings
         );
@@ -797,7 +791,9 @@ mod tests {
         assert_eq!(cta_a.value.as_deref(), Some("lidaaaaaaa1"));
         assert_eq!(cta_b.value.as_deref(), Some("lidbbbbbbb2"));
         assert!(
-            r.ambiguity_warnings.iter().any(|w| w.contains("positional")),
+            r.ambiguity_warnings
+                .iter()
+                .any(|w| w.contains("positional")),
             "expected positional warning, got: {:?}",
             r.ambiguity_warnings
         );
@@ -822,10 +818,17 @@ mod tests {
         };
         let r = refresh_content_block_values(&local, &remote, &mut values);
         assert!(
-            r.orphan_warnings
+            r.missing_entry_warnings
                 .iter()
                 .any(|w| w.contains("__BRAZESYNC.lid.new_cta__")),
             "expected missing-entry warning, got: {:?}",
+            r.missing_entry_warnings
+        );
+        // Inverse-direction warnings must NOT leak into the
+        // values-without-placeholder bucket.
+        assert!(
+            r.orphan_warnings.is_empty(),
+            "missing-entry warning should not appear in orphan_warnings, got: {:?}",
             r.orphan_warnings
         );
     }
@@ -926,18 +929,24 @@ mod tests {
             lid_updates: 1,
             cb_id_updates: 0,
             orphan_warnings: vec!["o1".into()],
+            missing_entry_warnings: vec!["m1".into()],
             ambiguity_warnings: vec![],
         };
         let b = ExportUpdates {
             lid_updates: 2,
             cb_id_updates: 1,
             orphan_warnings: vec![],
+            missing_entry_warnings: vec!["m2".into()],
             ambiguity_warnings: vec!["a1".into()],
         };
         a.merge(b);
         assert_eq!(a.lid_updates, 3);
         assert_eq!(a.cb_id_updates, 1);
         assert_eq!(a.orphan_warnings, vec!["o1".to_string()]);
+        assert_eq!(
+            a.missing_entry_warnings,
+            vec!["m1".to_string(), "m2".to_string()]
+        );
         assert_eq!(a.ambiguity_warnings, vec!["a1".to_string()]);
     }
 }

@@ -170,10 +170,7 @@ fn pair_urls_with_lids(urls: Vec<(usize, String)>, body: &str) -> Vec<LidCorrela
         .captures_iter(body)
         .filter_map(|cap| {
             let whole = cap.get(0)?;
-            let value = cap
-                .get(1)
-                .or(cap.get(2))
-                .map(|m| m.as_str().to_string())?;
+            let value = cap.get(1).or(cap.get(2)).map(|m| m.as_str().to_string())?;
             Some((whole.start(), value))
         })
         .collect();
@@ -213,10 +210,7 @@ pub fn extract_cb_id_values(body: &str) -> Vec<CbIdCorrelation> {
         .captures_iter(body)
         .filter_map(|cap| {
             let name = cap.get(1)?.as_str().to_string();
-            let value = cap
-                .get(2)
-                .or(cap.get(3))
-                .map(|m| m.as_str().to_string())?;
+            let value = cap.get(2).or(cap.get(3)).map(|m| m.as_str().to_string())?;
             let key = slug_for_cb_id(&name);
             Some(CbIdCorrelation { name, value, key })
         })
@@ -282,7 +276,10 @@ mod tests {
             normalize_url("https://example.com/x#frag"),
             "https://example.com/x"
         );
-        assert_eq!(normalize_url("https://example.com/x"), "https://example.com/x");
+        assert_eq!(
+            normalize_url("https://example.com/x"),
+            "https://example.com/x"
+        );
     }
 
     #[test]
@@ -310,8 +307,7 @@ mod tests {
 
     #[test]
     fn html_lid_handles_both_quote_styles_and_query_string() {
-        let body =
-            r#"<a href='https://example.com/x?utm=foo'>{{ x | lid: "lidvaluexyz1" }}X</a>"#;
+        let body = r#"<a href='https://example.com/x?utm=foo'>{{ x | lid: "lidvaluexyz1" }}X</a>"#;
         let pairs = extract_html_lid_values(body);
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].url, "https://example.com/x");
@@ -353,8 +349,7 @@ mod tests {
 
     #[test]
     fn cb_id_handles_multiple_includes() {
-        let body =
-            "{{content_blocks.${alpha} | id: 'cb1'}} {{content_blocks.${beta} | id: 'cb2'}}";
+        let body = "{{content_blocks.${alpha} | id: 'cb1'}} {{content_blocks.${beta} | id: 'cb2'}}";
         let pairs = extract_cb_id_values(body);
         assert_eq!(pairs.len(), 2);
         assert_eq!(pairs[0].name, "alpha");

@@ -495,16 +495,14 @@ content_block:
     .unwrap();
 
     // Body must still be the templated form.
-    let saved =
-        fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
+    let saved = fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
     assert!(
         saved.contains("__BRAZESYNC.lid.cta__"),
         "local template body must survive export round-trip, got:\n{saved}"
     );
 
     // values file must carry the new lid value.
-    let values =
-        fs::read_to_string(tmp.path().join("values").join("test.yaml")).unwrap();
+    let values = fs::read_to_string(tmp.path().join("values").join("test.yaml")).unwrap();
     assert!(
         values.contains("newlidvalue1"),
         "values file must reflect refreshed lid, got:\n{values}"
@@ -553,8 +551,7 @@ async fn export_content_block_without_placeholders_is_unchanged() {
     .await
     .unwrap();
 
-    let saved = fs::read_to_string(tmp.path().join("content_blocks").join("plain.liquid"))
-        .unwrap();
+    let saved = fs::read_to_string(tmp.path().join("content_blocks").join("plain.liquid")).unwrap();
     assert!(saved.contains("Hello world"), "saved file: {saved}");
     assert!(
         !tmp.path().join("values").join("test.yaml").exists(),
