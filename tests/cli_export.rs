@@ -438,3 +438,196 @@ async fn export_custom_attributes_writes_registry_yaml() {
     assert!(pos_last < pos_legacy);
     assert!(pos_legacy < pos_pref);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_content_block_preserves_local_template_and_refreshes_values() {
+    // When a local template uses `__BRAZESYNC.*__`, export must
+    // preserve the local body and only update the values file
+    // with the lid value extracted from the remote body.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [{"content_block_id": "id-promo", "name": "promo"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "promo",
+            "content": "<a href=\"https://example.com/cta\">{{ x | lid: 'newlidvalue1' }}go</a>",
+            "tags": []
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    common::write_local_content_block(
+        tmp.path(),
+        "promo",
+        "<a href=\"https://example.com/cta\">{{ x | lid: '__BRAZESYNC.lid.cta__' }}go</a>",
+    );
+    common::write_values_file(
+        tmp.path(),
+        "test",
+        r#"version: 1
+content_block:
+  promo:
+    lid:
+      cta:
+        value: oldlidvalue1
+        url: https://example.com/cta
+"#,
+    );
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["export", "--resource", "content_block"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    // Body must still be the templated form.
+    let saved = fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
+    assert!(
+        saved.contains("__BRAZESYNC.lid.cta__"),
+        "local template body must survive export round-trip, got:\n{saved}"
+    );
+
+    // values file must carry the new lid value.
+    let values = fs::read_to_string(tmp.path().join("values").join("test.yaml")).unwrap();
+    assert!(
+        values.contains("newlidvalue1"),
+        "values file must reflect refreshed lid, got:\n{values}"
+    );
+    assert!(
+        !values.contains("oldlidvalue1"),
+        "values file must replace stale lid, got:\n{values}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_content_block_without_placeholders_is_unchanged() {
+    // Backwards compat: a plain (no placeholder) content_block must
+    // still be written verbatim from remote, and no values file
+    // should be touched.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [{"content_block_id": "id-plain", "name": "plain"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "plain",
+            "content": "Hello world\n",
+            "tags": []
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["export", "--resource", "content_block"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    let saved = fs::read_to_string(tmp.path().join("content_blocks").join("plain.liquid")).unwrap();
+    assert!(saved.contains("Hello world"), "saved file: {saved}");
+    assert!(
+        !tmp.path().join("values").join("test.yaml").exists(),
+        "no values file should be created for placeholder-free workspaces"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_warns_about_orphan_values_keys() {
+    // A values key with no corresponding placeholder in the local
+    // template should produce an orphan warning on stderr but NOT
+    // be auto-removed (per RFC §2.5 step 6).
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [{"content_block_id": "id-promo", "name": "promo"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "promo",
+            "content": "<a href=\"https://example.com/cta\">{{ x | lid: 'newlidvalue1' }}go</a>",
+            "tags": []
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    common::write_local_content_block(
+        tmp.path(),
+        "promo",
+        "<a href=\"https://example.com/cta\">{{ x | lid: '__BRAZESYNC.lid.cta__' }}go</a>",
+    );
+    common::write_values_file(
+        tmp.path(),
+        "test",
+        r#"version: 1
+content_block:
+  promo:
+    lid:
+      cta:
+        value: oldlidvalue1
+        url: https://example.com/cta
+      stale_key:
+        value: staaaalee1
+        url: https://example.com/removed
+"#,
+    );
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["export", "--resource", "content_block"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("orphan lid key 'stale_key'"),
+        "expected orphan warning, got stderr:\n{stderr}"
+    );
+
+    // Orphan must survive (no auto-removal).
+    let values = fs::read_to_string(tmp.path().join("values").join("test.yaml")).unwrap();
+    assert!(
+        values.contains("stale_key"),
+        "orphan key must not be auto-removed, got:\n{values}"
+    );
+}
