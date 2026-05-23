@@ -6,6 +6,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::diff::custom_attribute::CustomAttributeOp;
@@ -24,6 +25,21 @@ pub struct PlanFile {
     pub braze_sync_version: String,
     pub scope: PlanScope,
     pub ops: Vec<PlanOp>,
+    /// Per-resource hash of the subset of `values/<env>.yaml` that
+    /// the resource's templated body consumes (RFC §4 Phase 6).
+    /// Keys are `"<kind>/<name>"`, values are blake3 hex digests.
+    /// Compared at `apply --plan` time so that values edits made
+    /// between plan and apply (including non-obvious global edits
+    /// that fan out to many resources) trigger `Error::PlanDrift`
+    /// instead of silently shipping different values than reviewed.
+    ///
+    /// `#[serde(default)]` keeps old plan files (pre-v0.14)
+    /// readable: a missing field deserializes as an empty map, and
+    /// `apply --plan` treats an empty saved-hashes map as "plan
+    /// pre-dates the values hash feature, skip the integrity
+    /// check" (the saved ops + scope checks still run).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub values_input_hashes: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -82,6 +98,7 @@ impl PlanFile {
                 archive_orphans,
             },
             ops: collect_ops(summary),
+            values_input_hashes: BTreeMap::new(),
         }
     }
 
@@ -232,6 +249,7 @@ mod tests {
                 op(ResourceKind::ContentBlock, "a", PlanOpType::Modify),
                 op(ResourceKind::CatalogSchema, "x", PlanOpType::Add),
             ],
+            values_input_hashes: BTreeMap::new(),
         };
         let fresh = vec![
             op(ResourceKind::CatalogSchema, "x", PlanOpType::Add),
@@ -253,6 +271,7 @@ mod tests {
                 archive_orphans: false,
             },
             ops: vec![op(ResourceKind::ContentBlock, "a", PlanOpType::Modify)],
+            values_input_hashes: BTreeMap::new(),
         };
         let fresh = vec![op(ResourceKind::ContentBlock, "a", PlanOpType::Orphan)];
         let diff = plan.diff_ops(&fresh);
@@ -280,6 +299,7 @@ mod tests {
                 op(ResourceKind::ContentBlock, "a", PlanOpType::Modify),
                 op(ResourceKind::ContentBlock, "a", PlanOpType::Modify),
             ],
+            values_input_hashes: BTreeMap::new(),
         };
         let fresh_dup = vec![
             op(ResourceKind::ContentBlock, "a", PlanOpType::Modify),
@@ -307,6 +327,7 @@ mod tests {
                 archive_orphans: true,
             },
             ops: vec![op(ResourceKind::ContentBlock, "hero", PlanOpType::Add)],
+            values_input_hashes: BTreeMap::new(),
         };
         let json = serde_json::to_string(&plan).unwrap();
         let round: PlanFile = serde_json::from_str(&json).unwrap();

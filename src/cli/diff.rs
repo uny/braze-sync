@@ -23,8 +23,8 @@ use crate::format::OutputFormat;
 use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io, tag_io};
 use crate::resource::{Catalog, ContentBlock, EmailTemplate, ResourceKind};
 use crate::values::{
-    preflight_values, resolve_content_block_in_place, resolve_email_template_in_place,
-    PreflightArgs, ValuesFile,
+    compute_values_input_hashes, preflight_values, resolve_content_block_in_place,
+    resolve_email_template_in_place, PreflightArgs, ValuesFile,
 };
 use anyhow::Context as _;
 use clap::Args;
@@ -101,7 +101,8 @@ pub async fn run(
     })?;
 
     let mut summary = DiffSummary::default();
-    for kind in kinds {
+    for kind in &kinds {
+        let kind = *kind;
         if warn_if_name_excluded(kind, args.name.as_deref(), resolved.excludes_for(kind)) {
             continue;
         }
@@ -170,18 +171,42 @@ pub async fn run(
     print!("{formatted}");
 
     if let Some(path) = &args.plan_out {
-        let plan = PlanFile::from_summary(
+        let mut plan = PlanFile::from_summary(
             &summary,
             resolved.environment_name.clone(),
             args.resource,
             args.name.clone(),
             args.archive_orphans,
         );
+        // RFC §4 Phase 6: record the per-resource consumed-values
+        // hash so apply --plan can detect a values edit (including
+        // a fan-out global edit) that happened between plan and apply.
+        plan.values_input_hashes = compute_values_input_hashes(
+            PreflightArgs {
+                config_dir,
+                resolved: &resolved,
+                content_blocks_root: &content_blocks_root,
+                email_templates_root: &email_templates_root,
+                kinds: &kinds,
+                cb_name_filter: args
+                    .name
+                    .as_deref()
+                    .filter(|_| args.resource == Some(ResourceKind::ContentBlock)),
+                et_name_filter: args
+                    .name
+                    .as_deref()
+                    .filter(|_| args.resource == Some(ResourceKind::EmailTemplate)),
+                cb_excludes: resolved.excludes_for(ResourceKind::ContentBlock),
+                et_excludes: resolved.excludes_for(ResourceKind::EmailTemplate),
+            },
+            values.as_ref(),
+        )?;
         plan.write_to(path)
             .with_context(|| format!("writing plan file to {}", path.display()))?;
         eprintln!(
-            "✓ Wrote plan ({} op(s)) to {}",
+            "✓ Wrote plan ({} op(s), {} values-hash entry(ies)) to {}",
             plan.ops.len(),
+            plan.values_input_hashes.len(),
             path.display()
         );
     }

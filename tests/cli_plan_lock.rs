@@ -279,3 +279,192 @@ async fn apply_plan_archive_orphans_mismatch_exits_7_before_api_call() {
     .await
     .unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plan_lock_aborts_when_consumed_values_change_between_plan_and_apply() {
+    // RFC §4 Phase 6: editing values/<env>.yaml after diff --plan-out
+    // must abort apply --plan with PlanDrift (exit 7), before any
+    // mutation hits Braze.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0) // No POST may fire on plan drift.
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    common::write_local_content_block(
+        tmp.path(),
+        "promo",
+        "cta=__BRAZESYNC.lid.cta__\n",
+    );
+    common::write_values_file(
+        tmp.path(),
+        "test",
+        r#"version: 1
+content_block:
+  promo:
+    lid:
+      cta:
+        value: oldlidvalue1
+        url: https://example.com/cta
+"#,
+    );
+
+    let plan_path = tmp.path().join("plan.json");
+    let plan_out = format!("--plan-out={}", plan_path.display());
+    let config_str = config_path.to_str().unwrap().to_string();
+    let plan_out_clone = plan_out.clone();
+    let config_str_clone = config_str.clone();
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", &config_str_clone])
+            .args(["diff", "--resource", "content_block", &plan_out_clone])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    // Edit the values file after the plan has been written.
+    common::write_values_file(
+        tmp.path(),
+        "test",
+        r#"version: 1
+content_block:
+  promo:
+    lid:
+      cta:
+        value: tamperedlid
+        url: https://example.com/cta
+"#,
+    );
+
+    let plan_in = format!("--plan={}", plan_path.display());
+    let assert = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", &config_str])
+            .args(["apply", "--resource", "content_block", "--confirm", &plan_in])
+            .assert()
+            .failure()
+            .code(7)
+    })
+    .await
+    .unwrap();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("plan drift")
+            && (stderr.contains("values inputs changed")
+                || stderr.contains("consumed values")),
+        "expected plan-drift values message, got:\n{stderr}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plan_lock_passes_when_unrelated_values_key_changes() {
+    // Editing a values key that no resource currently references
+    // (orphan in one resource's plan world) must NOT trigger
+    // plan-drift abort. The hash is per-resource over its CONSUMED
+    // subset.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/content_blocks/create"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_block_id": "new-id-1",
+            "message": "success"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    common::write_local_content_block(
+        tmp.path(),
+        "promo",
+        "cta=__BRAZESYNC.lid.cta__\n",
+    );
+    // Two entries; only `cta` is consumed by the placeholder.
+    common::write_values_file(
+        tmp.path(),
+        "test",
+        r#"version: 1
+content_block:
+  promo:
+    lid:
+      cta:
+        value: stableidvalue
+        url: https://example.com/cta
+      unused:
+        value: othervaluexxx
+        url: https://example.com/unused
+"#,
+    );
+
+    let plan_path = tmp.path().join("plan.json");
+    let plan_out = format!("--plan-out={}", plan_path.display());
+    let config_str = config_path.to_str().unwrap().to_string();
+    let plan_out_clone = plan_out.clone();
+    let config_str_clone = config_str.clone();
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", &config_str_clone])
+            .args(["diff", "--resource", "content_block", &plan_out_clone])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    // Edit only the *unused* entry. The plan-lock hash for `promo`
+    // must not change because `unused` is not in its consumed set.
+    common::write_values_file(
+        tmp.path(),
+        "test",
+        r#"version: 1
+content_block:
+  promo:
+    lid:
+      cta:
+        value: stableidvalue
+        url: https://example.com/cta
+      unused:
+        value: editedvaluexx
+        url: https://example.com/unused
+"#,
+    );
+
+    let plan_in = format!("--plan={}", plan_path.display());
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", &config_str])
+            .args(["apply", "--resource", "content_block", "--confirm", &plan_in])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}

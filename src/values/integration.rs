@@ -323,6 +323,142 @@ pub fn preflight_values(args: PreflightArgs<'_>) -> Result<Option<ValuesFile>> {
     Ok(values)
 }
 
+/// Compute per-resource "consumed values" hashes for plan-lock
+/// integrity checking (RFC §4 Phase 6).
+///
+/// For each placeholder-bearing local resource we extract the
+/// `(type, key)` pairs from the templated body, look up each in the
+/// values file using the same namespace rules as
+/// `resolve_*_in_place`, build a stable `BTreeMap<String, String>`
+/// of consumed entries, serialize via `serde_json`, and blake3-hash
+/// the resulting bytes.
+///
+/// Returned map keys are `"<kind>/<name>"` so the plan file's JSON
+/// representation has stable, grep-able keys; values are blake3 hex
+/// digests (64 chars).
+///
+/// blake3 vs the RFC's "SHA-256": both are 32-byte cryptographic
+/// digests, both deterministic, both already collision-resistant for
+/// this scale. blake3 is already a transitive dep (used by catalog
+/// items diffing), so we keep the dep surface minimal and document
+/// the choice here.
+pub fn compute_values_input_hashes(
+    args: PreflightArgs<'_>,
+    values: Option<&ValuesFile>,
+) -> Result<BTreeMap<String, String>> {
+    use crate::resource::ResourceKind;
+
+    let has_cb = args.kinds.contains(&ResourceKind::ContentBlock);
+    let has_et = args.kinds.contains(&ResourceKind::EmailTemplate);
+    if !has_cb && !has_et {
+        return Ok(BTreeMap::new());
+    }
+
+    let mut hashes: BTreeMap<String, String> = BTreeMap::new();
+
+    if has_cb && args.content_blocks_root.exists() {
+        let mut locals =
+            crate::fs::content_block_io::load_all_content_blocks(args.content_blocks_root)
+                .map_err(|e| Error::Config(format!("loading content_block locals: {e}")))?;
+        if let Some(name) = args.cb_name_filter {
+            locals.retain(|c| c.name == name);
+        }
+        locals.retain(|c| !crate::config::is_excluded(&c.name, args.cb_excludes));
+        for cb in locals {
+            if !body_has_placeholders(&cb.content) {
+                continue;
+            }
+            let consumed = consumed_for_content_block(&cb, values);
+            let key = format!("content_block/{}", cb.name);
+            hashes.insert(key, hash_consumed_map(&consumed));
+        }
+    }
+
+    if has_et && args.email_templates_root.exists() {
+        let mut locals =
+            crate::fs::email_template_io::load_all_email_templates(args.email_templates_root)
+                .map_err(|e| Error::Config(format!("loading email_template locals: {e}")))?;
+        if let Some(name) = args.et_name_filter {
+            locals.retain(|t| t.name == name);
+        }
+        locals.retain(|t| !crate::config::is_excluded(&t.name, args.et_excludes));
+        for et in locals {
+            let any_ph = body_has_placeholders(&et.subject)
+                || body_has_placeholders(&et.body_html)
+                || body_has_placeholders(&et.body_plaintext)
+                || et
+                    .preheader
+                    .as_deref()
+                    .is_some_and(body_has_placeholders);
+            if !any_ph {
+                continue;
+            }
+            let consumed = consumed_for_email_template(&et, values);
+            let key = format!("email_template/{}", et.name);
+            hashes.insert(key, hash_consumed_map(&consumed));
+        }
+    }
+
+    Ok(hashes)
+}
+
+fn consumed_for_content_block(
+    cb: &crate::resource::ContentBlock,
+    values: Option<&ValuesFile>,
+) -> BTreeMap<String, String> {
+    let lookup = build_content_block_lookup(&cb.name, values);
+    let mut consumed: BTreeMap<String, String> = BTreeMap::new();
+    for ph in crate::values::placeholder::extract_placeholders(&cb.content) {
+        let lk = (ph.ty, ph.key.clone());
+        if let Some(v) = lookup.get(&lk) {
+            consumed.insert(format!("{}.{}", ph.ty.as_str(), ph.key), v.clone());
+        }
+    }
+    consumed
+}
+
+fn consumed_for_email_template(
+    et: &crate::resource::EmailTemplate,
+    values: Option<&ValuesFile>,
+) -> BTreeMap<String, String> {
+    // Field-prefix the key so two fields that reference the same
+    // (type, key) but resolve to different per-field values don't
+    // collapse to a single BTreeMap entry. The hash must distinguish
+    // them — apply later resolves field-scoped, so plan and apply
+    // need the same view.
+    let mut consumed: BTreeMap<String, String> = BTreeMap::new();
+    for (field_name, body) in [
+        ("subject", et.subject.as_str()),
+        ("body_html", et.body_html.as_str()),
+        ("body_plaintext", et.body_plaintext.as_str()),
+        ("preheader", et.preheader.as_deref().unwrap_or("")),
+    ] {
+        if !body_has_placeholders(body) {
+            continue;
+        }
+        let lookup = build_email_template_lookup(&et.name, field_name, values);
+        for ph in crate::values::placeholder::extract_placeholders(body) {
+            let lk = (ph.ty, ph.key.clone());
+            if let Some(v) = lookup.get(&lk) {
+                consumed.insert(
+                    format!("{field_name}.{}.{}", ph.ty.as_str(), ph.key),
+                    v.clone(),
+                );
+            }
+        }
+    }
+    consumed
+}
+
+fn hash_consumed_map(consumed: &BTreeMap<String, String>) -> String {
+    // BTreeMap iteration is sorted, so serde_json::to_vec produces a
+    // stable byte stream. We accept the unwrap because BTreeMap of
+    // primitives can't fail serialization.
+    let bytes =
+        serde_json::to_vec(consumed).expect("BTreeMap<String, String> serialization is infallible");
+    blake3::hash(&bytes).to_hex().to_string()
+}
+
 /// Format aggregated failures into a single human-readable error.
 /// Adds the "values file missing" hint when `values_loaded == false` so
 /// the operator immediately knows where to look.
