@@ -134,13 +134,9 @@ pub fn find_suspicious_placeholders(body: &str) -> Vec<String> {
     loose_re()
         .find_iter(body)
         .filter(|m| {
-            // Exclude loose matches that overlap any strict span. The greedy
-            // loose regex can extend past a valid `__...__` envelope into
-            // adjacent text (e.g. trailing `__bold__` markdown, or two
-            // adjacent placeholders sharing `____`), producing a span that
-            // is neither equal to nor disjoint from the real placeholder.
-            // Any overlap means the region is already accounted for by the
-            // strict pass and is not suspicious.
+            // Overlap (not equality) — the greedy loose regex can extend past
+            // a valid envelope into adjacent `__...__` text. See regression
+            // tests below.
             !strict_spans
                 .iter()
                 .any(|&(s, e)| m.start() < e && s < m.end())
@@ -183,8 +179,6 @@ pub fn resolve_placeholders(
     let placeholders = extract_placeholders(body);
     let mut errors = Vec::new();
 
-    // RFC §5: lid re-use within one body is conceptually wrong. Detect
-    // and surface as an aggregated failure (deterministic key order).
     let mut lid_counts: BTreeMap<String, usize> = BTreeMap::new();
     for ph in &placeholders {
         if matches!(ph.ty, PlaceholderType::Lid) {
@@ -351,7 +345,6 @@ mod tests {
 
     #[test]
     fn duplicate_lid_aborts_with_dedicated_error() {
-        // RFC §5: same lid key referenced twice in one body must abort.
         let body = "<a>__BRAZESYNC.lid.cta__</a> <a>__BRAZESYNC.lid.cta__</a>";
         let map = lookup(&[(PlaceholderType::Lid, "cta", "ai8kexrxcp03")]);
         let err = resolve_placeholders(body, &map).unwrap_err();
