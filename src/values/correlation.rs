@@ -221,9 +221,18 @@ pub fn extract_cb_id_values(body: &str) -> Vec<CbIdCorrelation> {
 }
 
 /// Slug a content_block name for use as a `cb_id` key per RFC §3 Q3.
+///
+/// Keys never end in `_`: when the input slugifies to empty the result
+/// is the bare prefix (`cb`), not `cb_`. A trailing `_` followed by the
+/// placeholder envelope `__` produces three consecutive underscores in
+/// the rendered template, which is ambiguous to parse — the resolver
+/// recovers it but operators tripped over the ambiguity (see CHANGELOG
+/// for v0.14.3).
 pub fn slug_for_cb_id(name: &str) -> String {
     let base = slug_core(name);
-    if base.is_empty() || base.starts_with(|c: char| c.is_ascii_digit()) {
+    if base.is_empty() {
+        "cb".to_string()
+    } else if base.starts_with(|c: char| c.is_ascii_digit()) {
         format!("cb_{base}")
     } else {
         base
@@ -231,11 +240,14 @@ pub fn slug_for_cb_id(name: &str) -> String {
 }
 
 /// Slug a URL path tail or arbitrary anchor for use as a `lid` key.
-/// `link_` prefix is applied when the source produces no meaningful
-/// ASCII content (RFC §3 Q3).
+/// `link` prefix is applied when the source produces no meaningful
+/// ASCII content (RFC §3 Q3). Keys never end in `_` — see
+/// [`slug_for_cb_id`] for the rationale.
 pub fn slug_for_lid(source: &str) -> String {
     let base = slug_core(source);
-    if base.is_empty() || base.starts_with(|c: char| c.is_ascii_digit()) {
+    if base.is_empty() {
+        "link".to_string()
+    } else if base.starts_with(|c: char| c.is_ascii_digit()) {
         format!("link_{base}")
     } else {
         base
@@ -365,7 +377,7 @@ mod tests {
     #[test]
     fn cb_id_slug_uses_cb_prefix_for_empty_or_digit_start() {
         assert_eq!(slug_for_cb_id("2024_summer"), "cb_2024_summer");
-        assert_eq!(slug_for_cb_id(""), "cb_");
+        assert_eq!(slug_for_cb_id(""), "cb");
         assert_eq!(slug_for_cb_id("My Promo Banner"), "my_promo_banner");
         assert_eq!(slug_for_cb_id("cb_promo_image"), "cb_promo_image");
     }
@@ -373,10 +385,10 @@ mod tests {
     #[test]
     fn lid_slug_uses_link_prefix_for_empty_or_digit_start() {
         assert_eq!(slug_for_lid("/spring-sale"), "spring_sale");
-        assert_eq!(slug_for_lid("/"), "link_");
+        assert_eq!(slug_for_lid("/"), "link");
         assert_eq!(slug_for_lid("123"), "link_123");
         // Non-ASCII source collapses to empty per RFC §3 Q3 Unicode rule.
-        assert_eq!(slug_for_lid("プロモ"), "link_");
+        assert_eq!(slug_for_lid("プロモ"), "link");
     }
 
     #[test]

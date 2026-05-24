@@ -84,41 +84,74 @@ fn loose_re() -> &'static Regex {
 }
 
 /// Extract every strict `__BRAZESYNC.<type>.<key>__` occurrence in `body`,
-/// in order of appearance. Parsed by anchoring on the literal `__BRAZESYNC.`
-/// prefix and the *nearest* closing `__`, so the envelope is honored even
-/// when `<key>` legitimately contains underscores. A regex with a greedy
-/// `[a-z0-9_]*` key class would otherwise swallow text across a `__`
-/// boundary and merge two intended placeholders into one.
+/// in order of appearance.
+///
+/// Parsing strategy: anchor on the literal `__BRAZESYNC.` prefix, then take
+/// the *right-most* closing `__` that still sits before the next
+/// `__BRAZESYNC.` prefix (or end-of-body). Picking the right-most close
+/// lets keys end in `_`: e.g. `__BRAZESYNC.lid.link___` parses with
+/// key=`link_` rather than failing to find a key called `link` followed
+/// by an orphan `_`. The next-prefix bound keeps two adjacent
+/// placeholders separable, so `__BRAZESYNC.lid.foo____BRAZESYNC.lid.bar__`
+/// still yields two placeholders with keys `foo` and `bar`.
 pub fn extract_placeholders(body: &str) -> Vec<Placeholder> {
     let mut out = Vec::new();
-    let bytes = body.as_bytes();
     let mut i = 0;
-    while i + PREFIX.len() <= bytes.len() {
+    while i < body.len() {
         let Some(rel) = body[i..].find(PREFIX) else {
             break;
         };
         let start = i + rel;
         let inner_start = start + PREFIX.len();
-        let Some(rel_close) = body[inner_start..].find(CLOSE) else {
+        if inner_start > body.len() {
             break;
-        };
-        let close_start = inner_start + rel_close;
-        let end = close_start + CLOSE.len();
-        let inner = &body[inner_start..close_start];
-        if let Some((ty_str, key)) = inner.split_once('.') {
-            if let (Some(ty), true) = (PlaceholderType::parse(ty_str), key_re().is_match(key)) {
-                out.push(Placeholder {
-                    ty,
-                    key: key.to_string(),
-                    start,
-                    end,
-                });
-                i = end;
-                continue;
-            }
         }
-        // Not a valid strict placeholder; skip past the opening `__` so the
-        // remainder is still scanned (and may be surfaced by the loose pass).
+
+        // Upper bound: the close `__` must end before the next
+        // `__BRAZESYNC.` prefix begins; otherwise we'd consume the
+        // opening of the next placeholder.
+        let next_prefix = body[inner_start..]
+            .find(PREFIX)
+            .map(|r| inner_start + r)
+            .unwrap_or(body.len());
+
+        // Walk every `__` candidate close in the searchable window and
+        // remember the right-most one whose inner matches `<type>.<key>`.
+        let mut best: Option<(usize, PlaceholderType, String)> = None;
+        let mut cursor = inner_start;
+        while cursor + CLOSE.len() <= next_prefix {
+            let Some(rel_close) = body[cursor..next_prefix].find(CLOSE) else {
+                break;
+            };
+            let close_start = cursor + rel_close;
+            if close_start + CLOSE.len() > next_prefix {
+                break;
+            }
+            let inner = &body[inner_start..close_start];
+            if let Some((ty_str, key)) = inner.split_once('.') {
+                if let (Some(ty), true) =
+                    (PlaceholderType::parse(ty_str), key_re().is_match(key))
+                {
+                    best = Some((close_start, ty, key.to_string()));
+                }
+            }
+            cursor = close_start + 1;
+        }
+
+        if let Some((close_start, ty, key)) = best {
+            let end = close_start + CLOSE.len();
+            out.push(Placeholder {
+                ty,
+                key,
+                start,
+                end,
+            });
+            i = end;
+            continue;
+        }
+        // Not a valid strict placeholder; skip past the opening `__` so
+        // the remainder is still scanned (and may be surfaced by the
+        // loose pass).
         i = start + CLOSE.len();
     }
     out
@@ -413,6 +446,42 @@ mod tests {
         assert_eq!(ps.len(), 2);
         assert_eq!(ps[0].key, "foo");
         assert_eq!(ps[1].key, "bar");
+    }
+
+    #[test]
+    fn trailing_underscore_key_extracts_when_envelope_appears_to_have_three_underscores() {
+        // Regression for v0.14.2 templatize output: when a URL slug is
+        // empty the fallback key is `link_`, and the rendered envelope
+        // collapses to `___` (close `__` + trailing `_` from the key).
+        // Greedy-rightmost parse must pick key=`link_`.
+        let body = "lid: '__BRAZESYNC.lid.link___'";
+        let ps = extract_placeholders(body);
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].key, "link_");
+        assert_eq!(ps[0].ty, PlaceholderType::Lid);
+    }
+
+    #[test]
+    fn key_with_internal_consecutive_underscores_extracts() {
+        // `a___b` is a legal key under the strict regex; envelope close
+        // is the final `__`, leaving key=`a___b`.
+        let body = "__BRAZESYNC.lid.a___b__";
+        let ps = extract_placeholders(body);
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].key, "a___b");
+    }
+
+    #[test]
+    fn unresolved_trailing_underscore_key_reports_full_key() {
+        // If `link_` isn't in the values map, the error must name
+        // `link_` (not `link`) so the operator can fix the right entry.
+        let body = "__BRAZESYNC.lid.link___";
+        let map = lookup(&[(PlaceholderType::Lid, "ok", "ai8kexrxcp03")]);
+        let err = resolve_placeholders(body, &map).unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolutionError::UnknownKey { key, .. } if key == "link_"
+        )));
     }
 
     #[test]

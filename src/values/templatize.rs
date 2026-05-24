@@ -317,7 +317,7 @@ fn url_path_tail(url: &str) -> String {
     // Strip scheme://host and any leading slashes; take the last
     // non-empty path component. `https://example.com/promo/spring-sale`
     // → `spring-sale`. Bare host or trailing slash → empty (caller
-    // applies the `link_` fallback via slug_for_lid).
+    // applies the `link` fallback via slug_for_lid).
     let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     let path_start = after_scheme
         .find('/')
@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn subject_lid_warns_about_export_refresh_gap() {
-        // subject has no URL anchor — slug falls back to `link_`. The
+        // subject has no URL anchor — slug falls back to `link`. The
         // CLI must surface that `export` won't refresh this entry for
         // other envs so the operator knows to maintain values manually.
         let body = "Hello {{x | lid: 'ai8kexrxcp03'}} world";
@@ -417,7 +417,7 @@ mod tests {
         );
         match &r.entries[0] {
             DetectedEntry::Lid { key, url, .. } => {
-                assert_eq!(key, "link_");
+                assert_eq!(key, "link");
                 assert!(url.is_none());
             }
             _ => panic!(),
@@ -474,7 +474,7 @@ mod tests {
         // Braze's typical HTML output puts the lid *inside* the href:
         //   <a href="https://…/path/?lid={{${cblid} | lid: 'X'}}">
         // The prefix-only scan can't see the closing quote and was
-        // falling back to a sequential `link_` key for ~all anchors.
+        // falling back to a sequential `link` key for ~all anchors.
         let body = r#"<a href="https://med.example.com/product/jaypirca/50mg/?lid={{${cblid} | lid: 'ai8kexrxcp03'}}"><img src="x"/></a>"#;
         let r = templatize_body(body, FieldKind::ContentBlock);
         assert_eq!(r.entries.len(), 1);
@@ -532,7 +532,7 @@ mod tests {
         // Outlook-compatible email content blocks wrap CTAs in VML
         // (`<v:roundrect href="…">`). The lid lives inside the VML
         // tag's `href`, NOT inside any `<a>` — pre-fix this fell back
-        // to a sequential `link_` key.
+        // to a sequential `link` key.
         let body = r#"<v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" href="https://hokto.example.com/page/?lid={{${cblid} | lid: 'ulab324mjv2a'}}" style="…"></v:roundrect>"#;
         let r = templatize_body(body, FieldKind::ContentBlock);
         assert_eq!(r.entries.len(), 1);
@@ -570,7 +570,7 @@ mod tests {
     fn vml_then_anchor_to_same_url_dedupes_with_suffix() {
         // Real hokuto-braze pattern: a VML CTA followed by a fallback
         // `<a>` to the same URL. Both should resolve to URL-derived
-        // keys (no sequential `link_` fallback), with the second
+        // keys (no sequential `link` fallback), with the second
         // getting the `_2` suffix from existing dedup logic.
         let body = r#"
 <v:roundrect href="https://example.com/promo/?lid={{x | lid: 'aaaaaaaa1111'}}"></v:roundrect>
@@ -595,8 +595,8 @@ mod tests {
                     "data-* attributes must not be treated as URL anchors, got url={url:?}"
                 );
                 assert!(
-                    key.starts_with("link_"),
-                    "expected sequential link_ fallback, got key={key}"
+                    key == "link" || key.starts_with("link_"),
+                    "expected sequential link fallback, got key={key}"
                 );
             }
             _ => panic!("expected Lid"),
@@ -618,8 +618,8 @@ mod tests {
                     "lid inside a non-URL attribute must not inherit a prior <a href>, got url={url:?}"
                 );
                 assert!(
-                    key.starts_with("link_"),
-                    "expected sequential link_ fallback, got key={key}"
+                    key == "link" || key.starts_with("link_"),
+                    "expected sequential link fallback, got key={key}"
                 );
             }
             _ => panic!("expected Lid"),
