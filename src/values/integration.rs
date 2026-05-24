@@ -526,10 +526,16 @@ pub fn format_failures(
                         key,
                     ));
                 }
-                ResolutionError::DuplicateLidKey { key, count } => {
+                ResolutionError::DuplicateLidKey { key, occurrences } => {
+                    let offsets = occurrences
+                        .iter()
+                        .map(|o| o.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     msg.push_str(&format!(
-                        "    - __BRAZESYNC.lid.{key}__ referenced {count} times; lid IDs \
-                         are per-click-context — use a distinct key per occurrence\n",
+                        "    - __BRAZESYNC.lid.{key}__ referenced {} times (offsets {offsets}); \
+                         lid IDs are per-click-context — use a distinct key per occurrence\n",
+                        occurrences.len(),
                     ));
                 }
             }

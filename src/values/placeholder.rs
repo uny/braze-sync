@@ -157,7 +157,12 @@ pub enum ResolutionError {
     /// Same `lid` key referenced more than once in a single body / field.
     /// RFC §5 edge case: lid is a per-click-context ID so re-use is
     /// conceptually wrong — abort rather than substitute the same value.
-    DuplicateLidKey { key: String, count: usize },
+    /// `occurrences` holds the byte offsets of every reference so the
+    /// failure report can point operators at the duplicates directly.
+    DuplicateLidKey {
+        key: String,
+        occurrences: Vec<usize>,
+    },
 }
 
 /// Flat key for the resolver's lookup table.
@@ -179,15 +184,18 @@ pub fn resolve_placeholders(
     let placeholders = extract_placeholders(body);
     let mut errors = Vec::new();
 
-    let mut lid_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut lid_occurrences: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for ph in &placeholders {
         if matches!(ph.ty, PlaceholderType::Lid) {
-            *lid_counts.entry(ph.key.clone()).or_insert(0) += 1;
+            lid_occurrences
+                .entry(ph.key.clone())
+                .or_default()
+                .push(ph.start);
         }
     }
-    for (key, count) in lid_counts {
-        if count > 1 {
-            errors.push(ResolutionError::DuplicateLidKey { key, count });
+    for (key, occurrences) in lid_occurrences {
+        if occurrences.len() > 1 {
+            errors.push(ResolutionError::DuplicateLidKey { key, occurrences });
         }
     }
 
@@ -350,7 +358,8 @@ mod tests {
         let err = resolve_placeholders(body, &map).unwrap_err();
         assert!(err.iter().any(|e| matches!(
             e,
-            ResolutionError::DuplicateLidKey { key, count } if key == "cta" && *count == 2
+            ResolutionError::DuplicateLidKey { key, occurrences }
+                if key == "cta" && occurrences.len() == 2
         )));
     }
 
