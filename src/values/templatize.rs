@@ -254,23 +254,25 @@ fn name_lid_for_field(
 
 fn preceding_url(body: &str, lid_token_offset: usize, field: FieldKind) -> Option<String> {
     let raw = if field.supports_html_anchor() {
-        // Braze's common case puts `{{ ... | lid: '…' }}` *inside* the
-        // href attribute value (e.g. `href="…?lid={{…|lid:'X'}}"`).
-        // Try the enclosing open tag first — match ANY element, not
-        // just `<a>`, so VML (`<v:roundrect href="…">`) and SVG
-        // (`<svg:a xlink:href="…">`) anchors used in Outlook-compatible
-        // email content blocks are picked up. Only when the lid lives
-        // outside any open tag do we fall back to the last `<a href>`
-        // before the token (legacy pattern where the lid sits between
-        // `<a>` and `</a>` as link text).
-        enclosing_url_attr(body, lid_token_offset).or_else(|| {
-            let prefix = &body[..lid_token_offset];
-            anchor_href_re()
-                .captures_iter(prefix)
-                .last()
+        // If the lid sits inside an open tag, ONLY that tag's URL
+        // attribute counts — falling through to an earlier `<a href>`
+        // would misattribute lids that live in a non-URL attribute of
+        // some other element. Outside any open tag, the legacy
+        // `<a>…lid…</a>` link-text pattern is the only signal we have.
+        match enclosing_open_tag(body, lid_token_offset) {
+            Some(tag) => url_attr_re()
+                .captures(tag)
                 .and_then(|cap| cap.get(1).or(cap.get(2)))
-                .map(|m| m.as_str().to_string())
-        })
+                .map(|x| x.as_str().to_string()),
+            None => {
+                let prefix = &body[..lid_token_offset];
+                anchor_href_re()
+                    .captures_iter(prefix)
+                    .last()
+                    .and_then(|cap| cap.get(1).or(cap.get(2)))
+                    .map(|m| m.as_str().to_string())
+            }
+        }
     } else if field.supports_plaintext_anchor() {
         let prefix = &body[..lid_token_offset];
         plaintext_url_re()
@@ -283,29 +285,19 @@ fn preceding_url(body: &str, lid_token_offset: usize, field: FieldKind) -> Optio
     raw.map(|r| normalize_url(&r))
 }
 
-/// Find an open tag (any element) that *contains* `lid_token_offset`
-/// and return its first URL-bearing attribute value (`href` / `src` /
-/// `action`, with or without a namespace prefix). Returns `None` when
-/// the offset isn't inside any open tag or the enclosing tag has no
-/// such attribute.
-///
-/// Open tags are detected by `<NAME\b … >` with `>` being the first
-/// unmatched `>` after `<NAME` — we trust that attribute values never
-/// contain a raw `>`. Comments (`<!--`), processing instructions
-/// (`<?…`), and closing tags (`</…`) are excluded by requiring a
-/// letter as the first character of the tag name.
-fn enclosing_url_attr(body: &str, lid_token_offset: usize) -> Option<String> {
+/// Return the open tag (any element) whose `<…>` span contains
+/// `lid_token_offset` — i.e. the lid is inside an attribute area, not
+/// in element text. Trusts that attribute values never contain a raw
+/// `>`. Excludes `</…>`, `<!--…-->`, `<?…?>` via the leading-letter
+/// constraint in [`element_open_tag_re`].
+fn enclosing_open_tag(body: &str, lid_token_offset: usize) -> Option<&str> {
     let re = element_open_tag_re();
     for m in re.find_iter(body) {
         if m.start() > lid_token_offset {
             break;
         }
         if m.end() > lid_token_offset {
-            let tag = &body[m.start()..m.end()];
-            return url_attr_re()
-                .captures(tag)
-                .and_then(|cap| cap.get(1).or(cap.get(2)))
-                .map(|x| x.as_str().to_string());
+            return Some(&body[m.start()..m.end()]);
         }
     }
     None
@@ -601,6 +593,29 @@ mod tests {
                 assert!(
                     url.is_none(),
                     "data-* attributes must not be treated as URL anchors, got url={url:?}"
+                );
+                assert!(
+                    key.starts_with("link_"),
+                    "expected sequential link_ fallback, got key={key}"
+                );
+            }
+            _ => panic!("expected Lid"),
+        }
+    }
+
+    #[test]
+    fn lid_inside_non_url_attr_does_not_inherit_prior_anchor_href() {
+        // Regression: lid inside a non-URL attribute (`data-x`) must
+        // not fall through to the unrelated prior `<a href>`.
+        let body = r#"<a href="https://example.com/promo/">prev</a><custom data-x="{{x | lid: 'abcd0000zzzz'}}"></custom>"#;
+        let r = templatize_body(body, FieldKind::ContentBlock);
+        assert_eq!(r.entries.len(), 1);
+        match &r.entries[0] {
+            DetectedEntry::Lid { key, url, value } => {
+                assert_eq!(value, "abcd0000zzzz");
+                assert!(
+                    url.is_none(),
+                    "lid inside a non-URL attribute must not inherit a prior <a href>, got url={url:?}"
                 );
                 assert!(
                     key.starts_with("link_"),
