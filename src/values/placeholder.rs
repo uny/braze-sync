@@ -134,9 +134,16 @@ pub fn find_suspicious_placeholders(body: &str) -> Vec<String> {
     loose_re()
         .find_iter(body)
         .filter(|m| {
+            // Exclude loose matches that overlap any strict span. The greedy
+            // loose regex can extend past a valid `__...__` envelope into
+            // adjacent text (e.g. trailing `__bold__` markdown, or two
+            // adjacent placeholders sharing `____`), producing a span that
+            // is neither equal to nor disjoint from the real placeholder.
+            // Any overlap means the region is already accounted for by the
+            // strict pass and is not suspicious.
             !strict_spans
                 .iter()
-                .any(|&(s, e)| s == m.start() && e == m.end())
+                .any(|&(s, e)| m.start() < e && s < m.end())
         })
         .map(|m| m.as_str().to_string())
         .collect()
@@ -273,6 +280,25 @@ mod tests {
     #[test]
     fn suspicious_excludes_strict_matches() {
         let body = "__BRAZESYNC.lid.ok__";
+        assert!(find_suspicious_placeholders(body).is_empty());
+    }
+
+    #[test]
+    fn suspicious_ignores_trailing_double_underscore_text() {
+        // Regression: greedy loose regex extends past a valid placeholder
+        // into `__bold__`-style adjacent text and reports a span like
+        // (0, 26) for `__BRAZESYNC.lid.foo__bar__`. That span overlaps the
+        // real strict placeholder (0, 21), so it must not be surfaced.
+        let body = "__BRAZESYNC.lid.foo__bar__";
+        assert!(find_suspicious_placeholders(body).is_empty());
+    }
+
+    #[test]
+    fn suspicious_ignores_adjacent_placeholders_sharing_underscores() {
+        // Regression: with two adjacent strict placeholders joined by an
+        // extra `__`, the loose regex finds a single match that overlaps
+        // both strict spans. Overlap means "already covered" — no warning.
+        let body = "__BRAZESYNC.lid.foo____BRAZESYNC.lid.bar__";
         assert!(find_suspicious_placeholders(body).is_empty());
     }
 
