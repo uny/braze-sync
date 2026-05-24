@@ -134,9 +134,12 @@ pub fn find_suspicious_placeholders(body: &str) -> Vec<String> {
     loose_re()
         .find_iter(body)
         .filter(|m| {
+            // Overlap (not equality) — the greedy loose regex can extend past
+            // a valid envelope into adjacent `__...__` text. See regression
+            // tests below.
             !strict_spans
                 .iter()
-                .any(|&(s, e)| s == m.start() && e == m.end())
+                .any(|&(s, e)| m.start() < e && s < m.end())
         })
         .map(|m| m.as_str().to_string())
         .collect()
@@ -150,6 +153,15 @@ pub enum ResolutionError {
         ty: PlaceholderType,
         key: String,
         start: usize,
+    },
+    /// Same `lid` key referenced more than once in a single body / field.
+    /// RFC §5 edge case: lid is a per-click-context ID so re-use is
+    /// conceptually wrong — abort rather than substitute the same value.
+    /// `occurrences` holds the byte offsets of every reference so the
+    /// failure report can point operators at the duplicates directly.
+    DuplicateLidKey {
+        key: String,
+        occurrences: Vec<usize>,
     },
 }
 
@@ -171,6 +183,21 @@ pub fn resolve_placeholders(
 ) -> Result<String, Vec<ResolutionError>> {
     let placeholders = extract_placeholders(body);
     let mut errors = Vec::new();
+
+    let mut lid_occurrences: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for ph in &placeholders {
+        if matches!(ph.ty, PlaceholderType::Lid) {
+            lid_occurrences
+                .entry(ph.key.clone())
+                .or_default()
+                .push(ph.start);
+        }
+    }
+    for (key, occurrences) in lid_occurrences {
+        if occurrences.len() > 1 {
+            errors.push(ResolutionError::DuplicateLidKey { key, occurrences });
+        }
+    }
 
     for ph in &placeholders {
         let key: LookupKey = (ph.ty, ph.key.clone());
@@ -256,6 +283,25 @@ mod tests {
     }
 
     #[test]
+    fn suspicious_ignores_trailing_double_underscore_text() {
+        // Regression: greedy loose regex extends past a valid placeholder
+        // into `__bold__`-style adjacent text and reports a span like
+        // (0, 26) for `__BRAZESYNC.lid.foo__bar__`. That span overlaps the
+        // real strict placeholder (0, 21), so it must not be surfaced.
+        let body = "__BRAZESYNC.lid.foo__bar__";
+        assert!(find_suspicious_placeholders(body).is_empty());
+    }
+
+    #[test]
+    fn suspicious_ignores_adjacent_placeholders_sharing_underscores() {
+        // Regression: with two adjacent strict placeholders joined by an
+        // extra `__`, the loose regex finds a single match that overlaps
+        // both strict spans. Overlap means "already covered" — no warning.
+        let body = "__BRAZESYNC.lid.foo____BRAZESYNC.lid.bar__";
+        assert!(find_suspicious_placeholders(body).is_empty());
+    }
+
+    #[test]
     fn resolves_when_all_keys_present() {
         let body = "before __BRAZESYNC.lid.cta__ middle __BRAZESYNC.custom.host__ end";
         let map = lookup(&[
@@ -287,6 +333,7 @@ mod tests {
             .iter()
             .map(|e| match e {
                 ResolutionError::UnknownKey { ty, key, .. } => (*ty, key.clone()),
+                ResolutionError::DuplicateLidKey { .. } => unreachable!(),
             })
             .collect();
         assert!(keys.contains(&(PlaceholderType::CbId, "b".to_string())));
@@ -302,6 +349,27 @@ mod tests {
             end: 0,
         };
         assert_eq!(ph.literal(), "__BRAZESYNC.cb_id.cb_hero__");
+    }
+
+    #[test]
+    fn duplicate_lid_aborts_with_dedicated_error() {
+        let body = "<a>__BRAZESYNC.lid.cta__</a> <a>__BRAZESYNC.lid.cta__</a>";
+        let map = lookup(&[(PlaceholderType::Lid, "cta", "ai8kexrxcp03")]);
+        let err = resolve_placeholders(body, &map).unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolutionError::DuplicateLidKey { key, occurrences }
+                if key == "cta" && occurrences.len() == 2
+        )));
+    }
+
+    #[test]
+    fn duplicate_cb_id_is_not_an_error() {
+        // cb_id / custom / global re-use is normal substitution per §5.
+        let body = "{{cb.__BRAZESYNC.cb_id.x__}} {{cb.__BRAZESYNC.cb_id.x__}}";
+        let map = lookup(&[(PlaceholderType::CbId, "x", "cb42")]);
+        let out = resolve_placeholders(body, &map).unwrap();
+        assert_eq!(out, "{{cb.cb42}} {{cb.cb42}}");
     }
 
     #[test]
