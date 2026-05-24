@@ -218,11 +218,14 @@ fn anchor_href_re() -> &'static Regex {
 /// optional namespace prefix like `xlink:href` or `v:href` — and
 /// capture its quoted value. Used to extract the URL anchor from the
 /// open tag enclosing a lid token, regardless of element name.
+///
+/// Leading `\s` (not `\b`) is required so that hyphen-prefixed custom
+/// attributes (`data-href`, `aria-*`, …) don't tail-match as `href`.
 fn url_attr_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"(?i)\b(?:[a-z][a-z0-9_-]*:)?(?:href|src|action)\s*=\s*(?:"([^"]*)"|'([^']*)')"#,
+            r#"(?i)\s(?:[a-z][a-z0-9_-]*:)?(?:href|src|action)\s*=\s*(?:"([^"]*)"|'([^']*)')"#,
         )
         .expect("url attr regex is valid")
     })
@@ -585,6 +588,27 @@ mod tests {
         let keys: Vec<&str> = r.entries.iter().map(DetectedEntry::key).collect();
         assert_eq!(keys, ["promo", "promo_2"]);
         assert!(r.warnings.is_empty(), "no warnings expected");
+    }
+
+    #[test]
+    fn data_prefixed_attrs_are_not_treated_as_url_anchor() {
+        let body = r#"<button data-action="track" data-href="ignored">{{x | lid: 'ulab324mjv2a'}}</button>"#;
+        let r = templatize_body(body, FieldKind::ContentBlock);
+        assert_eq!(r.entries.len(), 1);
+        match &r.entries[0] {
+            DetectedEntry::Lid { key, url, value } => {
+                assert_eq!(value, "ulab324mjv2a");
+                assert!(
+                    url.is_none(),
+                    "data-* attributes must not be treated as URL anchors, got url={url:?}"
+                );
+                assert!(
+                    key.starts_with("link_"),
+                    "expected sequential link_ fallback, got key={key}"
+                );
+            }
+            _ => panic!("expected Lid"),
+        }
     }
 
     #[test]
