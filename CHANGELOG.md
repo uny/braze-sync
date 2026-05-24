@@ -17,12 +17,15 @@ file formats, JSON output, exit codes) for the full v1.x line.
   underscores (`__BRAZESYNC.lid.link___`). The previous parser
   anchored on the *nearest* closing `__` and decided the key was
   `link`, leaving an orphan `_` and failing resolution with "key not
-  in values". The parser now picks the *right-most* closing `__`
-  before the next `__BRAZESYNC.` prefix, so `link_` (and any other
-  legitimate trailing-`_` key) round-trips correctly. Two adjacent
-  placeholders separated by exactly `____` (e.g.
-  `__BRAZESYNC.lid.foo____BRAZESYNC.lid.bar__`) still parse as two
-  placeholders.
+  in values". The parser now applies a narrowly-scoped recovery for
+  the two v0.14.2 empty-slug fallback shapes — `lid.link_` and
+  `cb_id.cb_` — extending the key by the one trailing `_` when the
+  envelope is followed by a single `_` (not `__`). Recovery is gated
+  on the exact `(type, key)` pair so hand-written bodies like
+  `__BRAZESYNC.custom.foo___bar` are not silently mutated into
+  key=`foo_`. Two adjacent placeholders separated by exactly `____`
+  (e.g. `__BRAZESYNC.lid.foo____BRAZESYNC.lid.bar__`) still parse as
+  two distinct placeholders.
 
 ### Changed
 

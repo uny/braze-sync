@@ -90,14 +90,16 @@ fn loose_re() -> &'static Regex {
 /// *nearest* closing `__` (left-most), so a regex with greedy `[a-z0-9_]*`
 /// can't merge two adjacent placeholders into one.
 ///
-/// Legacy recovery: v0.14.2 and earlier could emit keys ending in a single
-/// `_` (e.g. `link_`, `cb_` — see [`slug_for_cb_id`]). The rendered
-/// envelope is then `…link___` (key's trailing `_` + close `__`). When the
-/// left-most close is immediately followed by a single `_` (not another
-/// `__`, which would indicate the next placeholder's prefix or a separate
-/// `__token__`), we extend the key by that one `_`. The double-`_` guard
-/// keeps `__BRAZESYNC.lid.foo____bar__` parsed as key=`foo` rather than
-/// greedily absorbing `__bar__` into the key.
+/// Legacy recovery: v0.14.2 and earlier emitted exactly two trailing-`_`
+/// keys — `lid.link_` and `cb_id.cb_` (empty-slug fallbacks; see
+/// [`slug_for_cb_id`] / [`slug_for_lid`]). The rendered envelope collapses
+/// to e.g. `…link___` (key's trailing `_` + close `__`). Recovery is
+/// scoped to those two exact `(type, key)` pairs so that hand-written
+/// bodies like `__BRAZESYNC.custom.foo___bar` continue to parse as
+/// key=`foo` + literal `_bar` (rather than silently mutating the key into
+/// `foo_`). The double-`_` guard additionally keeps
+/// `__BRAZESYNC.lid.link____bar__` parsed as key=`link` rather than
+/// absorbing the adjacent `__bar__` token.
 pub fn extract_placeholders(body: &str) -> Vec<Placeholder> {
     let mut out = Vec::new();
     let bytes = body.as_bytes();
@@ -116,9 +118,15 @@ pub fn extract_placeholders(body: &str) -> Vec<Placeholder> {
         let inner = &body[inner_start..close_start];
         if let Some((ty_str, key)) = inner.split_once('.') {
             if let (Some(ty), true) = (PlaceholderType::parse(ty_str), key_re().is_match(key)) {
+                // Legacy single-trailing-`_` recovery: narrowly scoped to
+                // the two v0.14.2 empty-slug fallbacks (see fn docs).
+                let is_legacy_empty_slug = (ty == PlaceholderType::Lid && key == "link")
+                    || (ty == PlaceholderType::CbId && key == "cb");
                 let mut key = key.to_string();
-                // Legacy single-trailing-`_` recovery: see fn docs.
-                if bytes.get(end) == Some(&b'_') && bytes.get(end + 1) != Some(&b'_') {
+                if is_legacy_empty_slug
+                    && bytes.get(end) == Some(&b'_')
+                    && bytes.get(end + 1) != Some(&b'_')
+                {
                     key.push('_');
                     end += 1;
                 }
@@ -456,6 +464,38 @@ mod tests {
         assert_eq!(ps.len(), 1);
         assert_eq!(ps[0].key, "foo");
         assert_eq!(&body[ps[0].end..], "__bar__");
+    }
+
+    #[test]
+    fn non_legacy_key_followed_by_underscore_text_is_not_absorbed() {
+        // Recovery is scoped to the two v0.14.2 empty-slug fallbacks
+        // (`lid.link_`, `cb_id.cb_`). For any other `(type, key)` an
+        // adjacent `_<text>` must remain part of the surrounding body —
+        // we must not silently mutate `custom.foo` into `custom.foo_`.
+        let body = "__BRAZESYNC.custom.foo___bar";
+        let ps = extract_placeholders(body);
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].key, "foo");
+        assert_eq!(ps[0].ty, PlaceholderType::Custom);
+        assert_eq!(&body[ps[0].end..], "_bar");
+
+        // Same shape but for `lid.other` — also not a legacy fallback,
+        // so the trailing `_` stays in the surrounding text.
+        let body = "__BRAZESYNC.lid.other___tail";
+        let ps = extract_placeholders(body);
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].key, "other");
+        assert_eq!(&body[ps[0].end..], "_tail");
+    }
+
+    #[test]
+    fn cb_id_empty_slug_fallback_extracts_with_trailing_underscore() {
+        // The other half of the legacy fallback pair: `cb_id.cb_`.
+        let body = "__BRAZESYNC.cb_id.cb___";
+        let ps = extract_placeholders(body);
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].key, "cb_");
+        assert_eq!(ps[0].ty, PlaceholderType::CbId);
     }
 
     #[test]
