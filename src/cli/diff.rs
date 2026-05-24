@@ -23,8 +23,8 @@ use crate::format::OutputFormat;
 use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io, tag_io};
 use crate::resource::{Catalog, ContentBlock, EmailTemplate, ResourceKind};
 use crate::values::{
-    compute_values_input_hashes, preflight_values, resolve_content_block_in_place,
-    resolve_email_template_in_place, PreflightArgs, ValuesFile,
+    compute_values_input_hashes, preflight_values, resolve_content_block_with_remote,
+    resolve_email_template_with_remote, PreflightArgs, ValuesFile,
 };
 use anyhow::Context as _;
 use clap::Args;
@@ -284,24 +284,6 @@ pub(crate) async fn compute_content_block_plan(
     }
     local.retain(|c| !is_excluded(&c.name, excludes));
 
-    // Resolve `__BRAZESYNC.*__` placeholders before any API call so the
-    // diff compares apples to apples (resolved Git body ↔ remote body).
-    // Pre-flight in the entry layer already verifies this can't fail,
-    // but the per-resource check stays as a defense in depth — and it
-    // is the *only* gate when this helper is called from a future
-    // caller that bypasses the entry-layer pre-flight.
-    for cb in &mut local {
-        if let Err(f) = resolve_content_block_in_place(cb, values) {
-            return Err(anyhow::anyhow!(
-                "internal: unresolved placeholders in content_block '{}' \
-                 reached compute layer (pre-flight should have caught this); \
-                 {} error(s)",
-                f.resource_name,
-                f.errors.len()
-            ));
-        }
-    }
-
     let mut summaries = client.list_content_blocks().await?;
     if let Some(name) = name_filter {
         summaries.retain(|s| s.name == name);
@@ -339,6 +321,23 @@ pub(crate) async fn compute_content_block_plan(
         .buffer_unordered(FETCH_CONCURRENCY)
         .try_collect()
         .await?;
+
+    // Resolve `__BRAZESYNC.*__` placeholders now that the remote body
+    // is in hand. lid / cb_id values come from the remote (or fallback
+    // for new resources); custom / global come from `values`.
+    drop(local_by_name);
+    for cb in &mut local {
+        let remote_cb = fetched.get(&cb.name);
+        if let Err(f) = resolve_content_block_with_remote(cb, remote_cb, values) {
+            return Err(anyhow::anyhow!(
+                "content_block '{}': {} unresolved placeholder(s) after remote fetch",
+                f.resource_name,
+                f.errors.len()
+            ));
+        }
+    }
+    let local_by_name: BTreeMap<&str, &ContentBlock> =
+        local.iter().map(|c| (c.name.as_str(), c)).collect();
 
     let mut all_names: BTreeSet<&str> = BTreeSet::new();
     all_names.extend(local_by_name.keys().copied());
@@ -389,20 +388,6 @@ pub(crate) async fn compute_email_template_plan(
     }
     local.retain(|t| !is_excluded(&t.name, excludes));
 
-    // Defense in depth — entry-layer pre-flight is the user-facing
-    // gate; this only fires when the helper is called outside that path.
-    for et in &mut local {
-        if let Err(failures) = resolve_email_template_in_place(et, values) {
-            return Err(anyhow::anyhow!(
-                "internal: unresolved placeholders in email_template '{}' \
-                 reached compute layer (pre-flight should have caught this); \
-                 {} field(s) failed",
-                et.name,
-                failures.len()
-            ));
-        }
-    }
-
     let mut summaries = client.list_email_templates().await?;
     if let Some(name) = name_filter {
         summaries.retain(|s| s.name == name);
@@ -438,6 +423,20 @@ pub(crate) async fn compute_email_template_plan(
         .buffer_unordered(FETCH_CONCURRENCY)
         .try_collect()
         .await?;
+
+    drop(local_by_name);
+    for et in &mut local {
+        let remote_et = fetched.get(&et.name);
+        if let Err(failures) = resolve_email_template_with_remote(et, remote_et, values) {
+            return Err(anyhow::anyhow!(
+                "email_template '{}': {} field(s) failed to resolve after remote fetch",
+                et.name,
+                failures.len()
+            ));
+        }
+    }
+    let local_by_name: BTreeMap<&str, &EmailTemplate> =
+        local.iter().map(|t| (t.name.as_str(), t)).collect();
 
     let mut all_names: BTreeSet<&str> = BTreeSet::new();
     all_names.extend(local_by_name.keys().copied());

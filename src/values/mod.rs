@@ -1,34 +1,42 @@
-//! Per-env values: template + values separation for Braze resources.
+//! Per-env values + Braze-managed runtime resolution.
 //!
-//! Implements RFC `docs/local/feat-per-env-values.md` Phase 1: schema +
-//! placeholder resolver. Phase 2 (apply integration), Phase 3 (export),
-//! Phase 4 (diff), Phase 6 (plan-lock) wire this module into the
-//! existing CLI surface.
+//! v0.15 model: template + values separation where `lid` / `cb_id` are
+//! resolved at apply/diff time from the remote body (see
+//! [`braze_managed`]), and only user-managed `custom` / `global`
+//! entries live in `values/<env>.yaml`.
 //!
 //! ## Module shape
 //!
-//! - [`schema`]: `values/<env>.yaml` deserialization and built-in shape
-//!   validation (lid format, cb_id format, key naming).
+//! - [`schema`]: `values/<env>.yaml` deserialization. v0.15 carries
+//!   only `custom` / `global` namespaces; legacy `lid:` / `cb_id:`
+//!   sections parse-silent-drop until the operator runs
+//!   `braze-sync values cleanup`.
 //! - [`placeholder`]: extract and resolve `__BRAZESYNC.<type>.<key>__`
-//!   tokens in a body string. Resolution takes a flat `(type, key) -> value`
-//!   lookup so it stays resource-shape-agnostic.
+//!   tokens in a body string. The resolver itself stays
+//!   resource-shape-agnostic.
+//! - [`braze_managed`]: produce the lid / cb_id half of the resolution
+//!   lookup at apply/diff time from a freshly-fetched remote body
+//!   (or, for brand-new resources, from a controlled fallback).
+//! - [`templatize`]: detect raw lid / cb_id literals and rewrite them
+//!   to `__BRAZESYNC.*__` placeholders. Local-only migration helper.
+//! - [`integration`]: composes the above into the diff/apply pipeline.
 
+pub mod braze_managed;
 pub mod correlation;
-pub mod exporter;
 pub mod integration;
 pub mod placeholder;
 pub mod schema;
 pub mod templatize;
 
+pub use braze_managed::{prepare_field, PreparedTemplate};
 pub use correlation::{
     extract_cb_id_values, extract_html_lid_values, extract_plaintext_lid_values, normalize_url,
     slug_for_cb_id, slug_for_lid, CbIdCorrelation, LidCorrelation,
 };
-pub use exporter::{refresh_content_block_values, refresh_email_template_values, ExportUpdates};
 
 pub use integration::{
     compute_values_input_hashes, format_failures, load_values_for_env, preflight_values,
-    resolve_content_block_in_place, resolve_email_template_in_place, values_file_path,
+    resolve_content_block_with_remote, resolve_email_template_with_remote, values_file_path,
     PreflightArgs, ResolutionFailure,
 };
 
@@ -37,6 +45,6 @@ pub use placeholder::{
     Placeholder, PlaceholderType, ResolutionError,
 };
 pub use schema::{
-    default_values_path, CbIdEntry, ContentBlockValues, CustomEntry, EmailTemplateValues,
-    FieldValues, Globals, LidEntry, ValuesFile, SUPPORTED_VERSION,
+    default_values_path, ContentBlockValues, CustomEntry, EmailTemplateValues, Globals, ValuesFile,
+    SUPPORTED_VERSION,
 };

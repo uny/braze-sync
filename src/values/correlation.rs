@@ -35,11 +35,17 @@ pub fn normalize_url(url: &str) -> String {
 fn href_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        // Tolerant of attribute order and either quote style. The href
-        // value runs up to the matching quote — Braze-issued anchor
-        // tags do not nest quotes inside the URL.
-        Regex::new(r#"(?i)<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')"#)
-            .expect("href regex is valid")
+        // Tolerant of attribute order and either quote style. Matches
+        // `href`, `src`, `action` — with an optional namespace prefix
+        // like `xlink:` or `v:` — on any element, not just `<a>`. This
+        // mirrors templatize::url_attr_re so VML / SVG CTAs whose lid
+        // sits inside a non-anchor element's href round-trip through
+        // apply/diff resolution. Leading `\s` (not `\b`) prevents
+        // `data-href`-style custom attributes from tail-matching.
+        Regex::new(
+            r#"(?i)<[a-z][a-z0-9_.:-]*\b[^>]*?\s(?:[a-z][a-z0-9_-]*:)?(?:href|src|action)\s*=\s*(?:"([^"]*)"|'([^']*)')"#,
+        )
+        .expect("href regex is valid")
     })
 }
 
