@@ -486,6 +486,24 @@ mod tests {
     }
 
     #[test]
+    fn enclosing_anchor_without_href_falls_back_to_prior_href() {
+        // The lid lives inside an `<a>` open tag that has no `href`
+        // (e.g. `<a name="…">`). `enclosing_anchor_href` finds the
+        // enclosing tag but returns None because there's no href to
+        // extract — the legacy prefix scan must still pick up the
+        // earlier `<a href>` so we don't regress that pattern.
+        let body = r#"<a href="https://example.com/earlier/path">x</a> <a name="anchor">text {{x | lid: 'ai8kexrxcp03'}}</a>"#;
+        let r = templatize_body(body, FieldKind::ContentBlock);
+        assert_eq!(r.entries.len(), 1);
+        match &r.entries[0] {
+            DetectedEntry::Lid { url, .. } => {
+                assert_eq!(url.as_deref(), Some("https://example.com/earlier/path"));
+            }
+            _ => panic!("expected Lid"),
+        }
+    }
+
+    #[test]
     fn url_path_tail_uses_last_nonempty_segment() {
         assert_eq!(
             url_path_tail("https://example.com/promo/spring-sale"),
