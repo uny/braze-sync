@@ -7,6 +7,24 @@ versions follow [semver](https://semver.org/). Per IMPLEMENTATION.md
 changes; v1.0 freezes the public surface (CLI flags, config schema,
 file formats, JSON output, exit codes) for the full v1.x line.
 
+## [0.14.2] — 2026-05-24
+
+### Fixed
+
+- **`templatize`: anchor detection now covers VML, SVG, and other
+  namespaced/custom elements.** v0.14.1 generalized the lid scan to
+  see inside an enclosing tag's `href`, but it still required that
+  tag to be `<a>`. Outlook-compatible email content blocks wrap their
+  CTAs in VML (`<v:roundrect href="…">`), and SVG anchors use
+  `<svg:a xlink:href="…">` — lids inside these still fell back to a
+  sequential `link_N` key. The enclosing-tag scan now matches any
+  element open tag and recognizes URL-bearing attributes (`href`,
+  `src`, `action`) with or without a namespace prefix
+  (`xlink:href`, `v:href`, …). The legacy `<a>`-specific prefix-scan
+  fallback for the "lid as link text" pattern is unchanged. Re-run
+  `braze-sync templatize` on affected resources to migrate any
+  remaining `link_N` placeholders to URL-derived keys.
+
 ## [0.14.1] — 2026-05-24
 
 ### Fixed
