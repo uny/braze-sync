@@ -7,6 +7,64 @@ versions follow [semver](https://semver.org/). Per IMPLEMENTATION.md
 changes; v1.0 freezes the public surface (CLI flags, config schema,
 file formats, JSON output, exit codes) for the full v1.x line.
 
+## [0.14.0] — 2026-05-24
+
+### Added
+
+- **Per-env values: template + values separation.** Resource bodies in
+  Git become env-agnostic templates that reference per-env values via
+  `__BRAZESYNC.<type>.<key>__` placeholders, resolved at apply time
+  against `values/<env>.yaml`. `<type>` ∈ `lid` | `cb_id` | `custom` |
+  `global`; the double-underscore-plus-dot envelope is verbatim-safe in
+  Liquid, HTML, and JSON contexts. `lid` and `cb_id` are field-scoped
+  on email_template (a per-occurrence ID can't span fields); `custom`
+  is resource-scoped; `global` reads from a shared `globals.custom`
+  namespace so values like `api_host` aren't duplicated across every
+  resource. See [`docs/per-env-values.md`](docs/per-env-values.md).
+- **`braze-sync templatize --from-env=<env>`.** One-shot migration
+  that walks every local resource, rewrites raw `lid` literals and
+  content_block include IDs into placeholders, writes the canonical
+  env's `values/<env>.yaml`, and generates `value: null` skeleton
+  files for every other configured environment. Idempotent on bodies
+  that already contain placeholders; pair with `--dry-run` to preview.
+- **Pre-flight values resolution.** `apply`, `diff`, and `export`
+  resolve placeholders against `values/<env>.yaml` before any HTTP
+  write. Failures are aggregated across every selected resource and
+  reported in one shot (Terraform-style) — apply exits with **zero**
+  Braze API calls if any placeholder is unresolved. A separate
+  `WARN:` line surfaces envelope-shaped typos (`__BRAZSYNC.lid.foo__`,
+  `__BRAZESYNC.url.foo__`) so they can't pass silently.
+- **`export` correlation.** `export` no longer overwrites templated
+  bodies; instead it refreshes the matching `values/<env>.yaml`
+  entries, using HTML `<a href>` URLs, plaintext bare URLs, subject /
+  preheader Liquid-identifier anchors, and content_block-include
+  `${NAME}` syntactic anchors to keep key↔value pairing stable across
+  commits. Orphan keys (no placeholder references them) are flagged
+  with warnings rather than auto-deleted; ambiguous URL/anchor
+  matches fall back to source order with a warning.
+- **Plan-lock integration.** `diff --plan-out` now records a
+  per-resource blake3 hash over the values subset that resource
+  actually consumes; `apply --plan` recomputes it and exits **7**
+  (`PlanDrift`) if the values file was edited for any plan-frozen
+  resource between plan generation and apply. Body-only edits that
+  don't change the placeholder set still pass — the v0.13 plan-lock
+  tolerance for benign body edits is preserved. A `globals.custom`
+  edit invalidates every consumer; regenerate the plan.
+- **`environments.<env>.values_file` config field.** Optional path
+  override; defaults to `values/<env_name>.yaml` relative to the
+  config directory.
+
+### Migration / breaking notes
+
+- Repos with multi-env Braze workspaces and dashboard-edited `lid`
+  values should run `braze-sync templatize` once before the first
+  v0.14 apply, otherwise `apply --env=prod` will keep pushing the
+  raw `lid` from Git over Prod's real value. The flow is documented
+  in [`docs/per-env-values.md`](docs/per-env-values.md).
+- Repos without any `__BRAZESYNC.` placeholder are unaffected — the
+  resolver is a no-op when no template references it. The
+  `feat-preserve-remote-patterns` proposal is superseded by this work.
+
 ## [0.13.0] — 2026-05-18
 
 ### Added
