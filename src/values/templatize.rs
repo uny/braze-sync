@@ -232,15 +232,23 @@ fn name_lid_for_field(
 }
 
 fn preceding_url(body: &str, lid_token_offset: usize, field: FieldKind) -> Option<String> {
-    let prefix = &body[..lid_token_offset];
     let raw = if field.supports_html_anchor() {
-        // Use the LAST href before the lid token.
-        href_re()
-            .captures_iter(prefix)
-            .last()
-            .and_then(|cap| cap.get(1).or(cap.get(2)))
-            .map(|m| m.as_str().to_string())
+        // Braze's common case puts `{{ ... | lid: '…' }}` *inside* the
+        // href attribute value (e.g. `href="…?lid={{…|lid:'X'}}"`).
+        // Try the enclosing `<a …>` open tag first; only when the lid
+        // lives outside any open tag do we fall back to the last
+        // `<a href>` before the token (legacy pattern where lid sits
+        // between the `<a>` and `</a>` as link text).
+        enclosing_anchor_href(body, lid_token_offset).or_else(|| {
+            let prefix = &body[..lid_token_offset];
+            href_re()
+                .captures_iter(prefix)
+                .last()
+                .and_then(|cap| cap.get(1).or(cap.get(2)))
+                .map(|m| m.as_str().to_string())
+        })
     } else if field.supports_plaintext_anchor() {
+        let prefix = &body[..lid_token_offset];
         plaintext_url_re()
             .find_iter(prefix)
             .last()
@@ -249,6 +257,36 @@ fn preceding_url(body: &str, lid_token_offset: usize, field: FieldKind) -> Optio
         None
     };
     raw.map(|r| normalize_url(&r))
+}
+
+/// Find an `<a …>` open tag that *contains* `lid_token_offset` and
+/// return its `href` attribute value (unnormalized). Returns `None`
+/// when the offset isn't inside any open tag or the enclosing tag has
+/// no href.
+///
+/// Open tags are detected by `<a\b … >` with `>` being the first
+/// unmatched `>` after `<a` — same trust assumption as `href_re` (no
+/// raw `>` inside attribute values).
+fn enclosing_anchor_href(body: &str, lid_token_offset: usize) -> Option<String> {
+    let re = anchor_open_tag_re();
+    for m in re.find_iter(body) {
+        if m.start() > lid_token_offset {
+            break;
+        }
+        if m.end() > lid_token_offset {
+            let tag = &body[m.start()..m.end()];
+            return href_re()
+                .captures(tag)
+                .and_then(|cap| cap.get(1).or(cap.get(2)))
+                .map(|x| x.as_str().to_string());
+        }
+    }
+    None
+}
+
+fn anchor_open_tag_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"(?i)<a\b[^>]*>"#).expect("anchor open tag regex is valid"))
 }
 
 fn url_path_tail(url: &str) -> String {
@@ -405,6 +443,64 @@ mod tests {
         let r = templatize_body(body, FieldKind::EmailHtmlBody);
         assert_eq!(r.entries.len(), 1);
         assert!(!r.warnings.is_empty());
+    }
+
+    #[test]
+    fn lid_inside_href_attribute_value_uses_enclosing_anchor() {
+        // Braze's typical HTML output puts the lid *inside* the href:
+        //   <a href="https://…/path/?lid={{${cblid} | lid: 'X'}}">
+        // The prefix-only scan can't see the closing quote and was
+        // falling back to a sequential `link_` key for ~all anchors.
+        let body = r#"<a href="https://med.example.com/product/jaypirca/50mg/?lid={{${cblid} | lid: 'ai8kexrxcp03'}}"><img src="x"/></a>"#;
+        let r = templatize_body(body, FieldKind::ContentBlock);
+        assert_eq!(r.entries.len(), 1);
+        match &r.entries[0] {
+            DetectedEntry::Lid { key, url, .. } => {
+                assert_eq!(key, "link_50mg");
+                assert_eq!(
+                    url.as_deref(),
+                    Some("https://med.example.com/product/jaypirca/50mg/")
+                );
+            }
+            _ => panic!("expected Lid"),
+        }
+        assert!(
+            r.warnings.is_empty(),
+            "no-anchor warning should not fire when href encloses the lid"
+        );
+    }
+
+    #[test]
+    fn enclosing_anchor_takes_precedence_over_earlier_unrelated_href() {
+        // Even if an earlier, fully-closed <a href> exists, the lid
+        // that lives inside a *different* later <a …> tag should use
+        // that later tag's href, not the prior one.
+        let body = r#"<a href="https://example.com/old">old</a> then <a href="https://example.com/new/path/?lid={{x | lid: 'ai8kexrxcp03'}}">new</a>"#;
+        let r = templatize_body(body, FieldKind::ContentBlock);
+        match &r.entries[0] {
+            DetectedEntry::Lid { url, .. } => {
+                assert_eq!(url.as_deref(), Some("https://example.com/new/path/"));
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn enclosing_anchor_without_href_falls_back_to_prior_href() {
+        // The lid lives inside an `<a>` open tag that has no `href`
+        // (e.g. `<a name="…">`). `enclosing_anchor_href` finds the
+        // enclosing tag but returns None because there's no href to
+        // extract — the legacy prefix scan must still pick up the
+        // earlier `<a href>` so we don't regress that pattern.
+        let body = r#"<a href="https://example.com/earlier/path">x</a> <a name="anchor">text {{x | lid: 'ai8kexrxcp03'}}</a>"#;
+        let r = templatize_body(body, FieldKind::ContentBlock);
+        assert_eq!(r.entries.len(), 1);
+        match &r.entries[0] {
+            DetectedEntry::Lid { url, .. } => {
+                assert_eq!(url.as_deref(), Some("https://example.com/earlier/path"));
+            }
+            _ => panic!("expected Lid"),
+        }
     }
 
     #[test]
