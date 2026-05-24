@@ -118,8 +118,6 @@ pub fn extract_placeholders(body: &str) -> Vec<Placeholder> {
         let inner = &body[inner_start..close_start];
         if let Some((ty_str, key)) = inner.split_once('.') {
             if let (Some(ty), true) = (PlaceholderType::parse(ty_str), key_re().is_match(key)) {
-                // Legacy single-trailing-`_` recovery: narrowly scoped to
-                // the two v0.14.2 empty-slug fallbacks (see fn docs).
                 let is_legacy_empty_slug = (ty == PlaceholderType::Lid && key == "link")
                     || (ty == PlaceholderType::CbId && key == "cb");
                 let mut key = key.to_string();
@@ -468,10 +466,9 @@ mod tests {
 
     #[test]
     fn non_legacy_key_followed_by_underscore_text_is_not_absorbed() {
-        // Recovery is scoped to the two v0.14.2 empty-slug fallbacks
-        // (`lid.link_`, `cb_id.cb_`). For any other `(type, key)` an
-        // adjacent `_<text>` must remain part of the surrounding body —
-        // we must not silently mutate `custom.foo` into `custom.foo_`.
+        // Recovery is gated on the v0.14.2 empty-slug fallbacks
+        // (`lid.link_`, `cb_id.cb_`); any other `(type, key)` must
+        // leave a trailing `_<text>` in the surrounding body.
         let body = "__BRAZESYNC.custom.foo___bar";
         let ps = extract_placeholders(body);
         assert_eq!(ps.len(), 1);
@@ -479,8 +476,6 @@ mod tests {
         assert_eq!(ps[0].ty, PlaceholderType::Custom);
         assert_eq!(&body[ps[0].end..], "_bar");
 
-        // Same shape but for `lid.other` — also not a legacy fallback,
-        // so the trailing `_` stays in the surrounding text.
         let body = "__BRAZESYNC.lid.other___tail";
         let ps = extract_placeholders(body);
         assert_eq!(ps.len(), 1);
@@ -490,7 +485,6 @@ mod tests {
 
     #[test]
     fn cb_id_empty_slug_fallback_extracts_with_trailing_underscore() {
-        // The other half of the legacy fallback pair: `cb_id.cb_`.
         let body = "__BRAZESYNC.cb_id.cb___";
         let ps = extract_placeholders(body);
         assert_eq!(ps.len(), 1);
