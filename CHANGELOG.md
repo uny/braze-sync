@@ -7,6 +7,25 @@ versions follow [semver](https://semver.org/). Per IMPLEMENTATION.md
 changes; v1.0 freezes the public surface (CLI flags, config schema,
 file formats, JSON output, exit codes) for the full v1.x line.
 
+## [0.14.1] — 2026-05-24
+
+### Fixed
+
+- **`templatize`: anchor detection now sees lids inside `href`
+  attribute values.** Braze's default HTML output puts the lid query
+  parameter — and its `| lid: '…'` token — *inside* the anchor's
+  `href` (e.g. `<a href="…/path/?lid={{${cblid} | lid: 'X'}}">`).
+  The prefix-only scan couldn't see the closing quote of the
+  enclosing tag and was silently falling back to sequential
+  `link_N` keys for nearly every anchor in real Braze projects.
+  Detection now first looks for an enclosing `<a …>` open tag and
+  uses its `href` as the URL anchor; the legacy "lid sits between
+  `<a>` and `</a>` as link text" pattern remains supported as a
+  fallback. Existing `__BRAZESYNC.lid.link_N__` placeholders from
+  v0.14.0 templatize runs are not rewritten automatically — re-run
+  `braze-sync templatize` on affected resources to migrate them to
+  URL-derived keys.
+
 ## [0.14.0] — 2026-05-24
 
 ### Added
