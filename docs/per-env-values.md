@@ -19,8 +19,8 @@ per-env values live in `values/<env>.yaml`.
 If you're upgrading an existing repo, run the one-shot migration:
 
 ```bash
-braze-sync templatize --from-env=prod         # preview
-braze-sync templatize --from-env=prod --dry-run=false
+braze-sync templatize --from-env=prod --dry-run    # preview
+braze-sync templatize --from-env=prod              # actually rewrite
 ```
 
 This walks every `content_blocks/*.liquid` and `email_templates/*`,
@@ -42,7 +42,7 @@ against `values/<env>.yaml` before any HTTP write.
 
 ## Placeholder syntax
 
-```
+```text
 __BRAZESYNC.<type>.<key>__
 ```
 
@@ -170,8 +170,8 @@ directory.
 values file was edited between plan and apply for a resource the plan
 froze. Editing values keys that no resource in the plan consumes does
 not trip the lock; neither do body-only edits that don't change the
-placeholder set, so the plan-lock tolerance for benign body edits
-(`docs/local/feat-apply-plan-locking.md` §3.2) is preserved.
+placeholder set, so the v0.13 plan-lock tolerance for benign body
+edits is preserved.
 
 A single `globals.custom.<key>` edit invalidates the hash of **every**
 resource that uses that global. If apply aborts for many resources at
