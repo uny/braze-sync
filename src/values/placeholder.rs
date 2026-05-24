@@ -84,11 +84,22 @@ fn loose_re() -> &'static Regex {
 }
 
 /// Extract every strict `__BRAZESYNC.<type>.<key>__` occurrence in `body`,
-/// in order of appearance. Parsed by anchoring on the literal `__BRAZESYNC.`
-/// prefix and the *nearest* closing `__`, so the envelope is honored even
-/// when `<key>` legitimately contains underscores. A regex with a greedy
-/// `[a-z0-9_]*` key class would otherwise swallow text across a `__`
-/// boundary and merge two intended placeholders into one.
+/// in order of appearance.
+///
+/// Parsing strategy: anchor on the literal `__BRAZESYNC.` prefix and the
+/// *nearest* closing `__` (left-most), so a regex with greedy `[a-z0-9_]*`
+/// can't merge two adjacent placeholders into one.
+///
+/// Legacy recovery: v0.14.2 and earlier emitted exactly two trailing-`_`
+/// keys — `lid.link_` and `cb_id.cb_` (empty-slug fallbacks; see
+/// [`slug_for_cb_id`] / [`slug_for_lid`]). The rendered envelope collapses
+/// to e.g. `…link___` (key's trailing `_` + close `__`). Recovery is
+/// scoped to those two exact `(type, key)` pairs so that hand-written
+/// bodies like `__BRAZESYNC.custom.foo___bar` continue to parse as
+/// key=`foo` + literal `_bar` (rather than silently mutating the key into
+/// `foo_`). The double-`_` guard additionally keeps
+/// `__BRAZESYNC.lid.link____bar__` parsed as key=`link` rather than
+/// absorbing the adjacent `__bar__` token.
 pub fn extract_placeholders(body: &str) -> Vec<Placeholder> {
     let mut out = Vec::new();
     let bytes = body.as_bytes();
@@ -103,13 +114,23 @@ pub fn extract_placeholders(body: &str) -> Vec<Placeholder> {
             break;
         };
         let close_start = inner_start + rel_close;
-        let end = close_start + CLOSE.len();
+        let mut end = close_start + CLOSE.len();
         let inner = &body[inner_start..close_start];
         if let Some((ty_str, key)) = inner.split_once('.') {
             if let (Some(ty), true) = (PlaceholderType::parse(ty_str), key_re().is_match(key)) {
+                let is_legacy_empty_slug = (ty == PlaceholderType::Lid && key == "link")
+                    || (ty == PlaceholderType::CbId && key == "cb");
+                let mut key = key.to_string();
+                if is_legacy_empty_slug
+                    && bytes.get(end) == Some(&b'_')
+                    && bytes.get(end + 1) != Some(&b'_')
+                {
+                    key.push('_');
+                    end += 1;
+                }
                 out.push(Placeholder {
                     ty,
-                    key: key.to_string(),
+                    key,
                     start,
                     end,
                 });
@@ -413,6 +434,75 @@ mod tests {
         assert_eq!(ps.len(), 2);
         assert_eq!(ps[0].key, "foo");
         assert_eq!(ps[1].key, "bar");
+    }
+
+    #[test]
+    fn trailing_underscore_key_extracts_when_envelope_appears_to_have_three_underscores() {
+        // Regression for v0.14.2 templatize output: when a URL slug is
+        // empty the fallback key is `link_`, and the rendered envelope
+        // collapses to `___` (close `__` + trailing `_` from the key).
+        // Greedy-rightmost parse must pick key=`link_`.
+        let body = "lid: '__BRAZESYNC.lid.link___'";
+        let ps = extract_placeholders(body);
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].key, "link_");
+        assert_eq!(ps[0].ty, PlaceholderType::Lid);
+    }
+
+    #[test]
+    fn placeholder_followed_by_unrelated_double_underscore_token_does_not_absorb_it() {
+        // Regression: an earlier right-most-close strategy would greedily
+        // extend the key across any adjacent `[a-z0-9_]+__` token, e.g.
+        // Python `__init__` or Markdown bold immediately after a
+        // placeholder. The parser must stop at the nearest `__` close
+        // (with at most one trailing `_` for legacy recovery) and leave
+        // the rest of the body untouched.
+        let body = "__BRAZESYNC.lid.foo____bar__";
+        let ps = extract_placeholders(body);
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].key, "foo");
+        assert_eq!(&body[ps[0].end..], "__bar__");
+    }
+
+    #[test]
+    fn non_legacy_key_followed_by_underscore_text_is_not_absorbed() {
+        // Recovery is gated on the v0.14.2 empty-slug fallbacks
+        // (`lid.link_`, `cb_id.cb_`); any other `(type, key)` must
+        // leave a trailing `_<text>` in the surrounding body.
+        let body = "__BRAZESYNC.custom.foo___bar";
+        let ps = extract_placeholders(body);
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].key, "foo");
+        assert_eq!(ps[0].ty, PlaceholderType::Custom);
+        assert_eq!(&body[ps[0].end..], "_bar");
+
+        let body = "__BRAZESYNC.lid.other___tail";
+        let ps = extract_placeholders(body);
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].key, "other");
+        assert_eq!(&body[ps[0].end..], "_tail");
+    }
+
+    #[test]
+    fn cb_id_empty_slug_fallback_extracts_with_trailing_underscore() {
+        let body = "__BRAZESYNC.cb_id.cb___";
+        let ps = extract_placeholders(body);
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].key, "cb_");
+        assert_eq!(ps[0].ty, PlaceholderType::CbId);
+    }
+
+    #[test]
+    fn unresolved_trailing_underscore_key_reports_full_key() {
+        // If `link_` isn't in the values map, the error must name
+        // `link_` (not `link`) so the operator can fix the right entry.
+        let body = "__BRAZESYNC.lid.link___";
+        let map = lookup(&[(PlaceholderType::Lid, "ok", "ai8kexrxcp03")]);
+        let err = resolve_placeholders(body, &map).unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolutionError::UnknownKey { key, .. } if key == "link_"
+        )));
     }
 
     #[test]
