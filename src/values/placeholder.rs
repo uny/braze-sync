@@ -86,72 +86,54 @@ fn loose_re() -> &'static Regex {
 /// Extract every strict `__BRAZESYNC.<type>.<key>__` occurrence in `body`,
 /// in order of appearance.
 ///
-/// Parsing strategy: anchor on the literal `__BRAZESYNC.` prefix, then take
-/// the *right-most* closing `__` that still sits before the next
-/// `__BRAZESYNC.` prefix (or end-of-body). Picking the right-most close
-/// lets keys end in `_`: e.g. `__BRAZESYNC.lid.link___` parses with
-/// key=`link_` rather than failing to find a key called `link` followed
-/// by an orphan `_`. The next-prefix bound keeps two adjacent
-/// placeholders separable, so `__BRAZESYNC.lid.foo____BRAZESYNC.lid.bar__`
-/// still yields two placeholders with keys `foo` and `bar`.
+/// Parsing strategy: anchor on the literal `__BRAZESYNC.` prefix and the
+/// *nearest* closing `__` (left-most), so a regex with greedy `[a-z0-9_]*`
+/// can't merge two adjacent placeholders into one.
+///
+/// Legacy recovery: v0.14.2 and earlier could emit keys ending in a single
+/// `_` (e.g. `link_`, `cb_` — see [`slug_for_cb_id`]). The rendered
+/// envelope is then `…link___` (key's trailing `_` + close `__`). When the
+/// left-most close is immediately followed by a single `_` (not another
+/// `__`, which would indicate the next placeholder's prefix or a separate
+/// `__token__`), we extend the key by that one `_`. The double-`_` guard
+/// keeps `__BRAZESYNC.lid.foo____bar__` parsed as key=`foo` rather than
+/// greedily absorbing `__bar__` into the key.
 pub fn extract_placeholders(body: &str) -> Vec<Placeholder> {
     let mut out = Vec::new();
+    let bytes = body.as_bytes();
     let mut i = 0;
-    while i < body.len() {
+    while i + PREFIX.len() <= bytes.len() {
         let Some(rel) = body[i..].find(PREFIX) else {
             break;
         };
         let start = i + rel;
         let inner_start = start + PREFIX.len();
-        if inner_start > body.len() {
+        let Some(rel_close) = body[inner_start..].find(CLOSE) else {
             break;
-        }
-
-        // Upper bound: the close `__` must end before the next
-        // `__BRAZESYNC.` prefix begins; otherwise we'd consume the
-        // opening of the next placeholder.
-        let next_prefix = body[inner_start..]
-            .find(PREFIX)
-            .map(|r| inner_start + r)
-            .unwrap_or(body.len());
-
-        // Walk every `__` candidate close in the searchable window and
-        // remember the right-most one whose inner matches `<type>.<key>`.
-        let mut best: Option<(usize, PlaceholderType, String)> = None;
-        let mut cursor = inner_start;
-        while cursor + CLOSE.len() <= next_prefix {
-            let Some(rel_close) = body[cursor..next_prefix].find(CLOSE) else {
-                break;
-            };
-            let close_start = cursor + rel_close;
-            if close_start + CLOSE.len() > next_prefix {
-                break;
-            }
-            let inner = &body[inner_start..close_start];
-            if let Some((ty_str, key)) = inner.split_once('.') {
-                if let (Some(ty), true) =
-                    (PlaceholderType::parse(ty_str), key_re().is_match(key))
-                {
-                    best = Some((close_start, ty, key.to_string()));
+        };
+        let close_start = inner_start + rel_close;
+        let mut end = close_start + CLOSE.len();
+        let inner = &body[inner_start..close_start];
+        if let Some((ty_str, key)) = inner.split_once('.') {
+            if let (Some(ty), true) = (PlaceholderType::parse(ty_str), key_re().is_match(key)) {
+                let mut key = key.to_string();
+                // Legacy single-trailing-`_` recovery: see fn docs.
+                if bytes.get(end) == Some(&b'_') && bytes.get(end + 1) != Some(&b'_') {
+                    key.push('_');
+                    end += 1;
                 }
+                out.push(Placeholder {
+                    ty,
+                    key,
+                    start,
+                    end,
+                });
+                i = end;
+                continue;
             }
-            cursor = close_start + 1;
         }
-
-        if let Some((close_start, ty, key)) = best {
-            let end = close_start + CLOSE.len();
-            out.push(Placeholder {
-                ty,
-                key,
-                start,
-                end,
-            });
-            i = end;
-            continue;
-        }
-        // Not a valid strict placeholder; skip past the opening `__` so
-        // the remainder is still scanned (and may be surfaced by the
-        // loose pass).
+        // Not a valid strict placeholder; skip past the opening `__` so the
+        // remainder is still scanned (and may be surfaced by the loose pass).
         i = start + CLOSE.len();
     }
     out
@@ -462,13 +444,18 @@ mod tests {
     }
 
     #[test]
-    fn key_with_internal_consecutive_underscores_extracts() {
-        // `a___b` is a legal key under the strict regex; envelope close
-        // is the final `__`, leaving key=`a___b`.
-        let body = "__BRAZESYNC.lid.a___b__";
+    fn placeholder_followed_by_unrelated_double_underscore_token_does_not_absorb_it() {
+        // Regression: an earlier right-most-close strategy would greedily
+        // extend the key across any adjacent `[a-z0-9_]+__` token, e.g.
+        // Python `__init__` or Markdown bold immediately after a
+        // placeholder. The parser must stop at the nearest `__` close
+        // (with at most one trailing `_` for legacy recovery) and leave
+        // the rest of the body untouched.
+        let body = "__BRAZESYNC.lid.foo____bar__";
         let ps = extract_placeholders(body);
         assert_eq!(ps.len(), 1);
-        assert_eq!(ps[0].key, "a___b");
+        assert_eq!(ps[0].key, "foo");
+        assert_eq!(&body[ps[0].end..], "__bar__");
     }
 
     #[test]
