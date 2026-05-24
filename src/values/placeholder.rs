@@ -161,10 +161,7 @@ pub enum ResolutionError {
     /// Same `lid` key referenced more than once in a single body / field.
     /// RFC §5 edge case: lid is a per-click-context ID so re-use is
     /// conceptually wrong — abort rather than substitute the same value.
-    DuplicateLidKey {
-        key: String,
-        count: usize,
-    },
+    DuplicateLidKey { key: String, count: usize },
 }
 
 /// Flat key for the resolver's lookup table.

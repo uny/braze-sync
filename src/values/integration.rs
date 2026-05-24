@@ -16,8 +16,7 @@ use crate::config::ResolvedConfig;
 use crate::error::{Error, Result};
 use crate::resource::{ContentBlock, EmailTemplate};
 use crate::values::placeholder::{
-    find_suspicious_placeholders, resolve_placeholders, LookupKey, PlaceholderType,
-    ResolutionError,
+    find_suspicious_placeholders, resolve_placeholders, LookupKey, PlaceholderType, ResolutionError,
 };
 use crate::values::schema::{default_values_path, ValuesFile};
 
@@ -239,12 +238,7 @@ fn build_email_template_lookup(
 /// (missing E) or unknown types like `__BRAZESYNC.url.foo__` don't pass
 /// through silently. These wouldn't trigger the unresolved-key abort
 /// because the strict extractor returns nothing for them.
-fn warn_suspicious(
-    kind: &str,
-    name: &str,
-    field: Option<&str>,
-    suspicious: Vec<String>,
-) {
+fn warn_suspicious(kind: &str, name: &str, field: Option<&str>, suspicious: Vec<String>) {
     if suspicious.is_empty() {
         return;
     }
