@@ -48,8 +48,7 @@ pub struct ResolvedConfig {
 }
 
 impl ResolvedConfig {
-    /// Compiled exclude patterns for `kind`. Returns an empty slice when
-    /// no patterns are configured.
+    /// Compiled exclude patterns for `kind`.
     pub fn excludes_for(&self, kind: ResourceKind) -> &[Regex] {
         self.excludes.get(&kind).map(Vec::as_slice).unwrap_or(&[])
     }
@@ -169,9 +168,7 @@ impl ConfigFile {
     }
 }
 
-/// Compile a list of raw regex patterns from a resource's
-/// `exclude_patterns` into `Regex` values. The `context` label is used
-/// in error messages (e.g. `"custom_attribute"`).
+/// `context` label is used in error messages (e.g. `"custom_attribute"`).
 pub fn compile_exclude_patterns(patterns: &[String], context: &str) -> Result<Vec<Regex>> {
     patterns
         .iter()
@@ -186,16 +183,12 @@ pub fn compile_exclude_patterns(patterns: &[String], context: &str) -> Result<Ve
         .collect()
 }
 
-/// Return `true` if `name` matches any of the compiled patterns.
 pub fn is_excluded(name: &str, patterns: &[Regex]) -> bool {
     patterns.iter().any(|r| r.is_match(name))
 }
 
-/// Load `.env` from the current working directory only — no parent
-/// traversal — to populate `std::env` before config resolution. A missing
-/// file is the common dev case and is not an error.
-///
-/// IMPLEMENTATION.md §10: via dotenvy, CWD only, no parent traversal.
+/// CWD only, no parent traversal (IMPLEMENTATION.md §10). A missing
+/// file is not an error.
 pub fn load_dotenv() -> Result<()> {
     match dotenvy::from_path(".env") {
         Ok(()) => Ok(()),

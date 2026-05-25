@@ -29,7 +29,6 @@ const BODY_TXT: &str = "body.txt";
 struct TemplateYaml {
     name: String,
     subject: String,
-    /// Read-only field from Braze /info. Not settable via create/update.
     /// Excluded from syncable_eq (same pattern as ContentBlock `state`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     description: Option<String>,
@@ -41,7 +40,6 @@ struct TemplateYaml {
     tags: Vec<String>,
 }
 
-/// Load every email template directory directly under `root`, sorted by name.
 /// Missing root is not an error. Each directory's name must match its
 /// `template.yaml` `name:` field — divergence is a hard parse error.
 pub fn load_all_email_templates(root: &Path) -> Result<Vec<EmailTemplate>> {
@@ -80,8 +78,7 @@ pub fn load_all_email_templates(root: &Path) -> Result<Vec<EmailTemplate>> {
     Ok(templates)
 }
 
-/// Read a single email template directory. Does not validate that the
-/// directory name matches `name`; callers do that.
+/// Does not validate that the directory name matches `name`; callers do that.
 pub fn read_email_template_dir(dir: &Path) -> Result<EmailTemplate> {
     let yaml_path = dir.join(TEMPLATE_YAML);
     let yaml_text = std::fs::read_to_string(&yaml_path).map_err(|e| {
@@ -117,7 +114,7 @@ pub fn read_email_template_dir(dir: &Path) -> Result<EmailTemplate> {
     })
 }
 
-/// Read a body file. Missing file → empty string (§6.4: empty is valid).
+/// Missing file → empty string (§6.4: empty is valid).
 /// Byte-faithful — no trailing newline normalization.
 fn read_body_file(path: &Path) -> Result<String> {
     match std::fs::read_to_string(path) {
@@ -127,7 +124,6 @@ fn read_body_file(path: &Path) -> Result<String> {
     }
 }
 
-/// Write `et` to `<root>/<et.name>/{template.yaml, body.html, body.txt}`.
 /// Names containing path separators or `..` are rejected.
 pub fn save_email_template(root: &Path, et: &EmailTemplate) -> Result<()> {
     validate_resource_name("email template", &et.name)?;

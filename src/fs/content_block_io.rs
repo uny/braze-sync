@@ -35,7 +35,6 @@ struct Frontmatter {
     state: Option<ContentBlockState>,
 }
 
-/// Load every `.liquid` file directly under `root`, sorted by name.
 /// Missing root is not an error. Each file's stem must match its
 /// frontmatter `name:` — divergence is treated as a hard parse error.
 pub fn load_all_content_blocks(root: &Path) -> Result<Vec<ContentBlock>> {
@@ -76,8 +75,7 @@ pub fn load_all_content_blocks(root: &Path) -> Result<Vec<ContentBlock>> {
     Ok(blocks)
 }
 
-/// Read a single `.liquid` file. Does not validate that the file stem
-/// matches `name`; callers do that.
+/// Does not validate that the file stem matches `name`; callers do that.
 pub fn read_content_block_file(path: &Path) -> Result<ContentBlock> {
     let text = std::fs::read_to_string(path)?;
     let (fm, body): (Frontmatter, &str) = frontmatter::parse(path, &text)?;
@@ -93,8 +91,7 @@ pub fn read_content_block_file(path: &Path) -> Result<ContentBlock> {
     })
 }
 
-/// Write `cb` to `<root>/<cb.name>.liquid`. Names containing path
-/// separators or `..` are rejected as defence in depth.
+/// Names containing path separators or `..` are rejected as defence in depth.
 pub fn save_content_block(root: &Path, cb: &ContentBlock) -> Result<()> {
     validate_resource_name("content block", &cb.name)?;
     let path = root.join(format!("{}.{FILE_EXT}", cb.name));
