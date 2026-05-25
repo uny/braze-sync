@@ -192,9 +192,6 @@ fn name_lid_for_field(
     used: &mut BTreeMap<String, usize>,
 ) -> (Option<String>, String) {
     let url = preceding_url(body, lid_token_offset, field);
-    // Subject/preheader have no anchors; use a stable field-scoped base
-    // so the generated keys are self-describing rather than the generic
-    // `link` fallback shared with anchor-less HTML.
     let key_source: String = match (&url, field) {
         (Some(u), _) => url_path_tail(u),
         (None, FieldKind::EmailSubject) => "subject_lid".to_string(),

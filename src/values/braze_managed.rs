@@ -131,8 +131,6 @@ fn resolve_lid_from_remote(
     out: &mut BTreeMap<LookupKey, String>,
     warnings: &mut Vec<String>,
 ) {
-    // subject / preheader: no URL anchors exist. Match remote lid values
-    // to template placeholders positionally in field-appearance order.
     if !field.supports_html_anchor() && !field.supports_plaintext_anchor() {
         resolve_lid_positional(template, remote, field, out, warnings);
         return;
