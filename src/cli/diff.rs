@@ -23,7 +23,8 @@ use crate::format::OutputFormat;
 use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io, tag_io};
 use crate::resource::{Catalog, ContentBlock, EmailTemplate, ResourceKind};
 use crate::values::{
-    format_failures, resolve_content_block_with_remote, resolve_email_template_with_remote,
+    format_failures, format_fallback_reports, resolve_content_block_with_remote,
+    resolve_email_template_with_remote, FallbackReport,
 };
 use anyhow::Context as _;
 use clap::Args;
@@ -78,6 +79,7 @@ pub async fn run(
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
     let mut summary = DiffSummary::default();
+    let mut fallback_reports: Vec<FallbackReport> = Vec::new();
     for kind in &kinds {
         let kind = *kind;
         if warn_if_name_excluded(kind, args.name.as_deref(), resolved.excludes_for(kind)) {
@@ -96,7 +98,7 @@ pub async fn run(
                 summary.diffs.extend(diffs);
             }
             ResourceKind::ContentBlock => {
-                let (diffs, _idx) = compute_content_block_plan(
+                let (diffs, _idx, reports) = compute_content_block_plan(
                     &client,
                     &content_blocks_root,
                     args.name.as_deref(),
@@ -105,9 +107,10 @@ pub async fn run(
                 .await
                 .context("computing content_block diff")?;
                 summary.diffs.extend(diffs);
+                fallback_reports.extend(reports);
             }
             ResourceKind::EmailTemplate => {
-                let (diffs, _idx) = compute_email_template_plan(
+                let (diffs, _idx, reports) = compute_email_template_plan(
                     &client,
                     &email_templates_root,
                     args.name.as_deref(),
@@ -116,6 +119,7 @@ pub async fn run(
                 .await
                 .context("computing email_template diff")?;
                 summary.diffs.extend(diffs);
+                fallback_reports.extend(reports);
             }
             ResourceKind::CustomAttribute => {
                 let diffs = compute_custom_attribute_diffs(
@@ -144,6 +148,10 @@ pub async fn run(
 
     let formatted = format.formatter().format(&summary);
     print!("{formatted}");
+    let fallback_block = format_fallback_reports(&fallback_reports);
+    if !fallback_block.is_empty() {
+        eprint!("{fallback_block}");
+    }
 
     if let Some(path) = &args.plan_out {
         let plan = PlanFile::from_summary(
@@ -227,7 +235,7 @@ pub(crate) async fn compute_content_block_plan(
     content_blocks_root: &Path,
     name_filter: Option<&str>,
     excludes: &[Regex],
-) -> anyhow::Result<(Vec<ResourceDiff>, ContentBlockIdIndex)> {
+) -> anyhow::Result<(Vec<ResourceDiff>, ContentBlockIdIndex, Vec<FallbackReport>)> {
     let mut local = content_block_io::load_all_content_blocks(content_blocks_root)?;
     if let Some(name) = name_filter {
         local.retain(|c| c.name == name);
@@ -277,10 +285,12 @@ pub(crate) async fn compute_content_block_plan(
     // for new resources).
     drop(local_by_name);
     let mut cb_failures = Vec::new();
+    let mut fallback_reports: Vec<FallbackReport> = Vec::new();
     for cb in &mut local {
         let remote_cb = fetched.get(&cb.name);
-        if let Err(f) = resolve_content_block_with_remote(cb, remote_cb) {
-            cb_failures.push(f);
+        match resolve_content_block_with_remote(cb, remote_cb) {
+            Ok(reports) => fallback_reports.extend(reports),
+            Err(f) => cb_failures.push(f),
         }
     }
     if !cb_failures.is_empty() {
@@ -320,7 +330,7 @@ pub(crate) async fn compute_content_block_plan(
         }
     }
 
-    Ok((diffs, id_index))
+    Ok((diffs, id_index, fallback_reports))
 }
 
 /// Same pattern as `compute_content_block_plan` — list first, fan-out
@@ -330,7 +340,7 @@ pub(crate) async fn compute_email_template_plan(
     email_templates_root: &Path,
     name_filter: Option<&str>,
     excludes: &[Regex],
-) -> anyhow::Result<(Vec<ResourceDiff>, EmailTemplateIdIndex)> {
+) -> anyhow::Result<(Vec<ResourceDiff>, EmailTemplateIdIndex, Vec<FallbackReport>)> {
     let mut local = email_template_io::load_all_email_templates(email_templates_root)?;
     if let Some(name) = name_filter {
         local.retain(|t| t.name == name);
@@ -375,10 +385,12 @@ pub(crate) async fn compute_email_template_plan(
 
     drop(local_by_name);
     let mut et_failures = Vec::new();
+    let mut fallback_reports: Vec<FallbackReport> = Vec::new();
     for et in &mut local {
         let remote_et = fetched.get(&et.name);
-        if let Err(failures) = resolve_email_template_with_remote(et, remote_et) {
-            et_failures.extend(failures);
+        match resolve_email_template_with_remote(et, remote_et) {
+            Ok(reports) => fallback_reports.extend(reports),
+            Err(failures) => et_failures.extend(failures),
         }
     }
     if !et_failures.is_empty() {
@@ -412,7 +424,7 @@ pub(crate) async fn compute_email_template_plan(
         }
     }
 
-    Ok((diffs, id_index))
+    Ok((diffs, id_index, fallback_reports))
 }
 
 /// Compute Custom Attribute diffs by comparing the local registry file

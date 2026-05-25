@@ -1,9 +1,22 @@
 //! Wiring layer between [`crate::values`] and the diff / apply pipeline.
 
 use crate::resource::{ContentBlock, EmailTemplate};
-use crate::values::braze_managed::prepare_field;
+use crate::values::braze_managed::{prepare_field, LidFallback};
 use crate::values::placeholder::ResolutionError;
 use crate::values::templatize::FieldKind;
+
+/// Drift-fallback summary for one resource (and field, for
+/// email_template). Aggregated across the run and surfaced as a
+/// "Notice" block after the diff / apply output so the operator can
+/// see which links the local template introduced that the remote
+/// body didn't carry.
+#[derive(Debug, Clone)]
+pub struct FallbackReport {
+    pub resource_kind: &'static str,
+    pub resource_name: String,
+    pub field: Option<&'static str>,
+    pub fallbacks: Vec<LidFallback>,
+}
 
 /// One resource's worth of placeholder failures, ready to be folded
 /// into a top-level error message.
@@ -24,9 +37,9 @@ pub struct ResolutionFailure {
 pub fn resolve_content_block_with_remote(
     cb: &mut ContentBlock,
     remote: Option<&ContentBlock>,
-) -> std::result::Result<(), ResolutionFailure> {
+) -> std::result::Result<Vec<FallbackReport>, ResolutionFailure> {
     if !needs_resolve(&cb.content) {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let prep = prepare_field(
         &cb.content,
@@ -43,15 +56,26 @@ pub fn resolve_content_block_with_remote(
         });
     }
     cb.content = prep.body;
-    Ok(())
+    let reports = if prep.fallbacks.is_empty() {
+        Vec::new()
+    } else {
+        vec![FallbackReport {
+            resource_kind: "content_block",
+            resource_name: cb.name.clone(),
+            field: None,
+            fallbacks: prep.fallbacks,
+        }]
+    };
+    Ok(reports)
 }
 
 /// Resolve placeholders across every Liquid-bearing field of `et`.
 pub fn resolve_email_template_with_remote(
     et: &mut EmailTemplate,
     remote: Option<&EmailTemplate>,
-) -> std::result::Result<(), Vec<ResolutionFailure>> {
+) -> std::result::Result<Vec<FallbackReport>, Vec<ResolutionFailure>> {
     let mut failures: Vec<ResolutionFailure> = Vec::new();
+    let mut reports: Vec<FallbackReport> = Vec::new();
 
     macro_rules! resolve_field {
         ($field_name:expr, $field_kind:expr, $accessor:expr, $remote_accessor:expr) => {{
@@ -73,6 +97,14 @@ pub fn resolve_email_template_with_remote(
                     });
                     None
                 } else {
+                    if !prep.fallbacks.is_empty() {
+                        reports.push(FallbackReport {
+                            resource_kind: "email_template",
+                            resource_name: et.name.clone(),
+                            field: Some($field_name),
+                            fallbacks: prep.fallbacks,
+                        });
+                    }
                     Some(prep.body)
                 }
             } else {
@@ -125,7 +157,39 @@ pub fn resolve_email_template_with_remote(
     if let Some(v) = new_preheader {
         et.preheader = Some(v);
     }
-    Ok(())
+    Ok(reports)
+}
+
+/// Human-readable summary block for collected drift fallbacks.
+/// Empty input → empty string (so callers can append unconditionally).
+pub fn format_fallback_reports(reports: &[FallbackReport]) -> String {
+    if reports.is_empty() {
+        return String::new();
+    }
+    let total: usize = reports.iter().map(|r| r.fallbacks.len()).sum();
+    let mut out = String::new();
+    out.push_str(&format!(
+        "\nNotice: {total} link(s) resolved with fallback lid values \
+         (Braze will assign the final lid on first dashboard save):\n"
+    ));
+    for r in reports {
+        let scope = match r.field {
+            Some(f) => format!("  {} '{}' ({})", r.resource_kind, r.resource_name, f),
+            None => format!("  {} '{}'", r.resource_kind, r.resource_name),
+        };
+        out.push_str(&scope);
+        out.push('\n');
+        for fb in &r.fallbacks {
+            match &fb.anchor {
+                Some(url) => out.push_str(&format!("    - {url} → '{}'\n", fb.value)),
+                None => out.push_str(&format!(
+                    "    - (no URL anchor — positional) → '{}'\n",
+                    fb.value
+                )),
+            }
+        }
+    }
+    out
 }
 
 /// Cheap pre-filter: a body needs resolution if it carries the strict
@@ -232,8 +296,9 @@ mod tests {
     #[test]
     fn no_placeholders_skips_resolution() {
         let mut block = cb("plain", "<p>hi there</p>");
-        resolve_content_block_with_remote(&mut block, None).unwrap();
+        let reports = resolve_content_block_with_remote(&mut block, None).unwrap();
         assert_eq!(block.content, "<p>hi there</p>");
+        assert!(reports.is_empty());
     }
 
     #[test]
@@ -246,8 +311,9 @@ mod tests {
             "promo",
             r#"<a href="https://x.com/cta">{{x | lid: 'newlidvalue1'}}</a>"#,
         );
-        resolve_content_block_with_remote(&mut block, Some(&remote)).unwrap();
+        let reports = resolve_content_block_with_remote(&mut block, Some(&remote)).unwrap();
         assert!(block.content.contains("'newlidvalue1'"));
+        assert!(reports.is_empty());
     }
 
     #[test]
@@ -256,19 +322,21 @@ mod tests {
             "promo",
             r#"<a href="https://x.com/spring-sale">{{x | lid: '__BRAZESYNC__'}}</a>"#,
         );
-        resolve_content_block_with_remote(&mut block, None).unwrap();
+        let reports = resolve_content_block_with_remote(&mut block, None).unwrap();
         assert!(
             block.content.contains("'spring_sale'"),
             "got: {}",
             block.content
         );
+        assert!(reports.is_empty());
     }
 
     #[test]
     fn new_resource_cb_id_filter_is_stripped() {
         let mut block = cb("page", "{{content_blocks.${promo} | id: '__BRAZESYNC__'}}");
-        resolve_content_block_with_remote(&mut block, None).unwrap();
+        let reports = resolve_content_block_with_remote(&mut block, None).unwrap();
         assert_eq!(block.content, "{{content_blocks.${promo}}}");
+        assert!(reports.is_empty());
     }
 
     #[test]
@@ -277,23 +345,27 @@ mod tests {
         t.body_html = r#"<a href="https://x.com/cta">{{x | lid: '__BRAZESYNC__'}}</a>"#.into();
         let mut remote = et("welcome");
         remote.body_html = r#"<a href="https://x.com/cta">{{x | lid: 'newhtmllidx'}}</a>"#.into();
-        resolve_email_template_with_remote(&mut t, Some(&remote)).unwrap();
+        let reports = resolve_email_template_with_remote(&mut t, Some(&remote)).unwrap();
         assert!(t.body_html.contains("'newhtmllidx'"));
+        assert!(reports.is_empty());
     }
 
     #[test]
-    fn missing_remote_anchor_surfaces_as_failure() {
+    fn missing_remote_anchor_falls_back_to_slug() {
         let mut block = cb(
             "promo",
             r#"<a href="https://x.com/cta">{{x | lid: '__BRAZESYNC__'}}</a>"#,
         );
         let remote = cb("promo", "<p>no anchor here</p>");
-        let err = resolve_content_block_with_remote(&mut block, Some(&remote)).unwrap_err();
-        assert_eq!(err.errors.len(), 1);
-        assert!(matches!(
-            err.errors[0],
-            ResolutionError::UnresolvedLid { .. }
-        ));
+        let reports = resolve_content_block_with_remote(&mut block, Some(&remote)).unwrap();
+        assert!(block.content.contains("'cta'"), "got: {}", block.content);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].fallbacks.len(), 1);
+        assert_eq!(
+            reports[0].fallbacks[0].anchor.as_deref(),
+            Some("https://x.com/cta")
+        );
+        assert_eq!(reports[0].fallbacks[0].value, "cta");
     }
 
     #[test]
@@ -302,8 +374,9 @@ mod tests {
         t.subject = "Spring sale {{x | lid: '__BRAZESYNC__'}}".into();
         let mut remote = et("promo");
         remote.subject = "Spring sale {{x | lid: 'subjectlid1'}}".into();
-        resolve_email_template_with_remote(&mut t, Some(&remote)).unwrap();
+        let reports = resolve_email_template_with_remote(&mut t, Some(&remote)).unwrap();
         assert!(t.subject.contains("'subjectlid1'"));
+        assert!(reports.is_empty());
     }
 
     #[test]

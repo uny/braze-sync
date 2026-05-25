@@ -35,6 +35,21 @@ pub struct PreparedTemplate {
     /// Non-fatal warnings — ambiguous URL matches, count mismatches,
     /// stripped cb_id filters on new resources.
     pub warnings: Vec<String>,
+    /// Drift-fallback `lid` values: template placeholders that had no
+    /// matching remote anchor and were resolved with a generated slug.
+    /// Brand-new-resource fallbacks are *not* recorded here — they are
+    /// the expected path and would be noise. Populated only when a
+    /// remote body was provided but came up short.
+    pub fallbacks: Vec<LidFallback>,
+}
+
+/// A single drift-fallback assignment. `anchor` is the URL anchor when
+/// available (HTML / plaintext fields); `None` for positional contexts
+/// like subject / preheader where the placeholder has no URL anchor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LidFallback {
+    pub anchor: Option<String>,
+    pub value: String,
 }
 
 /// Resolve every `__BRAZESYNC__` in `template` against `remote`.
@@ -55,6 +70,7 @@ pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> 
             body: template.to_string(),
             errors,
             warnings: Vec::new(),
+            fallbacks: Vec::new(),
         };
     }
 
@@ -62,6 +78,7 @@ pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> 
         Some(_) => (template.to_string(), Vec::new()),
         None => strip_cb_id_filters(template),
     };
+    let mut fallbacks: Vec<LidFallback> = Vec::new();
 
     // Map each `__BRAZESYNC__` occurrence in `body` to its resolved
     // value. None entries are recorded as errors instead.
@@ -85,6 +102,7 @@ pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> 
             remote_body,
             field,
             &mut warnings,
+            &mut fallbacks,
         ),
         None => fallback_lid_batch(&body, &placeholders, &lid_indices, field),
     };
@@ -139,6 +157,7 @@ pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> 
         body: out,
         errors,
         warnings,
+        fallbacks,
     }
 }
 
@@ -151,12 +170,20 @@ fn resolve_lid_batch(
     remote: &str,
     field: FieldKind,
     warnings: &mut Vec<String>,
+    fallbacks: &mut Vec<LidFallback>,
 ) -> Vec<Option<String>> {
     if lid_indices.is_empty() {
         return Vec::new();
     }
     if !field.supports_html_anchor() && !field.supports_plaintext_anchor() {
-        return resolve_lid_positional(placeholders, lid_indices, remote, field, warnings);
+        return resolve_lid_positional(
+            placeholders,
+            lid_indices,
+            remote,
+            field,
+            warnings,
+            fallbacks,
+        );
     }
 
     let remote_pairs: Vec<LidCorrelation> = if field.supports_html_anchor() {
@@ -194,6 +221,15 @@ fn resolve_lid_batch(
     }
 
     let mut out = Vec::with_capacity(lid_indices.len());
+    // Seed `used` with every remote lid value so a fallback slug can
+    // never duplicate a value that is already in the POSTed body. Braze
+    // treats `lid` as a per-link identifier; duplicates corrupt link
+    // analytics.
+    let mut used: BTreeMap<String, usize> = BTreeMap::new();
+    for p in &remote_pairs {
+        used.entry(p.value.clone()).or_insert(1);
+    }
+    let mut seq = 0usize;
     for anchor in anchors {
         let Some(url) = anchor else {
             warnings.push(
@@ -208,12 +244,47 @@ fn resolve_lid_batch(
         match pick {
             Some(p) => out.push(Some(p.value.clone())),
             None => {
-                warnings.push(format!("lid: URL anchor '{url}' not found in remote body"));
-                out.push(None);
+                let fallback = fallback_lid_for_url(Some(&url), &mut used, &mut seq);
+                warnings.push(format!(
+                    "lid: URL anchor '{url}' not found in remote body — \
+                     using fallback value '{fallback}' (new link; Braze will \
+                     reassign on first dashboard save)"
+                ));
+                fallbacks.push(LidFallback {
+                    anchor: Some(url.clone()),
+                    value: fallback.clone(),
+                });
+                out.push(Some(fallback));
             }
         }
     }
     out
+}
+
+/// Slug fallback for a single lid placeholder. `used` is shared across
+/// the batch so collisions are disambiguated with `_2`, `_3`, ….
+fn fallback_lid_for_url(
+    url: Option<&str>,
+    used: &mut BTreeMap<String, usize>,
+    seq: &mut usize,
+) -> String {
+    let base = match url {
+        Some(u) => {
+            let tail = url_path_tail(u);
+            let slug = slug_for_lid(&tail);
+            if slug.is_empty() {
+                *seq += 1;
+                format!("lid_{seq}", seq = *seq)
+            } else {
+                slug
+            }
+        }
+        None => {
+            *seq += 1;
+            format!("lid_{seq}", seq = *seq)
+        }
+    };
+    unique(base, used)
 }
 
 /// Positional FIFO match for subject / preheader.
@@ -223,6 +294,7 @@ fn resolve_lid_positional(
     remote: &str,
     field: FieldKind,
     warnings: &mut Vec<String>,
+    fallbacks: &mut Vec<LidFallback>,
 ) -> Vec<Option<String>> {
     let remote_values = extract_lid_values_unanchored(remote);
     let field_label = match field {
@@ -240,9 +312,26 @@ fn resolve_lid_positional(
     }
     let _ = placeholders;
     let mut out = Vec::with_capacity(lid_indices.len());
+    // Seed `used` with every remote positional value so fallback
+    // slugs (`lid_1`, …) can never collide with a real remote value.
+    let mut used: BTreeMap<String, usize> = BTreeMap::new();
+    for v in &remote_values {
+        used.entry(v.clone()).or_insert(1);
+    }
     let mut iter = remote_values.into_iter();
+    let mut seq = 0usize;
     for _ in lid_indices {
-        out.push(iter.next());
+        match iter.next() {
+            Some(v) => out.push(Some(v)),
+            None => {
+                let v = fallback_lid_for_url(None, &mut used, &mut seq);
+                fallbacks.push(LidFallback {
+                    anchor: None,
+                    value: v.clone(),
+                });
+                out.push(Some(v));
+            }
+        }
     }
     out
 }
@@ -303,23 +392,11 @@ fn fallback_lid_batch(
     let mut out = Vec::with_capacity(lid_indices.len());
     for &i in lid_indices {
         let anchor = lid_anchor_for(body, placeholders[i].start, field);
-        let base = match anchor.as_deref() {
-            Some(u) => {
-                let tail = url_path_tail(u);
-                let slug = slug_for_lid(&tail);
-                if slug.is_empty() {
-                    seq += 1;
-                    format!("lid_{seq}")
-                } else {
-                    slug
-                }
-            }
-            None => {
-                seq += 1;
-                format!("lid_{seq}")
-            }
-        };
-        out.push(Some(unique(base, &mut used)));
+        out.push(Some(fallback_lid_for_url(
+            anchor.as_deref(),
+            &mut used,
+            &mut seq,
+        )));
     }
     out
 }
@@ -548,14 +625,39 @@ mod tests {
     }
 
     #[test]
-    fn lid_without_remote_match_surfaces_error() {
+    fn lid_without_remote_match_falls_back_to_slug() {
         let template = r#"<a href="https://x.com/cta">{{x | lid: '__BRAZESYNC__'}}</a>"#;
         let remote = r#"<p>no anchor</p>"#;
         let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.body.contains("'cta'"), "got: {}", p.body);
         assert!(p
-            .errors
+            .warnings
             .iter()
-            .any(|e| matches!(e, ResolutionError::UnresolvedLid { .. })));
+            .any(|w| w.contains("not found in remote body")));
+    }
+
+    #[test]
+    fn template_with_more_lids_than_remote_resolves_extras_via_fallback() {
+        let template = r#"<a href="https://x.com/a">{{x | lid: '__BRAZESYNC__'}}</a>
+<a href="https://x.com/b">{{x | lid: '__BRAZESYNC__'}}</a>
+<a href="https://x.com/c">{{x | lid: '__BRAZESYNC__'}}</a>"#;
+        let remote = r#"<a href="https://x.com/a">{{x | lid: 'remoteval1a'}}</a>"#;
+        let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.body.contains("'remoteval1a'"));
+        assert!(p.body.contains("'b'"), "got: {}", p.body);
+        assert!(p.body.contains("'c'"), "got: {}", p.body);
+    }
+
+    #[test]
+    fn subject_with_more_lids_than_remote_falls_back() {
+        let template = "{{x | lid: '__BRAZESYNC__'}} A {{y | lid: '__BRAZESYNC__'}}";
+        let remote = "{{x | lid: 'firstval123'}} A";
+        let p = prepare_field(template, Some(remote), FieldKind::EmailSubject);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.body.contains("'firstval123'"));
+        assert!(p.body.contains("'lid_1'"), "got: {}", p.body);
     }
 
     #[test]
@@ -616,6 +718,25 @@ mod tests {
             "plaintext URL slug must be used, got: {}",
             p.body
         );
+    }
+
+    #[test]
+    fn url_fallback_disambiguates_against_remote_slug_collision() {
+        // The /checkout URL's natural slug 'checkout' also happens to
+        // appear as a remote lid value (for an unrelated /a anchor).
+        // The seeded `used` map must force the fallback to 'checkout_2'.
+        let template = r#"<a href="https://x.com/a">{{x | lid: '__BRAZESYNC__'}}</a>
+<a href="https://x.com/checkout">{{x | lid: '__BRAZESYNC__'}}</a>"#;
+        let remote = r#"<a href="https://x.com/a">{{x | lid: 'checkout'}}</a>"#;
+        let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        let count = p.body.matches("'checkout'").count();
+        assert_eq!(
+            count, 1,
+            "remote lid must appear exactly once, got: {}",
+            p.body
+        );
+        assert!(p.body.contains("'checkout_2'"), "got: {}", p.body);
     }
 
     #[test]
