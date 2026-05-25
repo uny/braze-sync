@@ -84,7 +84,7 @@ pub enum Command {
     Apply(apply::ApplyArgs),
     /// Validate local files (no Braze API access required)
     Validate(validate::ValidateArgs),
-    /// Rewrite raw lid/cb_id literals to `__BRAZESYNC.*__` placeholders.
+    /// Rewrite raw lid/cb_id literals to `__BRAZESYNC__` placeholders.
     /// Local-only; no Braze API access required.
     Templatize(templatize::TemplatizeArgs),
 }

@@ -467,7 +467,7 @@ async fn export_content_block_preserves_local_template_and_refreshes_values() {
     common::write_local_content_block(
         tmp.path(),
         "promo",
-        "<a href=\"https://example.com/cta\">{{ x | lid: '__BRAZESYNC.lid.cta__' }}go</a>",
+        "<a href=\"https://example.com/cta\">{{ x | lid: '__BRAZESYNC__' }}go</a>",
     );
 
     tokio::task::spawn_blocking(move || {
@@ -484,7 +484,7 @@ async fn export_content_block_preserves_local_template_and_refreshes_values() {
 
     let saved = fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
     assert!(
-        saved.contains("__BRAZESYNC.lid.cta__"),
+        saved.contains("__BRAZESYNC__"),
         "local template body must survive export round-trip, got:\n{saved}"
     );
     assert!(
@@ -568,7 +568,7 @@ async fn export_leaves_legacy_values_yaml_unchanged() {
     common::write_local_content_block(
         tmp.path(),
         "promo",
-        "<a href=\"https://example.com/cta\">{{ x | lid: '__BRAZESYNC.lid.cta__' }}go</a>",
+        "<a href=\"https://example.com/cta\">{{ x | lid: '__BRAZESYNC__' }}go</a>",
     );
     let legacy = r#"version: 1
 content_block:

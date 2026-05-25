@@ -1,16 +1,12 @@
 //! Wiring layer between [`crate::values`] and the diff / apply pipeline.
 
-use std::collections::BTreeMap;
-
 use crate::resource::{ContentBlock, EmailTemplate};
 use crate::values::braze_managed::prepare_field;
-use crate::values::placeholder::{
-    find_suspicious_placeholders, resolve_placeholders, LookupKey, ResolutionError,
-};
+use crate::values::placeholder::ResolutionError;
 use crate::values::templatize::FieldKind;
 
-/// One resource's worth of placeholder failures, ready to be folded into
-/// a top-level error message.
+/// One resource's worth of placeholder failures, ready to be folded
+/// into a top-level error message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolutionFailure {
     pub resource_kind: &'static str,
@@ -20,17 +16,16 @@ pub struct ResolutionFailure {
     pub errors: Vec<ResolutionError>,
 }
 
-/// Resolve every `__BRAZESYNC.*__` in `cb.content`.
+/// Resolve every `__BRAZESYNC__` in `cb.content`.
 ///
 /// `remote` provides the live lid / cb_id values; pass `None` for new
-/// resources (lid falls back to the placeholder key, cb_id filter is
-/// stripped — see [`prepare_field`]).
+/// resources (lid → URL slug, cb_id filter stripped — see
+/// [`prepare_field`]).
 pub fn resolve_content_block_with_remote(
     cb: &mut ContentBlock,
     remote: Option<&ContentBlock>,
 ) -> std::result::Result<(), ResolutionFailure> {
-    warn_suspicious("content_block", &cb.name, None, &cb.content)?;
-    if !body_has_placeholders(&cb.content) {
+    if !needs_resolve(&cb.content) {
         return Ok(());
     }
     let prep = prepare_field(
@@ -39,19 +34,16 @@ pub fn resolve_content_block_with_remote(
         FieldKind::ContentBlock,
     );
     emit_prep_warnings("content_block", &cb.name, None, &prep.warnings);
-    let lookup: BTreeMap<LookupKey, String> = prep.additions;
-    match resolve_placeholders(&prep.body, &lookup) {
-        Ok(resolved) => {
-            cb.content = resolved;
-            Ok(())
-        }
-        Err(errors) => Err(ResolutionFailure {
+    if !prep.errors.is_empty() {
+        return Err(ResolutionFailure {
             resource_kind: "content_block",
             resource_name: cb.name.clone(),
             field: None,
-            errors,
-        }),
+            errors: prep.errors,
+        });
     }
+    cb.content = prep.body;
+    Ok(())
 }
 
 /// Resolve placeholders across every Liquid-bearing field of `et`.
@@ -64,10 +56,7 @@ pub fn resolve_email_template_with_remote(
     macro_rules! resolve_field {
         ($field_name:expr, $field_kind:expr, $accessor:expr, $remote_accessor:expr) => {{
             let body: &str = $accessor;
-            if let Err(f) = warn_suspicious("email_template", &et.name, Some($field_name), body) {
-                failures.push(f);
-            }
-            if body_has_placeholders(body) {
+            if needs_resolve(body) {
                 let prep = prepare_field(body, $remote_accessor, $field_kind);
                 emit_prep_warnings(
                     "email_template",
@@ -75,17 +64,16 @@ pub fn resolve_email_template_with_remote(
                     Some($field_name),
                     &prep.warnings,
                 );
-                match resolve_placeholders(&prep.body, &prep.additions) {
-                    Ok(resolved) => Some(resolved),
-                    Err(errors) => {
-                        failures.push(ResolutionFailure {
-                            resource_kind: "email_template",
-                            resource_name: et.name.clone(),
-                            field: Some($field_name),
-                            errors,
-                        });
-                        None
-                    }
+                if !prep.errors.is_empty() {
+                    failures.push(ResolutionFailure {
+                        resource_kind: "email_template",
+                        resource_name: et.name.clone(),
+                        field: Some($field_name),
+                        errors: prep.errors,
+                    });
+                    None
+                } else {
+                    Some(prep.body)
                 }
             } else {
                 None
@@ -140,15 +128,12 @@ pub fn resolve_email_template_with_remote(
     Ok(())
 }
 
-fn body_has_placeholders(body: &str) -> bool {
-    body.contains("__BRAZESYNC.")
+/// Cheap pre-filter: a body needs resolution if it carries the strict
+/// token *or* a retired-namespace token we need to surface as an error.
+fn needs_resolve(body: &str) -> bool {
+    body.contains("__BRAZESYNC") || body.contains("__BRAZSYNC")
 }
 
-/// Surface diagnostic warnings collected by [`prepare_field`] to stderr
-/// with a resource-qualified scope. Silent dead-letter previously hid
-/// the most actionable info (which URL anchor failed, which subject lid
-/// fell back, which cb_id filter was stripped) — without this the user
-/// only sees a generic "unresolved placeholder" failure downstream.
 fn emit_prep_warnings(
     kind: &'static str,
     name: &str,
@@ -164,43 +149,6 @@ fn emit_prep_warnings(
     };
     for w in warnings {
         eprintln!("warning: {scope}: {w}");
-    }
-}
-
-fn warn_suspicious(
-    kind: &'static str,
-    name: &str,
-    field: Option<&'static str>,
-    body: &str,
-) -> Result<(), ResolutionFailure> {
-    if !body.contains("__") {
-        return Ok(());
-    }
-    let suspects = find_suspicious_placeholders(body);
-    if suspects.is_empty() {
-        return Ok(());
-    }
-    let scope = match field {
-        Some(f) => format!("{kind} '{name}' ({f})"),
-        None => format!("{kind} '{name}'"),
-    };
-    let mut retired: Vec<ResolutionError> = Vec::new();
-    for s in &suspects {
-        if s.starts_with("__BRAZESYNC.") {
-            retired.push(ResolutionError::RetiredNamespace { token: s.clone() });
-        } else {
-            eprintln!("warning: {scope}: suspicious placeholder-like token {s}");
-        }
-    }
-    if retired.is_empty() {
-        Ok(())
-    } else {
-        Err(ResolutionFailure {
-            resource_kind: kind,
-            resource_name: name.to_string(),
-            field,
-            errors: retired,
-        })
     }
 }
 
@@ -220,30 +168,31 @@ pub fn format_failures(failures: &[ResolutionFailure]) -> crate::error::Error {
         msg.push('\n');
         for e in &f.errors {
             match e {
-                ResolutionError::UnknownKey { ty, key, start } => {
+                ResolutionError::UnresolvedLid { start, anchor } => {
+                    let where_ = anchor
+                        .as_deref()
+                        .map(|u| format!("URL '{u}'"))
+                        .unwrap_or_else(|| "no URL anchor".to_string());
                     msg.push_str(&format!(
-                        "    - offset {}: __BRAZESYNC.{}.{}__ (no anchor match in remote body)\n",
-                        start,
-                        ty.as_str(),
-                        key,
+                        "    - offset {start}: lid `__BRAZESYNC__` ({where_}) — no anchor match in remote body\n",
                     ));
                 }
-                ResolutionError::DuplicateLidKey { key, occurrences } => {
-                    let offsets = occurrences
-                        .iter()
-                        .map(|o| o.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ");
+                ResolutionError::UnresolvedCbId { start, name } => {
+                    let n = name.as_deref().unwrap_or("<unknown>");
                     msg.push_str(&format!(
-                        "    - __BRAZESYNC.lid.{key}__ referenced {} times (offsets {offsets}); \
-                         lid IDs are per-click-context — use a distinct key per occurrence\n",
-                        occurrences.len(),
+                        "    - offset {start}: cb_id `__BRAZESYNC__` (`${{{n}}}`) — no `${{{n}}}` include in remote body\n",
+                    ));
+                }
+                ResolutionError::UnknownContext { start } => {
+                    msg.push_str(&format!(
+                        "    - offset {start}: `__BRAZESYNC__` outside `| lid:` / `| id:` argument — cannot infer type\n",
                     ));
                 }
                 ResolutionError::RetiredNamespace { token } => {
                     msg.push_str(&format!(
-                        "    - {token}: retired placeholder namespace \
-                         (custom/global removed in v0.15; use literal values)\n",
+                        "    - {token}: retired placeholder syntax \
+                         (v0.15 `__BRAZESYNC.<type>.<key>__` was removed in v0.16; \
+                         re-run `braze-sync templatize` to regenerate)\n",
                     ));
                 }
             }
@@ -291,32 +240,33 @@ mod tests {
     fn content_block_resolves_lid_from_remote() {
         let mut block = cb(
             "promo",
-            r#"<a href="https://x.com/cta">__BRAZESYNC.lid.cta__</a>"#,
+            r#"<a href="https://x.com/cta">{{x | lid: '__BRAZESYNC__'}}</a>"#,
         );
         let remote = cb(
             "promo",
             r#"<a href="https://x.com/cta">{{x | lid: 'newlidvalue1'}}</a>"#,
         );
         resolve_content_block_with_remote(&mut block, Some(&remote)).unwrap();
-        assert!(block.content.contains(">newlidvalue1<"));
+        assert!(block.content.contains("'newlidvalue1'"));
     }
 
     #[test]
-    fn new_resource_lid_fallback_uses_placeholder_key() {
+    fn new_resource_lid_uses_url_slug() {
         let mut block = cb(
             "promo",
-            r#"<a href="https://x.com/spring">__BRAZESYNC.lid.spring_sale__</a>"#,
+            r#"<a href="https://x.com/spring-sale">{{x | lid: '__BRAZESYNC__'}}</a>"#,
         );
         resolve_content_block_with_remote(&mut block, None).unwrap();
-        assert!(block.content.contains(">spring_sale<"));
+        assert!(
+            block.content.contains("'spring_sale'"),
+            "got: {}",
+            block.content
+        );
     }
 
     #[test]
     fn new_resource_cb_id_filter_is_stripped() {
-        let mut block = cb(
-            "page",
-            "{{content_blocks.${promo} | id: '__BRAZESYNC.cb_id.promo__'}}",
-        );
+        let mut block = cb("page", "{{content_blocks.${promo} | id: '__BRAZESYNC__'}}");
         resolve_content_block_with_remote(&mut block, None).unwrap();
         assert_eq!(block.content, "{{content_blocks.${promo}}}");
     }
@@ -324,28 +274,32 @@ mod tests {
     #[test]
     fn email_template_resolves_per_field() {
         let mut t = et("welcome");
-        t.body_html = r#"<a href="https://x.com/cta">__BRAZESYNC.lid.cta__</a>"#.into();
+        t.body_html = r#"<a href="https://x.com/cta">{{x | lid: '__BRAZESYNC__'}}</a>"#.into();
         let mut remote = et("welcome");
         remote.body_html = r#"<a href="https://x.com/cta">{{x | lid: 'newhtmllidx'}}</a>"#.into();
         resolve_email_template_with_remote(&mut t, Some(&remote)).unwrap();
-        assert!(t.body_html.contains(">newhtmllidx<"));
+        assert!(t.body_html.contains("'newhtmllidx'"));
     }
 
     #[test]
     fn missing_remote_anchor_surfaces_as_failure() {
         let mut block = cb(
             "promo",
-            r#"<a href="https://x.com/cta">__BRAZESYNC.lid.cta__</a>"#,
+            r#"<a href="https://x.com/cta">{{x | lid: '__BRAZESYNC__'}}</a>"#,
         );
         let remote = cb("promo", "<p>no anchor here</p>");
         let err = resolve_content_block_with_remote(&mut block, Some(&remote)).unwrap_err();
         assert_eq!(err.errors.len(), 1);
+        assert!(matches!(
+            err.errors[0],
+            ResolutionError::UnresolvedLid { .. }
+        ));
     }
 
     #[test]
     fn subject_lid_resolves_positionally_from_remote() {
         let mut t = et("promo");
-        t.subject = "Spring sale {{x | lid: '__BRAZESYNC.lid.subject_lid__'}}".into();
+        t.subject = "Spring sale {{x | lid: '__BRAZESYNC__'}}".into();
         let mut remote = et("promo");
         remote.subject = "Spring sale {{x | lid: 'subjectlid1'}}".into();
         resolve_email_template_with_remote(&mut t, Some(&remote)).unwrap();
@@ -353,42 +307,22 @@ mod tests {
     }
 
     #[test]
-    fn subject_lid_count_mismatch_still_resolves_overlap() {
-        let mut t = et("promo");
-        t.subject = "{{x | lid: '__BRAZESYNC.lid.a__'}} {{y | lid: '__BRAZESYNC.lid.b__'}}".into();
-        let mut remote = et("promo");
-        remote.subject = "{{x | lid: 'firstvalue'}}".into();
-        // First placeholder resolves positionally, second remains
-        // unresolved → fatal at resolve_placeholders.
-        let err = resolve_email_template_with_remote(&mut t, Some(&remote)).unwrap_err();
-        assert_eq!(err.len(), 1);
-        assert_eq!(err[0].field, Some("subject"));
-    }
-
-    #[test]
-    fn retired_namespace_is_fatal() {
-        let mut block = cb("legacy", "hello __BRAZESYNC.custom.foo__ world");
+    fn retired_v015_envelope_is_fatal() {
+        let mut block = cb("legacy", "hello __BRAZESYNC.lid.foo__ world");
         let err = resolve_content_block_with_remote(&mut block, None).unwrap_err();
-        assert!(err.errors.iter().any(|e| matches!(
-            e,
-            ResolutionError::RetiredNamespace { token }
-                if token.contains("custom.foo")
-        )));
+        assert!(err
+            .errors
+            .iter()
+            .any(|e| matches!(e, ResolutionError::RetiredNamespace { .. })));
     }
 
     #[test]
-    fn typo_namespace_is_warning_not_fatal() {
-        let mut block = cb("typo", "hello __BRAZSYNC.lid.foo__ world");
-        resolve_content_block_with_remote(&mut block, None).unwrap();
-    }
-
-    #[test]
-    fn double_quoted_cb_id_filter_stripped_on_new_resource() {
-        let mut block = cb(
-            "page",
-            r#"{{content_blocks.${promo} | id: "__BRAZESYNC.cb_id.promo__"}}"#,
+    fn typo_suffixed_token_is_detected() {
+        let mut block = cb("typo", "hello __BRAZESYNCTEST__ world");
+        let err = resolve_content_block_with_remote(&mut block, None).unwrap_err();
+        assert!(
+            !err.errors.is_empty(),
+            "typo-suffixed token must not pass silently"
         );
-        resolve_content_block_with_remote(&mut block, None).unwrap();
-        assert_eq!(block.content, "{{content_blocks.${promo}}}");
     }
 }

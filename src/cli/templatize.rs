@@ -1,5 +1,6 @@
 //! `braze-sync templatize` — one-shot local rewrite of raw lid/cb_id
-//! literals to `__BRAZESYNC.*__` placeholders. No Braze API calls.
+//! literals to anonymous `__BRAZESYNC__` placeholders. No Braze API
+//! calls.
 
 use std::path::Path;
 
@@ -33,7 +34,7 @@ pub async fn run(args: &TemplatizeArgs, cfg: &ConfigFile, config_dir: &Path) -> 
         for mut cb in blocks {
             let result = templatize_body(&cb.content, FieldKind::ContentBlock);
             if result.lid_rewrites + result.cb_id_rewrites == 0 {
-                if cb.content.contains("__BRAZESYNC.") {
+                if cb.content.contains("__BRAZESYNC__") {
                     summary.skipped.push(format!(
                         "content_block '{}' already templated — skipping",
                         cb.name
@@ -59,13 +60,13 @@ pub async fn run(args: &TemplatizeArgs, cfg: &ConfigFile, config_dir: &Path) -> 
         let templates = email_template_io::load_all_email_templates(&email_templates_root)
             .context("loading local email_templates for templatize")?;
         for mut et in templates {
-            let already_templated = et.subject.contains("__BRAZESYNC.")
-                || et.body_html.contains("__BRAZESYNC.")
-                || et.body_plaintext.contains("__BRAZESYNC.")
+            let already_templated = et.subject.contains("__BRAZESYNC__")
+                || et.body_html.contains("__BRAZESYNC__")
+                || et.body_plaintext.contains("__BRAZESYNC__")
                 || et
                     .preheader
                     .as_deref()
-                    .is_some_and(|p| p.contains("__BRAZESYNC."));
+                    .is_some_and(|p| p.contains("__BRAZESYNC__"));
 
             let subject_r = templatize_body(&et.subject, FieldKind::EmailSubject);
             let body_html_r = templatize_body(&et.body_html, FieldKind::EmailHtmlBody);

@@ -1,8 +1,7 @@
-//! Braze-managed placeholder resolution (`__BRAZESYNC.lid.…__`,
-//! `__BRAZESYNC.cb_id.…__`).
+//! Anonymous Braze-managed placeholder resolution (`__BRAZESYNC__`).
 //!
 //! Resolved at apply/diff time from the freshly-fetched remote body
-//! via URL / `${NAME}` anchor correlation.
+//! via URL / `${NAME}` / positional anchor correlation.
 
 pub mod braze_managed;
 pub mod correlation;
@@ -20,6 +19,6 @@ pub use integration::{
     ResolutionFailure,
 };
 pub use placeholder::{
-    extract_placeholders, find_suspicious_placeholders, resolve_placeholders, LookupKey,
-    Placeholder, PlaceholderType, ResolutionError,
+    extract_placeholders, find_suspicious_placeholders, has_placeholders, Placeholder,
+    PlaceholderType, ResolutionError, TOKEN,
 };

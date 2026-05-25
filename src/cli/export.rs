@@ -7,7 +7,7 @@ use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_templat
 use crate::resource::{
     ContentBlock, CustomAttributeRegistry, EmailTemplate, ResourceKind, Tag, TagRegistry,
 };
-use crate::values::extract_placeholders;
+use crate::values::has_placeholders;
 use anyhow::Context as _;
 use clap::Args;
 use futures::stream::{StreamExt, TryStreamExt};
@@ -165,7 +165,7 @@ async fn export_catalog_schemas(
 /// `--name`, the list still happens (to translate name → id) but only
 /// the matching block's body is fetched.
 ///
-/// When a local template with `__BRAZESYNC.*__` placeholders exists for
+/// When a local template with `__BRAZESYNC__` placeholders exists for
 /// a given name, the local body is preserved verbatim (templatized
 /// form is the source of truth). v0.15: no values-file writeback —
 /// lid / cb_id are resolved from the remote body at apply/diff time.
@@ -212,7 +212,7 @@ async fn export_content_blocks(
         };
         let mut to_save = remote.clone();
         if let Some(local) = local.as_ref() {
-            if !extract_placeholders(&local.content).is_empty() {
+            if has_placeholders(&local.content) {
                 to_save.content = local.content.clone();
             }
         }
@@ -223,7 +223,7 @@ async fn export_content_blocks(
 
 /// Same list-then-fetch pattern as content blocks. Per-field placeholder
 /// preservation: each of `subject`, `body_html`, `body_plaintext`,
-/// `preheader` is independently checked for `__BRAZESYNC.*__` content
+/// `preheader` is independently checked for `__BRAZESYNC__` content
 /// and, when present, kept from the local template instead of being
 /// overwritten by the remote body.
 async fn export_email_templates(
@@ -269,13 +269,10 @@ async fn export_email_templates(
         };
         let mut to_save = remote.clone();
         if let Some(local) = local.as_ref() {
-            let subject_has = !extract_placeholders(&local.subject).is_empty();
-            let body_html_has = !extract_placeholders(&local.body_html).is_empty();
-            let body_plain_has = !extract_placeholders(&local.body_plaintext).is_empty();
-            let preheader_has = local
-                .preheader
-                .as_deref()
-                .is_some_and(|p| !extract_placeholders(p).is_empty());
+            let subject_has = has_placeholders(&local.subject);
+            let body_html_has = has_placeholders(&local.body_html);
+            let body_plain_has = has_placeholders(&local.body_plaintext);
+            let preheader_has = local.preheader.as_deref().is_some_and(has_placeholders);
             if subject_has {
                 to_save.subject = local.subject.clone();
             }
