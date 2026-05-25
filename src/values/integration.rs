@@ -361,7 +361,10 @@ mod tests {
         assert!(block.content.contains("'cta'"), "got: {}", block.content);
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].fallbacks.len(), 1);
-        assert_eq!(reports[0].fallbacks[0].anchor.as_deref(), Some("https://x.com/cta"));
+        assert_eq!(
+            reports[0].fallbacks[0].anchor.as_deref(),
+            Some("https://x.com/cta")
+        );
         assert_eq!(reports[0].fallbacks[0].value, "cta");
     }
 

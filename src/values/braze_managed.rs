@@ -731,7 +731,11 @@ mod tests {
         let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
         assert!(p.errors.is_empty(), "{:?}", p.errors);
         let count = p.body.matches("'checkout'").count();
-        assert_eq!(count, 1, "remote lid must appear exactly once, got: {}", p.body);
+        assert_eq!(
+            count, 1,
+            "remote lid must appear exactly once, got: {}",
+            p.body
+        );
         assert!(p.body.contains("'checkout_2'"), "got: {}", p.body);
     }
 
