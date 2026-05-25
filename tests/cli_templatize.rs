@@ -45,7 +45,7 @@ fn templatize_rewrites_body_and_writes_canonical_and_skeleton() {
     Command::cargo_bin("braze-sync")
         .unwrap()
         .args(["--config", config_path.to_str().unwrap()])
-        .args(["templatize", "--from-env", "prod"])
+        .args(["templatize"])
         .assert()
         .success();
 
@@ -79,7 +79,7 @@ fn templatize_dry_run_does_not_touch_files() {
     Command::cargo_bin("braze-sync")
         .unwrap()
         .args(["--config", config_path.to_str().unwrap()])
-        .args(["templatize", "--from-env", "prod", "--dry-run"])
+        .args(["templatize", "--dry-run"])
         .assert()
         .success();
 
@@ -105,7 +105,7 @@ fn templatize_skips_already_templated_resources() {
     let output = Command::cargo_bin("braze-sync")
         .unwrap()
         .args(["--config", config_path.to_str().unwrap()])
-        .args(["templatize", "--from-env", "prod"])
+        .args(["templatize"])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -121,26 +121,6 @@ fn templatize_skips_already_templated_resources() {
     assert!(body.contains("__BRAZESYNC.lid.cta__"));
     // No canonical values file written because no rewrite occurred.
     assert!(!tmp.path().join("values").join("prod.yaml").exists());
-}
-
-#[test]
-fn templatize_rejects_unknown_from_env() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config_path = write_multi_env_config(tmp.path());
-    write_local_content_block(tmp.path(), "promo", "plain body");
-
-    let output = Command::cargo_bin("braze-sync")
-        .unwrap()
-        .args(["--config", config_path.to_str().unwrap()])
-        .args(["templatize", "--from-env", "staging"])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        stderr.contains("unknown --from-env"),
-        "expected env-not-found error, got:\n{stderr}"
-    );
 }
 
 #[test]
@@ -163,7 +143,7 @@ fn templatize_preserves_globals_custom_in_existing_canonical() {
     Command::cargo_bin("braze-sync")
         .unwrap()
         .args(["--config", config_path.to_str().unwrap()])
-        .args(["templatize", "--from-env", "prod"])
+        .args(["templatize"])
         .assert()
         .success();
 
@@ -188,7 +168,7 @@ fn templatize_repeated_cb_id_name_yields_single_key() {
     Command::cargo_bin("braze-sync")
         .unwrap()
         .args(["--config", config_path.to_str().unwrap()])
-        .args(["templatize", "--from-env", "prod"])
+        .args(["templatize"])
         .assert()
         .success();
 
@@ -218,7 +198,7 @@ fn templatize_picks_up_remaining_raw_lid_after_partial_migration() {
     Command::cargo_bin("braze-sync")
         .unwrap()
         .args(["--config", config_path.to_str().unwrap()])
-        .args(["templatize", "--from-env", "prod"])
+        .args(["templatize"])
         .assert()
         .success();
 
@@ -263,7 +243,7 @@ fn templatize_does_not_overwrite_existing_skeleton() {
     Command::cargo_bin("braze-sync")
         .unwrap()
         .args(["--config", config_path.to_str().unwrap()])
-        .args(["templatize", "--from-env", "prod"])
+        .args(["templatize"])
         .assert()
         .success();
 

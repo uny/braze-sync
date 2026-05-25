@@ -36,7 +36,11 @@ file formats, JSON output, exit codes) for the full v1.x line.
 - `braze-sync export` no longer touches values files. Its only effect
   on placeholder-bearing resources is to keep the local body verbatim.
 - `braze-sync templatize` no longer generates canonical / skeleton
-  values files — it is now a pure body rewrite.
+  values files — it is now a pure body rewrite. The `--from-env` flag
+  is removed (templatize is env-agnostic).
+- `environments.<env>.values_file` config field is removed. Existing
+  configs with this field still parse (unknown fields are now accepted
+  on `EnvironmentConfig`) but the field has no effect.
 
 ## [0.14.3] — 2026-05-24
 

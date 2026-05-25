@@ -12,7 +12,7 @@
 
 use std::path::Path;
 
-use anyhow::{anyhow, Context as _};
+use anyhow::Context as _;
 use clap::Args;
 
 use crate::config::ConfigFile;
@@ -21,12 +21,6 @@ use crate::values::templatize::{templatize_body, FieldKind};
 
 #[derive(Args, Debug)]
 pub struct TemplatizeArgs {
-    /// Environment label for log output. Retained for backwards
-    /// compatibility with v0.14 invocations; values files are no
-    /// longer written by this command.
-    #[arg(long, value_name = "ENV")]
-    pub from_env: String,
-
     /// Preview-only mode. Walks the same code path but does not touch
     /// any file on disk. Prints a summary of what would change.
     #[arg(long)]
@@ -34,15 +28,6 @@ pub struct TemplatizeArgs {
 }
 
 pub async fn run(args: &TemplatizeArgs, cfg: &ConfigFile, config_dir: &Path) -> anyhow::Result<()> {
-    if !cfg.environments.contains_key(&args.from_env) {
-        let known: Vec<&str> = cfg.environments.keys().map(String::as_str).collect();
-        return Err(anyhow!(
-            "unknown --from-env '{}'; declared envs: [{}]",
-            args.from_env,
-            known.join(", ")
-        ));
-    }
-
     let content_blocks_root = config_dir.join(&cfg.resources.content_block.path);
     let email_templates_root = config_dir.join(&cfg.resources.email_template.path);
 
@@ -158,7 +143,7 @@ pub async fn run(args: &TemplatizeArgs, cfg: &ConfigFile, config_dir: &Path) -> 
         }
     }
 
-    eprintln!("templatize summary (--from-env={}):", args.from_env);
+    eprintln!("templatize summary:");
     eprintln!(
         "  • touched {} resource(s); {} lid + {} cb_id rewrite(s)",
         summary.touched_resources, summary.lid_rewrites, summary.cb_id_rewrites

@@ -346,21 +346,6 @@ environments:
     }
 
     #[test]
-    fn rejects_legacy_environment_rate_limit_per_minute() {
-        let yaml = r#"
-version: 1
-default_environment: dev
-environments:
-  dev:
-    api_endpoint: https://rest.fra-02.braze.eu
-    api_key_env: BRAZE_DEV_API_KEY
-    rate_limit_per_minute: 30
-"#;
-        let f = write_config(yaml);
-        let err = ConfigFile::load(f.path()).unwrap_err();
-        assert!(matches!(err, Error::YamlParse { .. }), "got: {err:?}");
-    }
-
     #[test]
     fn accepts_exclude_patterns_on_resource_config() {
         let yaml = r#"
