@@ -1,7 +1,7 @@
-//! Content Block domain type. See IMPLEMENTATION.md §6.3.
+//! Content Block domain type.
 //!
 //! Liquid template bodies are treated as opaque text in v1.0; syntax
-//! validation is deferred to the server (§7.6).
+//! validation is deferred to the server.
 
 use serde::{Deserialize, Serialize};
 

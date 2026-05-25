@@ -1,10 +1,8 @@
 //! Raw configuration types deserialized from `braze-sync.config.yaml`.
 //!
-//! See IMPLEMENTATION.md §10. Every struct here uses
-//! `#[serde(deny_unknown_fields)]` — the config file is the **only** place in
-//! braze-sync where unknown fields are rejected. Resource files
-//! (`schema.yaml`, `template.yaml`, etc.) stay forward-compat permissive
-//! per §2.5.
+//! Every struct here uses `#[serde(deny_unknown_fields)]` — the config file is
+//! the **only** place in braze-sync where unknown fields are rejected. Resource
+//! files (`schema.yaml`, `template.yaml`, etc.) stay forward-compat permissive.
 
 use serde::Deserialize;
 use std::collections::BTreeMap;

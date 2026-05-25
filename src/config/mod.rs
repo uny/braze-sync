@@ -10,9 +10,9 @@
 //! The split exists so tests can drive [`ConfigFile::resolve_with`] with a
 //! fake env-lookup closure instead of mutating process-global `std::env`.
 //!
-//! See IMPLEMENTATION.md §10. The api key is wrapped in
-//! [`secrecy::SecretString`] from the moment it leaves the OS so that
-//! `Debug`, `tracing`, and panic messages cannot leak it.
+//! The api key is wrapped in [`secrecy::SecretString`] from the moment
+//! it leaves the OS so that `Debug`, `tracing`, and panic messages
+//! cannot leak it.
 
 pub mod schema;
 
@@ -72,7 +72,7 @@ impl ConfigFile {
         if self.version != 1 {
             return Err(Error::Config(format!(
                 "unsupported config version {} (this binary supports version 1; \
-                 see IMPLEMENTATION.md §2.5 for the forward-compat policy)",
+                 see the forward-compat policy)",
                 self.version
             )));
         }
@@ -187,8 +187,7 @@ pub fn is_excluded(name: &str, patterns: &[Regex]) -> bool {
     patterns.iter().any(|r| r.is_match(name))
 }
 
-/// CWD only, no parent traversal (IMPLEMENTATION.md §10). A missing
-/// file is not an error.
+/// CWD only, no parent traversal. A missing file is not an error.
 pub fn load_dotenv() -> Result<()> {
     match dotenvy::from_path(".env") {
         Ok(()) => Ok(()),
@@ -345,7 +344,6 @@ environments:
         assert!(matches!(err, Error::YamlParse { .. }), "got: {err:?}");
     }
 
-    #[test]
     #[test]
     fn accepts_exclude_patterns_on_resource_config() {
         let yaml = r#"

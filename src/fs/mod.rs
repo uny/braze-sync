@@ -6,8 +6,6 @@
 //! responsible for joining the config directory with
 //! `resources.<kind>.path` to compute the root. This keeps `fs/` standalone
 //! testable and avoids a `fs/` ↔ `config/` cycle.
-//!
-//! See IMPLEMENTATION.md §5, §9.
 
 pub mod catalog_io;
 pub mod content_block_io;

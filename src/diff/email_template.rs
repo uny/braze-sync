@@ -6,7 +6,7 @@
 //! create and update endpoints cannot set it. Including it in
 //! `syncable_eq` would make any local file with `description: "..."` diff
 //! as Modified forever — the same "infinite drift" mode the Content Block
-//! `state` exclusion prevents. See PHASE_B1_NOTES.md §3 / §6.
+//! `state` exclusion prevents.
 
 use crate::diff::{compute_text_diff, opt_str_eq, tags_eq_unordered, DiffOp, TextDiffSummary};
 use crate::resource::EmailTemplate;

@@ -1,8 +1,8 @@
 //! Human-readable table formatter for diff results.
 //!
-//! Renders a [`crate::diff::DiffSummary`] as the indented multi-resource
-//! layout shown in IMPLEMENTATION.md §7.4. v0.1.0 ships without ANSI
-//! colors; `--no-color` is a no-op until a future cosmetic pass.
+//! Renders a [`crate::diff::DiffSummary`] as an indented multi-resource
+//! layout. v0.1.0 ships without ANSI colors; `--no-color` is a no-op
+//! until a future cosmetic pass.
 
 use crate::diff::catalog::CatalogSchemaDiff;
 use crate::diff::content_block::ContentBlockDiff;

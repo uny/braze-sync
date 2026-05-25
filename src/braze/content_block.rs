@@ -71,9 +71,7 @@ impl BrazeClient {
     /// relying on HTTP status. Recognised not-found phrases remap to
     /// `NotFound` so callers can branch cleanly; any other non-"success"
     /// message surfaces verbatim as `UnexpectedApiMessage` so a real
-    /// failure is not silently swallowed. The wire shapes are ASSUMED
-    /// per IMPLEMENTATION.md §8.3 — a blanket "non-success → NotFound"
-    /// rule would misclassify every future surprise as a missing id.
+    /// failure is not silently swallowed.
     pub async fn get_content_block(&self, id: &str) -> Result<ContentBlock, BrazeApiError> {
         let req = self
             .get(&["content_blocks", "info"])

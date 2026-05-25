@@ -1,4 +1,4 @@
-//! Catalog Schema domain types. See IMPLEMENTATION.md §6.2.
+//! Catalog Schema domain types.
 //!
 //! Catalog **items** (row data) are intentionally out of scope: braze-sync
 //! manages Braze configuration, not runtime data. See docs/scope-boundaries.md.

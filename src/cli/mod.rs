@@ -1,8 +1,7 @@
 //! CLI dispatch entry point.
 //!
-//! Two-stage error model so the frozen exit codes from
-//! IMPLEMENTATION.md §7.1 are deterministic regardless of which step
-//! fails:
+//! Two-stage error model so the frozen exit codes are deterministic
+//! regardless of which step fails:
 //!
 //! 1. **Config stage** ([`load_and_resolve_config`]) — parse the YAML,
 //!    validate it, resolve the api-key environment variable. Any failure
@@ -90,8 +89,7 @@ pub enum Command {
     Templatize(templatize::TemplatizeArgs),
 }
 
-/// Top-level CLI entry point. Returns the process exit code per
-/// IMPLEMENTATION.md §7.1.
+/// Top-level CLI entry point. Returns the process exit code.
 pub async fn run() -> i32 {
     let cli = match Cli::try_parse() {
         Ok(c) => c,

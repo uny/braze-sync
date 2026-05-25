@@ -1,6 +1,6 @@
 //! Catalog Schema file I/O.
 //!
-//! Layout (IMPLEMENTATION.md §9.1):
+//! Layout:
 //!
 //! ```text
 //! <catalogs_root>/
@@ -75,8 +75,7 @@ pub fn load_all_schemas(catalogs_root: &Path) -> Result<Vec<Catalog>> {
 /// Does not validate that the parent directory name matches `cat.name`
 /// — the caller (typically [`load_all_schemas`]) is responsible for that.
 ///
-/// Resource files are forward-compat permissive: unknown fields are
-/// ignored, in line with IMPLEMENTATION.md §2.5.
+/// Resource files are forward-compat permissive: unknown fields are ignored.
 pub fn read_schema_file(path: &Path) -> Result<Catalog> {
     let bytes = std::fs::read_to_string(path)?;
     let cat: Catalog = serde_norway::from_str(&bytes).map_err(|source| Error::YamlParse {
@@ -303,8 +302,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cat_dir = dir.path().join("future");
         std::fs::create_dir_all(&cat_dir).unwrap();
-        // future_v1_3_field is something a v1.3 binary might emit. v1.0
-        // should silently accept it per IMPLEMENTATION.md §2.5.
+        // future_v1_3_field is something a v1.3 binary might emit;
+        // the current binary should silently accept unknown fields.
         let yaml = "\
 name: future
 description: hi

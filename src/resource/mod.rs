@@ -1,10 +1,9 @@
 //! Domain types for the four resources braze-sync manages.
 //!
-//! See IMPLEMENTATION.md §6 for the complete type contracts. Adding a new
-//! variant to [`Resource`] / [`ResourceKind`] forces every `match` site in
-//! `diff/`, `fs/`, and `braze/` to be updated — that compiler-enforced
-//! exhaustiveness is the central reason braze-sync is written in Rust
-//! (§2.4).
+//! Adding a new variant to [`Resource`] / [`ResourceKind`] forces every
+//! `match` site in `diff/`, `fs/`, and `braze/` to be updated — that
+//! compiler-enforced exhaustiveness is the central reason braze-sync is
+//! written in Rust.
 
 pub mod catalog;
 pub mod content_block;

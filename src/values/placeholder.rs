@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn duplicate_cb_id_is_not_an_error() {
-        // cb_id / custom / global re-use is normal substitution per §5.
+        // cb_id re-use is normal (same block referenced twice).
         let body = "{{cb.__BRAZESYNC.cb_id.x__}} {{cb.__BRAZESYNC.cb_id.x__}}";
         let map = lookup(&[(PlaceholderType::CbId, "x", "cb42")]);
         let out = resolve_placeholders(body, &map).unwrap();

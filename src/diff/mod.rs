@@ -1,9 +1,8 @@
 //! Pure structural diff layer. No I/O.
 //!
-//! See IMPLEMENTATION.md §6.6 and §11. The shape of [`DiffOp`] and
-//! [`ResourceDiff`] is the central design contract: every diff site in the
-//! crate goes through these types so that adding a resource forces all
-//! match arms to be updated by the compiler.
+//! The shape of [`DiffOp`] and [`ResourceDiff`] is the central design
+//! contract: every diff site in the crate goes through these types so that
+//! adding a resource forces all match arms to be updated by the compiler.
 
 use crate::resource::ResourceKind;
 use similar::{ChangeTag, TextDiff};

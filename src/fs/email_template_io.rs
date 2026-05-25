@@ -10,8 +10,7 @@
 //!     └── body.txt        # plaintext fallback (byte-faithful)
 //! ```
 //!
-//! The 3-file layout keeps body diffs reviewable in PRs (no YAML escaping)
-//! and follows the directory-per-resource pattern from IMPLEMENTATION.md §9.5.
+//! The 3-file layout keeps body diffs reviewable in PRs (no YAML escaping).
 
 use crate::error::{Error, Result};
 use crate::fs::{try_read_resource_dir, validate_resource_name, write_atomic};

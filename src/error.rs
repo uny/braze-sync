@@ -1,8 +1,7 @@
 //! Top-level error type for braze-sync.
 //!
 //! Library code returns `Result<T, Error>` defined here. The CLI layer
-//! wraps this with `anyhow` and maps variants to the frozen exit codes
-//! from IMPLEMENTATION.md §7.1.
+//! wraps this with `anyhow` and maps variants to the frozen exit codes.
 
 use std::path::PathBuf;
 use thiserror::Error;
