@@ -22,7 +22,9 @@ use crate::error::Error;
 use crate::format::OutputFormat;
 use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io, tag_io};
 use crate::resource::{Catalog, ContentBlock, EmailTemplate, ResourceKind};
-use crate::values::{resolve_content_block_with_remote, resolve_email_template_with_remote};
+use crate::values::{
+    format_failures, resolve_content_block_with_remote, resolve_email_template_with_remote,
+};
 use anyhow::Context as _;
 use clap::Args;
 use futures::stream::{StreamExt, TryStreamExt};
@@ -268,17 +270,17 @@ pub(crate) async fn compute_content_block_plan(
 
     // Resolve `__BRAZESYNC.*__` placeholders now that the remote body
     // is in hand. lid / cb_id values come from the remote (or fallback
-    // for new resources); custom / global come from `values`.
+    // for new resources).
     drop(local_by_name);
+    let mut cb_failures = Vec::new();
     for cb in &mut local {
         let remote_cb = fetched.get(&cb.name);
         if let Err(f) = resolve_content_block_with_remote(cb, remote_cb) {
-            return Err(anyhow::anyhow!(
-                "content_block '{}': {} unresolved placeholder(s) after remote fetch",
-                f.resource_name,
-                f.errors.len()
-            ));
+            cb_failures.push(f);
         }
+    }
+    if !cb_failures.is_empty() {
+        return Err(format_failures(&cb_failures).into());
     }
     let local_by_name: BTreeMap<&str, &ContentBlock> =
         local.iter().map(|c| (c.name.as_str(), c)).collect();
@@ -368,15 +370,15 @@ pub(crate) async fn compute_email_template_plan(
         .await?;
 
     drop(local_by_name);
+    let mut et_failures = Vec::new();
     for et in &mut local {
         let remote_et = fetched.get(&et.name);
         if let Err(failures) = resolve_email_template_with_remote(et, remote_et) {
-            return Err(anyhow::anyhow!(
-                "email_template '{}': {} field(s) failed to resolve after remote fetch",
-                et.name,
-                failures.len()
-            ));
+            et_failures.extend(failures);
         }
+    }
+    if !et_failures.is_empty() {
+        return Err(format_failures(&et_failures).into());
     }
     let local_by_name: BTreeMap<&str, &EmailTemplate> =
         local.iter().map(|t| (t.name.as_str(), t)).collect();

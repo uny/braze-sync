@@ -187,9 +187,9 @@ fn pair_urls_with_lids(urls: Vec<(usize, String)>, body: &str) -> Vec<LidCorrela
     let mut out = Vec::new();
     for (i, (url_off, url)) in urls.iter().enumerate() {
         let next_url_off = urls.get(i + 1).map(|(o, _)| *o).unwrap_or(body.len());
-        if let Some((_, value)) = lids
+        for (_, value) in lids
             .iter()
-            .find(|(off, _)| *off > *url_off && *off < next_url_off)
+            .filter(|(off, _)| *off > *url_off && *off < next_url_off)
         {
             out.push(LidCorrelation {
                 url: url.clone(),

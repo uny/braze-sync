@@ -6,6 +6,7 @@
 //! (`schema.yaml`, `template.yaml`, etc.) stay forward-compat permissive
 //! per §2.5.
 
+use serde::de::Deserializer;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -38,6 +39,24 @@ pub struct EnvironmentConfig {
     /// Name of the environment variable holding the Braze API key. The key
     /// itself MUST NOT live in this file.
     pub api_key_env: String,
+    /// Accepted for backward compatibility with v0.14 configs but no longer
+    /// used — values files are not read in v0.15+.
+    #[serde(default, deserialize_with = "warn_deprecated_values_file")]
+    pub values_file: Option<PathBuf>,
+}
+
+fn warn_deprecated_values_file<'de, D>(deserializer: D) -> Result<Option<PathBuf>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let path: Option<PathBuf> = Option::deserialize(deserializer)?;
+    if path.is_some() {
+        eprintln!(
+            "warning: `values_file` in environment config is deprecated and ignored in v0.15+; \
+             the field can be safely removed"
+        );
+    }
+    Ok(None)
 }
 
 #[derive(Debug, Clone, Deserialize)]

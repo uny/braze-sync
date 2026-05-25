@@ -10,7 +10,9 @@ use std::collections::BTreeMap;
 
 use crate::resource::{ContentBlock, EmailTemplate};
 use crate::values::braze_managed::prepare_field;
-use crate::values::placeholder::{resolve_placeholders, LookupKey, ResolutionError};
+use crate::values::placeholder::{
+    find_suspicious_placeholders, resolve_placeholders, LookupKey, ResolutionError,
+};
 use crate::values::templatize::FieldKind;
 
 /// One resource's worth of placeholder failures, ready to be folded into
@@ -33,6 +35,7 @@ pub fn resolve_content_block_with_remote(
     cb: &mut ContentBlock,
     remote: Option<&ContentBlock>,
 ) -> std::result::Result<(), ResolutionFailure> {
+    warn_suspicious("content_block", &cb.name, None, &cb.content);
     if !body_has_placeholders(&cb.content) {
         return Ok(());
     }
@@ -66,6 +69,7 @@ pub fn resolve_email_template_with_remote(
     macro_rules! resolve_field {
         ($field_name:expr, $field_kind:expr, $accessor:expr, $remote_accessor:expr) => {{
             let body: &str = $accessor;
+            warn_suspicious("email_template", &et.name, Some($field_name), body);
             if body_has_placeholders(body) {
                 let prep = prepare_field(body, $remote_accessor, $field_kind);
                 match resolve_placeholders(&prep.body, &prep.additions) {
@@ -135,6 +139,17 @@ pub fn resolve_email_template_with_remote(
 
 fn body_has_placeholders(body: &str) -> bool {
     body.contains("__BRAZESYNC.")
+}
+
+fn warn_suspicious(kind: &str, name: &str, field: Option<&str>, body: &str) {
+    let suspects = find_suspicious_placeholders(body);
+    for s in &suspects {
+        let scope = match field {
+            Some(f) => format!("{kind} '{name}' ({f})"),
+            None => format!("{kind} '{name}'"),
+        };
+        eprintln!("warning: {scope}: suspicious placeholder-like token {s}");
+    }
 }
 
 /// Format aggregated failures into a single human-readable error.
