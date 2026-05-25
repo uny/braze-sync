@@ -184,10 +184,7 @@ pub async fn run(args: &TemplatizeArgs, cfg: &ConfigFile, config_dir: &Path) -> 
     }
 
     for (path, cb) in &content_block_rewrites {
-        content_block_io::save_content_block(
-            path.parent().unwrap_or_else(|| Path::new(".")),
-            cb,
-        )?;
+        content_block_io::save_content_block(path.parent().unwrap_or_else(|| Path::new(".")), cb)?;
     }
     for et in &email_template_rewrites {
         email_template_io::save_email_template(&email_templates_root, et)?;

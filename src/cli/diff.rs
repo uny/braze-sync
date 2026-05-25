@@ -155,7 +155,11 @@ pub async fn run(
         );
         plan.write_to(path)
             .with_context(|| format!("writing plan file to {}", path.display()))?;
-        eprintln!("✓ Wrote plan ({} op(s)) to {}", plan.ops.len(), path.display());
+        eprintln!(
+            "✓ Wrote plan ({} op(s)) to {}",
+            plan.ops.len(),
+            path.display()
+        );
     }
 
     if args.fail_on_drift && summary.changed_count() > 0 {

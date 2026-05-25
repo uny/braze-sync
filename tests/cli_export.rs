@@ -482,8 +482,7 @@ async fn export_content_block_preserves_local_template_and_refreshes_values() {
     .await
     .unwrap();
 
-    let saved =
-        fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
+    let saved = fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
     assert!(
         saved.contains("__BRAZESYNC.lid.cta__"),
         "local template body must survive export round-trip, got:\n{saved}"

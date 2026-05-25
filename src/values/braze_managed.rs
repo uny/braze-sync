@@ -61,11 +61,7 @@ pub struct PreparedTemplate {
 /// `remote` is `None` when the resource does not yet exist in Braze
 /// (new resource on first apply). `field` selects the URL-anchor
 /// strategy (HTML href, plaintext URL, etc.).
-pub fn prepare_field(
-    template: &str,
-    remote: Option<&str>,
-    field: FieldKind,
-) -> PreparedTemplate {
+pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> PreparedTemplate {
     if !template.contains("__BRAZESYNC.") {
         return PreparedTemplate {
             body: template.to_string(),
@@ -130,10 +126,8 @@ fn cb_id_filter_re() -> &'static Regex {
     RE.get_or_init(|| {
         // Match `\s*| id: '__BRAZESYNC.cb_id.<key>__'` so the rendered
         // form is `{{content_blocks.${NAME}}}` with no stray pipe.
-        Regex::new(
-            r#"\s*\|\s*id:\s*'__BRAZESYNC\.cb_id\.([a-z][a-z0-9_]*)__'"#,
-        )
-        .expect("cb_id filter regex is valid")
+        Regex::new(r#"\s*\|\s*id:\s*'__BRAZESYNC\.cb_id\.([a-z][a-z0-9_]*)__'"#)
+            .expect("cb_id filter regex is valid")
     })
 }
 
@@ -171,8 +165,7 @@ fn resolve_lid_from_remote(
 
     // Group remote pairs by normalized URL, FIFO so positional
     // assignment is deterministic.
-    let mut by_url: BTreeMap<String, std::collections::VecDeque<&LidCorrelation>> =
-        BTreeMap::new();
+    let mut by_url: BTreeMap<String, std::collections::VecDeque<&LidCorrelation>> = BTreeMap::new();
     for p in &remote_pairs {
         by_url.entry(p.url.clone()).or_default().push_back(p);
     }
@@ -356,7 +349,11 @@ mod tests {
 
     #[test]
     fn no_placeholders_returns_body_verbatim() {
-        let p = prepare_field("<p>hello</p>", Some("<p>hello</p>"), FieldKind::ContentBlock);
+        let p = prepare_field(
+            "<p>hello</p>",
+            Some("<p>hello</p>"),
+            FieldKind::ContentBlock,
+        );
         assert_eq!(p.body, "<p>hello</p>");
         assert!(p.additions.is_empty());
     }
@@ -422,12 +419,12 @@ mod tests {
         let template = "before {{content_blocks.${promo} | id: '__BRAZESYNC.cb_id.promo__'}} after";
         let p = prepare_field(template, None, FieldKind::ContentBlock);
         assert_eq!(
-            p.body,
-            "before {{content_blocks.${promo}}} after",
+            p.body, "before {{content_blocks.${promo}}} after",
             "cb_id filter must be stripped for new resources"
         );
         assert!(
-            !p.additions.contains_key(&(PlaceholderType::CbId, "promo".into())),
+            !p.additions
+                .contains_key(&(PlaceholderType::CbId, "promo".into())),
             "no cb_id addition needed once filter is stripped"
         );
         assert!(p.warnings.iter().any(|w| w.contains("promo")));

@@ -142,6 +142,9 @@ fn body_has_placeholders(body: &str) -> bool {
 }
 
 fn warn_suspicious(kind: &str, name: &str, field: Option<&str>, body: &str) {
+    if !body.contains("__") {
+        return;
+    }
     let suspects = find_suspicious_placeholders(body);
     for s in &suspects {
         let scope = match field {
@@ -268,8 +271,7 @@ mod tests {
         let mut t = et("welcome");
         t.body_html = r#"<a href="https://x.com/cta">__BRAZESYNC.lid.cta__</a>"#.into();
         let mut remote = et("welcome");
-        remote.body_html =
-            r#"<a href="https://x.com/cta">{{x | lid: 'newhtmllidx'}}</a>"#.into();
+        remote.body_html = r#"<a href="https://x.com/cta">{{x | lid: 'newhtmllidx'}}</a>"#.into();
         resolve_email_template_with_remote(&mut t, Some(&remote)).unwrap();
         assert!(t.body_html.contains(">newhtmllidx<"));
     }
@@ -283,5 +285,16 @@ mod tests {
         let remote = cb("promo", "<p>no anchor here</p>");
         let err = resolve_content_block_with_remote(&mut block, Some(&remote)).unwrap_err();
         assert_eq!(err.errors.len(), 1);
+    }
+
+    #[test]
+    fn subject_lid_placeholder_fails_no_anchor_correlation() {
+        let mut t = et("promo");
+        t.subject = "__BRAZESYNC.lid.promo_lid__".into();
+        let mut remote = et("promo");
+        remote.subject = "{{x | lid: 'subjectlid1'}}".into();
+        let err = resolve_email_template_with_remote(&mut t, Some(&remote)).unwrap_err();
+        assert_eq!(err.len(), 1);
+        assert_eq!(err[0].field, Some("subject"));
     }
 }
