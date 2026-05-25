@@ -29,7 +29,7 @@ pub fn resolve_content_block_with_remote(
     cb: &mut ContentBlock,
     remote: Option<&ContentBlock>,
 ) -> std::result::Result<(), ResolutionFailure> {
-    warn_suspicious("content_block", &cb.name, None, &cb.content);
+    warn_suspicious("content_block", &cb.name, None, &cb.content)?;
     if !body_has_placeholders(&cb.content) {
         return Ok(());
     }
@@ -63,7 +63,9 @@ pub fn resolve_email_template_with_remote(
     macro_rules! resolve_field {
         ($field_name:expr, $field_kind:expr, $accessor:expr, $remote_accessor:expr) => {{
             let body: &str = $accessor;
-            warn_suspicious("email_template", &et.name, Some($field_name), body);
+            if let Err(f) = warn_suspicious("email_template", &et.name, Some($field_name), body) {
+                failures.push(f);
+            }
             if body_has_placeholders(body) {
                 let prep = prepare_field(body, $remote_accessor, $field_kind);
                 match resolve_placeholders(&prep.body, &prep.additions) {
@@ -135,17 +137,40 @@ fn body_has_placeholders(body: &str) -> bool {
     body.contains("__BRAZESYNC.")
 }
 
-fn warn_suspicious(kind: &str, name: &str, field: Option<&str>, body: &str) {
+fn warn_suspicious(
+    kind: &'static str,
+    name: &str,
+    field: Option<&'static str>,
+    body: &str,
+) -> Result<(), ResolutionFailure> {
     if !body.contains("__") {
-        return;
+        return Ok(());
     }
     let suspects = find_suspicious_placeholders(body);
+    if suspects.is_empty() {
+        return Ok(());
+    }
+    let scope = match field {
+        Some(f) => format!("{kind} '{name}' ({f})"),
+        None => format!("{kind} '{name}'"),
+    };
+    let mut retired: Vec<ResolutionError> = Vec::new();
     for s in &suspects {
-        let scope = match field {
-            Some(f) => format!("{kind} '{name}' ({f})"),
-            None => format!("{kind} '{name}'"),
-        };
-        eprintln!("warning: {scope}: suspicious placeholder-like token {s}");
+        if s.starts_with("__BRAZESYNC.") {
+            retired.push(ResolutionError::RetiredNamespace { token: s.clone() });
+        } else {
+            eprintln!("warning: {scope}: suspicious placeholder-like token {s}");
+        }
+    }
+    if retired.is_empty() {
+        Ok(())
+    } else {
+        Err(ResolutionFailure {
+            resource_kind: kind,
+            resource_name: name.to_string(),
+            field,
+            errors: retired,
+        })
     }
 }
 
@@ -183,6 +208,12 @@ pub fn format_failures(failures: &[ResolutionFailure]) -> crate::error::Error {
                         "    - __BRAZESYNC.lid.{key}__ referenced {} times (offsets {offsets}); \
                          lid IDs are per-click-context — use a distinct key per occurrence\n",
                         occurrences.len(),
+                    ));
+                }
+                ResolutionError::RetiredNamespace { token } => {
+                    msg.push_str(&format!(
+                        "    - {token}: retired placeholder namespace \
+                         (custom/global removed in v0.15; use literal values)\n",
                     ));
                 }
             }
@@ -290,5 +321,32 @@ mod tests {
         let err = resolve_email_template_with_remote(&mut t, Some(&remote)).unwrap_err();
         assert_eq!(err.len(), 1);
         assert_eq!(err[0].field, Some("subject"));
+    }
+
+    #[test]
+    fn retired_namespace_is_fatal() {
+        let mut block = cb("legacy", "hello __BRAZESYNC.custom.foo__ world");
+        let err = resolve_content_block_with_remote(&mut block, None).unwrap_err();
+        assert!(err.errors.iter().any(|e| matches!(
+            e,
+            ResolutionError::RetiredNamespace { token }
+                if token.contains("custom.foo")
+        )));
+    }
+
+    #[test]
+    fn typo_namespace_is_warning_not_fatal() {
+        let mut block = cb("typo", "hello __BRAZSYNC.lid.foo__ world");
+        resolve_content_block_with_remote(&mut block, None).unwrap();
+    }
+
+    #[test]
+    fn double_quoted_cb_id_filter_stripped_on_new_resource() {
+        let mut block = cb(
+            "page",
+            r#"{{content_blocks.${promo} | id: "__BRAZESYNC.cb_id.promo__"}}"#,
+        );
+        resolve_content_block_with_remote(&mut block, None).unwrap();
+        assert_eq!(block.content, "{{content_blocks.${promo}}}");
     }
 }

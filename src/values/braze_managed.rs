@@ -107,7 +107,7 @@ fn cb_id_filter_re() -> &'static Regex {
     RE.get_or_init(|| {
         // Match `\s*| id: '__BRAZESYNC.cb_id.<key>__'` so the rendered
         // form is `{{content_blocks.${NAME}}}` with no stray pipe.
-        Regex::new(r#"\s*\|\s*id:\s*'__BRAZESYNC\.cb_id\.([a-z][a-z0-9_]*)__'"#)
+        Regex::new(r#"\s*\|\s*id:\s*['"]__BRAZESYNC\.cb_id\.([a-z][a-z0-9_]*)__['"]"#)
             .expect("cb_id filter regex is valid")
     })
 }
@@ -238,7 +238,7 @@ fn cb_id_template_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"\{\{\s*content_blocks\.\$\{\s*([^\s}|]+)\s*\}\s*\|\s*id:\s*'__BRAZESYNC\.cb_id\.([a-z][a-z0-9_]*)__'\s*\}\}"#,
+            r#"\{\{\s*content_blocks\.\$\{\s*([^\s}|]+)\s*\}\s*\|\s*id:\s*['"]__BRAZESYNC\.cb_id\.([a-z][a-z0-9_]*)__['"]\s*\}\}"#,
         )
         .expect("cb_id template regex is valid")
     })

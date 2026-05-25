@@ -143,6 +143,9 @@ pub enum ResolutionError {
         key: String,
         occurrences: Vec<usize>,
     },
+    /// Token uses the `__BRAZESYNC.` prefix but with a retired namespace
+    /// (e.g. `custom`, `global`) that is no longer resolved.
+    RetiredNamespace { token: String },
 }
 
 pub type LookupKey = (PlaceholderType, String);
@@ -302,7 +305,7 @@ mod tests {
             .iter()
             .map(|e| match e {
                 ResolutionError::UnknownKey { ty, key, .. } => (*ty, key.clone()),
-                ResolutionError::DuplicateLidKey { .. } => unreachable!(),
+                _ => unreachable!(),
             })
             .collect();
         assert!(keys.contains(&(PlaceholderType::CbId, "b".to_string())));
