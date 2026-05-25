@@ -194,7 +194,14 @@ fn resolve_lid_batch(
     }
 
     let mut out = Vec::with_capacity(lid_indices.len());
+    // Seed `used` with every remote lid value so a fallback slug can
+    // never duplicate a value that is already in the POSTed body. Braze
+    // treats `lid` as a per-link identifier; duplicates corrupt link
+    // analytics.
     let mut used: BTreeMap<String, usize> = BTreeMap::new();
+    for p in &remote_pairs {
+        used.entry(p.value.clone()).or_insert(1);
+    }
     let mut seq = 0usize;
     for anchor in anchors {
         let Some(url) = anchor else {
@@ -273,8 +280,13 @@ fn resolve_lid_positional(
     }
     let _ = placeholders;
     let mut out = Vec::with_capacity(lid_indices.len());
-    let mut iter = remote_values.into_iter();
+    // Seed `used` with every remote positional value so fallback
+    // slugs (`lid_1`, …) can never collide with a real remote value.
     let mut used: BTreeMap<String, usize> = BTreeMap::new();
+    for v in &remote_values {
+        used.entry(v.clone()).or_insert(1);
+    }
+    let mut iter = remote_values.into_iter();
     let mut seq = 0usize;
     for _ in lid_indices {
         match iter.next() {
@@ -667,6 +679,21 @@ mod tests {
             "plaintext URL slug must be used, got: {}",
             p.body
         );
+    }
+
+    #[test]
+    fn url_fallback_disambiguates_against_remote_slug_collision() {
+        // The /checkout URL's natural slug 'checkout' also happens to
+        // appear as a remote lid value (for an unrelated /a anchor).
+        // The seeded `used` map must force the fallback to 'checkout_2'.
+        let template = r#"<a href="https://x.com/a">{{x | lid: '__BRAZESYNC__'}}</a>
+<a href="https://x.com/checkout">{{x | lid: '__BRAZESYNC__'}}</a>"#;
+        let remote = r#"<a href="https://x.com/a">{{x | lid: 'checkout'}}</a>"#;
+        let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        let count = p.body.matches("'checkout'").count();
+        assert_eq!(count, 1, "remote lid must appear exactly once, got: {}", p.body);
+        assert!(p.body.contains("'checkout_2'"), "got: {}", p.body);
     }
 
     #[test]
