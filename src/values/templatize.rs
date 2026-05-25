@@ -77,9 +77,7 @@ pub fn templatize_body(body: &str, field: FieldKind) -> TemplatizedField {
         let name = m.get(1).expect("name capture present").as_str();
         spans.push(DetectionSpan {
             range: whole.range(),
-            replacement: format!(
-                "{{{{content_blocks.${{{name}}} | id: '__BRAZESYNC__'}}}}"
-            ),
+            replacement: format!("{{{{content_blocks.${{{name}}} | id: '__BRAZESYNC__'}}}}"),
         });
         cb_id_rewrites += 1;
     }

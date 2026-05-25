@@ -78,7 +78,14 @@ pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> 
         .collect();
 
     let lid_values: Vec<Option<String>> = match remote {
-        Some(remote_body) => resolve_lid_batch(&body, &placeholders, &lid_indices, remote_body, field, &mut warnings),
+        Some(remote_body) => resolve_lid_batch(
+            &body,
+            &placeholders,
+            &lid_indices,
+            remote_body,
+            field,
+            &mut warnings,
+        ),
         None => fallback_lid_batch(&body, &placeholders, &lid_indices, field),
     };
 
@@ -201,9 +208,7 @@ fn resolve_lid_batch(
         match pick {
             Some(p) => out.push(Some(p.value.clone())),
             None => {
-                warnings.push(format!(
-                    "lid: URL anchor '{url}' not found in remote body"
-                ));
+                warnings.push(format!("lid: URL anchor '{url}' not found in remote body"));
                 out.push(None);
             }
         }
@@ -335,7 +340,12 @@ fn url_path_tail(url: &str) -> String {
         .find('/')
         .map(|i| i + 1)
         .unwrap_or(after_scheme.len());
-    let path = &after_scheme[path_start..];
+    // Strip query / fragment (normalize_url already does this for the
+    // main call-path, but be safe if the function is reused).
+    let path = after_scheme[path_start..]
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("");
     path.rsplit('/')
         .find(|s| !s.is_empty())
         .unwrap_or("")
@@ -359,10 +369,7 @@ fn strip_cb_id_filters(body: &str) -> (String, Vec<String>) {
             "cb_id `${{{name}}}`: new resource — stripping `| id: '…'` filter; \
              Braze will assign a cb_id on first save"
         ));
-        spans.push((
-            whole.range(),
-            format!("{{{{content_blocks.${{{name}}}}}}}"),
-        ));
+        spans.push((whole.range(), format!("{{{{content_blocks.${{{name}}}}}}}")));
     }
     let mut out = body.to_string();
     for (range, replacement) in spans.into_iter().rev() {
@@ -509,8 +516,7 @@ mod tests {
 
     #[test]
     fn cb_id_resolved_via_name() {
-        let template =
-            "{{content_blocks.${promo_banner} | id: '__BRAZESYNC__'}}";
+        let template = "{{content_blocks.${promo_banner} | id: '__BRAZESYNC__'}}";
         let remote = "{{content_blocks.${promo_banner} | id: 'cb99'}}";
         let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
         assert!(p.errors.is_empty());
@@ -519,8 +525,7 @@ mod tests {
 
     #[test]
     fn new_resource_lid_uses_url_slug_fallback() {
-        let template =
-            r#"<a href="https://x.com/spring-sale">{{x | lid: '__BRAZESYNC__'}}</a>"#;
+        let template = r#"<a href="https://x.com/spring-sale">{{x | lid: '__BRAZESYNC__'}}</a>"#;
         let p = prepare_field(template, None, FieldKind::ContentBlock);
         assert!(p.errors.is_empty());
         assert!(p.body.contains("'spring_sale'"), "got: {}", p.body);
@@ -536,8 +541,7 @@ mod tests {
 
     #[test]
     fn new_resource_strips_cb_id_filter() {
-        let template =
-            "before {{content_blocks.${promo} | id: '__BRAZESYNC__'}} after";
+        let template = "before {{content_blocks.${promo} | id: '__BRAZESYNC__'}} after";
         let p = prepare_field(template, None, FieldKind::ContentBlock);
         assert_eq!(p.body, "before {{content_blocks.${promo}}} after");
         assert!(p.warnings.iter().any(|w| w.contains("promo")));
@@ -612,5 +616,14 @@ mod tests {
             "plaintext URL slug must be used, got: {}",
             p.body
         );
+    }
+
+    #[test]
+    fn url_path_tail_strips_query_and_fragment() {
+        assert_eq!(url_path_tail("https://x.com/page/?utm=1"), "page");
+        assert_eq!(url_path_tail("https://x.com/page/#section"), "page");
+        assert_eq!(url_path_tail("https://x.com/page/?a=1#b"), "page");
+        assert_eq!(url_path_tail("https://x.com/"), "");
+        assert_eq!(url_path_tail("https://x.com/sale"), "sale");
     }
 }

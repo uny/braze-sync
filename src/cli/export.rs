@@ -272,10 +272,7 @@ async fn export_email_templates(
             let subject_has = has_placeholders(&local.subject);
             let body_html_has = has_placeholders(&local.body_html);
             let body_plain_has = has_placeholders(&local.body_plaintext);
-            let preheader_has = local
-                .preheader
-                .as_deref()
-                .is_some_and(has_placeholders);
+            let preheader_has = local.preheader.as_deref().is_some_and(has_placeholders);
             if subject_has {
                 to_save.subject = local.subject.clone();
             }

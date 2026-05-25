@@ -106,9 +106,8 @@ it ever reaches resolve, so a partial migration fails loudly rather
 than shipping broken templates.
 
 ```bash
-# On v0.15 (or earlier), re-templatize from the raw remote body to
-# emit the v0.16 anonymous form:
-braze-sync export --env=prod        # pull raw remote bodies
+# On v0.15 (or earlier), repeat per env to emit the v0.16 anonymous form:
+braze-sync export --env=<env>       # pull raw remote bodies for that env
 braze-sync templatize               # rewrite to __BRAZESYNC__
 ```
 

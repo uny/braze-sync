@@ -48,10 +48,7 @@ pub enum ResolutionError {
     },
     /// cb_id `__BRAZESYNC__` could not be matched to a remote
     /// `${NAME} | id: 'cbN'`.
-    UnresolvedCbId {
-        start: usize,
-        name: Option<String>,
-    },
+    UnresolvedCbId { start: usize, name: Option<String> },
     /// `__BRAZESYNC__` appeared outside any recognized
     /// `| lid:` / `| id:` argument position.
     UnknownContext { start: usize },
@@ -119,9 +116,7 @@ fn retired_envelope_re() -> &'static Regex {
 /// strict token itself and the retired envelope shape.
 fn typo_token_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"__BRAZE?SYNC[A-Z]*__").expect("typo token regex is valid")
-    })
+    RE.get_or_init(|| Regex::new(r"__BRAZE?SYNC[A-Z]*__").expect("typo token regex is valid"))
 }
 
 /// Find any token resembling a placeholder that is NOT the strict

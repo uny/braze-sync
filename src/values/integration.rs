@@ -266,10 +266,7 @@ mod tests {
 
     #[test]
     fn new_resource_cb_id_filter_is_stripped() {
-        let mut block = cb(
-            "page",
-            "{{content_blocks.${promo} | id: '__BRAZESYNC__'}}",
-        );
+        let mut block = cb("page", "{{content_blocks.${promo} | id: '__BRAZESYNC__'}}");
         resolve_content_block_with_remote(&mut block, None).unwrap();
         assert_eq!(block.content, "{{content_blocks.${promo}}}");
     }
@@ -277,11 +274,9 @@ mod tests {
     #[test]
     fn email_template_resolves_per_field() {
         let mut t = et("welcome");
-        t.body_html =
-            r#"<a href="https://x.com/cta">{{x | lid: '__BRAZESYNC__'}}</a>"#.into();
+        t.body_html = r#"<a href="https://x.com/cta">{{x | lid: '__BRAZESYNC__'}}</a>"#.into();
         let mut remote = et("welcome");
-        remote.body_html =
-            r#"<a href="https://x.com/cta">{{x | lid: 'newhtmllidx'}}</a>"#.into();
+        remote.body_html = r#"<a href="https://x.com/cta">{{x | lid: 'newhtmllidx'}}</a>"#.into();
         resolve_email_template_with_remote(&mut t, Some(&remote)).unwrap();
         assert!(t.body_html.contains("'newhtmllidx'"));
     }
