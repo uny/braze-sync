@@ -1569,9 +1569,9 @@ resources:
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn content_block_apply_resolves_placeholders_from_values_file() {
-    // Apply must POST the *resolved* body, not the raw template. The diff
-    // computation must see the resolved body too, otherwise every apply
-    // run shows a phantom "Modified" diff against the remote.
+    // New-resource path: remote is empty so lid resolves via fallback
+    // to the placeholder key itself. Apply must POST the *resolved*
+    // body (no `__BRAZESYNC.*__` tokens left).
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/content_blocks/list"))
@@ -1584,7 +1584,7 @@ async fn content_block_apply_resolves_placeholders_from_values_file() {
         .and(path("/content_blocks/create"))
         .and(body_json(json!({
             "name": "promo",
-            "content": "host=api-prod.example.com cta=ai8kexrxcp03\n",
+            "content": "<a href=\"https://example.com/cta\">{{x | lid: 'spring_sale'}}</a>\n",
             "tags": [],
             "state": "active"
         })))
@@ -1601,23 +1601,7 @@ async fn content_block_apply_resolves_placeholders_from_values_file() {
     common::write_local_content_block(
         tmp.path(),
         "promo",
-        "host=__BRAZESYNC.global.host__ cta=__BRAZESYNC.lid.cta__\n",
-    );
-    common::write_values_file(
-        tmp.path(),
-        "test",
-        r#"version: 1
-globals:
-  custom:
-    host:
-      value: api-prod.example.com
-content_block:
-  promo:
-    lid:
-      cta:
-        value: ai8kexrxcp03
-        url: https://example.com/cta
-"#,
+        "<a href=\"https://example.com/cta\">{{x | lid: '__BRAZESYNC.lid.spring_sale__'}}</a>\n",
     );
 
     tokio::task::spawn_blocking(move || {
@@ -1635,13 +1619,28 @@ content_block:
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn content_block_apply_aborts_when_placeholder_unresolved() {
-    // Pre-flight must catch unresolved placeholders BEFORE any API call.
-    // Both list and create are mocked with .expect(0) so a slip would fail
-    // the test loudly.
+    // v0.15: lid resolution aborts when the remote exists but does
+    // not contain a matching URL anchor (structural drift between
+    // local template and remote). The list call IS made (it's the
+    // existence probe), but no /info follows for a name that's not
+    // present, and no /create follows because the existing remote
+    // means we go through diff/update path — the diff finds no
+    // matching URL in remote and aborts.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(500))
-        .expect(0)
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [{"content_block_id": "id-promo", "name": "promo"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "promo",
+            "content": "<p>no anchor here</p>",
+            "tags": []
+        })))
         .mount(&server)
         .await;
     Mock::given(method("POST"))
@@ -1652,8 +1651,11 @@ async fn content_block_apply_aborts_when_placeholder_unresolved() {
 
     let tmp = tempfile::tempdir().unwrap();
     let config_path = common::write_config(tmp.path(), &server.uri());
-    common::write_local_content_block(tmp.path(), "promo", "cta=__BRAZESYNC.lid.cta__\n");
-    // Intentionally no values file written.
+    common::write_local_content_block(
+        tmp.path(),
+        "promo",
+        "<a href=\"https://example.com/cta\">{{x | lid: '__BRAZESYNC.lid.cta__'}}</a>",
+    );
 
     tokio::task::spawn_blocking(move || {
         let assert = Command::cargo_bin("braze-sync")
@@ -1665,12 +1667,10 @@ async fn content_block_apply_aborts_when_placeholder_unresolved() {
             .failure();
         let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
         assert!(
-            stderr.contains("__BRAZESYNC.lid.cta__"),
-            "expected pre-flight error to name the unresolved placeholder, got:\n{stderr}"
-        );
-        assert!(
-            stderr.contains("No values file was loaded"),
-            "expected missing-file hint, got:\n{stderr}"
+            stderr.contains("unresolved placeholder")
+                || stderr.contains("__BRAZESYNC.lid.cta__")
+                || stderr.contains("anchor"),
+            "expected resolution error mentioning the unresolved lid, got:\n{stderr}"
         );
     })
     .await

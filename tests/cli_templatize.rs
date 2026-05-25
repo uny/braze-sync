@@ -30,6 +30,10 @@ environments:
 
 #[test]
 fn templatize_rewrites_body_and_writes_canonical_and_skeleton() {
+    // v0.15: templatize is rewrite-only. lid / cb_id values are no
+    // longer persisted to per-env values files (they are resolved at
+    // apply/diff time from the remote body). The body rewrite is the
+    // entire effect.
     let tmp = tempfile::tempdir().unwrap();
     let config_path = write_multi_env_config(tmp.path());
     write_local_content_block(
@@ -45,7 +49,6 @@ fn templatize_rewrites_body_and_writes_canonical_and_skeleton() {
         .assert()
         .success();
 
-    // Body is rewritten in place.
     let body = fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
     assert!(
         body.contains("__BRAZESYNC.lid.cta__"),
@@ -56,31 +59,9 @@ fn templatize_rewrites_body_and_writes_canonical_and_skeleton() {
         "raw lid value must be removed from the body, got:\n{body}"
     );
 
-    // Canonical values file has the actual value.
-    let canonical = fs::read_to_string(tmp.path().join("values").join("prod.yaml")).unwrap();
-    assert!(
-        canonical.contains("ai8kexrxcp03"),
-        "canonical (--from-env) values must contain the extracted lid, got:\n{canonical}"
-    );
-    assert!(
-        canonical.contains("https://example.com/cta"),
-        "canonical values must carry the URL anchor, got:\n{canonical}"
-    );
-
-    // Other env's skeleton has the same key but `value: null`.
-    let skeleton = fs::read_to_string(tmp.path().join("values").join("dev.yaml")).unwrap();
-    assert!(
-        skeleton.contains("cta"),
-        "skeleton must mirror the canonical key structure, got:\n{skeleton}"
-    );
-    assert!(
-        skeleton.contains("value: null") || skeleton.contains("value: ~"),
-        "skeleton must use `value: null` for non-canonical envs, got:\n{skeleton}"
-    );
-    assert!(
-        !skeleton.contains("ai8kexrxcp03"),
-        "skeleton must NOT carry the canonical env's lid value, got:\n{skeleton}"
-    );
+    // No values files are written by templatize in v0.15.
+    assert!(!tmp.path().join("values").join("prod.yaml").exists());
+    assert!(!tmp.path().join("values").join("dev.yaml").exists());
 }
 
 #[test]
@@ -164,9 +145,8 @@ fn templatize_rejects_unknown_from_env() {
 
 #[test]
 fn templatize_preserves_globals_custom_in_existing_canonical() {
-    // Re-running templatize must NOT clobber operator-curated entries
-    // (globals.custom, untouched resource entries) in the canonical
-    // values file. It should merge new detections on top instead.
+    // v0.15: templatize does not touch any values file. A pre-existing
+    // values yaml must round-trip byte-identical.
     let tmp = tempfile::tempdir().unwrap();
     let config_path = write_multi_env_config(tmp.path());
     write_local_content_block(
@@ -177,13 +157,8 @@ fn templatize_preserves_globals_custom_in_existing_canonical() {
 
     let v_dir = tmp.path().join("values");
     fs::create_dir_all(&v_dir).unwrap();
-    fs::write(
-        v_dir.join("prod.yaml"),
-        "version: 1\n\
-         globals:\n  custom:\n    api_host:\n      value: api.example.com\n\
-         content_block:\n  legacy_block:\n    cb_id:\n      shared:\n        value: cb99\n",
-    )
-    .unwrap();
+    let original = "version: 1\ncontent_block:\n  legacy_block:\n    cb_id:\n      shared:\n        value: cb99\n";
+    fs::write(v_dir.join("prod.yaml"), original).unwrap();
 
     Command::cargo_bin("braze-sync")
         .unwrap()
@@ -192,25 +167,15 @@ fn templatize_preserves_globals_custom_in_existing_canonical() {
         .assert()
         .success();
 
-    let prod = fs::read_to_string(v_dir.join("prod.yaml")).unwrap();
-    assert!(
-        prod.contains("api.example.com"),
-        "globals.custom must survive merge, got:\n{prod}"
-    );
-    assert!(
-        prod.contains("legacy_block") && prod.contains("cb99"),
-        "untouched resource entries must survive merge, got:\n{prod}"
-    );
-    assert!(
-        prod.contains("ai8kexrxcp03"),
-        "newly-detected lid must be merged in, got:\n{prod}"
-    );
+    let after = fs::read_to_string(v_dir.join("prod.yaml")).unwrap();
+    assert_eq!(after, original, "templatize must not touch values files");
 }
 
 #[test]
 fn templatize_repeated_cb_id_name_yields_single_key() {
-    // Same `${NAME}` referenced twice → one cb_id entry (not name + name_2).
-    // Otherwise Phase 3 export refresh leaves the `_2` slot stale forever.
+    // Same `${NAME}` referenced twice → both occurrences resolve to the
+    // same placeholder key (otherwise apply-time correlation can't match
+    // both back to one remote cb_id).
     let tmp = tempfile::tempdir().unwrap();
     let config_path = write_multi_env_config(tmp.path());
     write_local_content_block(
@@ -227,14 +192,12 @@ fn templatize_repeated_cb_id_name_yields_single_key() {
         .assert()
         .success();
 
-    let prod = fs::read_to_string(tmp.path().join("values").join("prod.yaml")).unwrap();
+    let body = fs::read_to_string(tmp.path().join("content_blocks").join("duo.liquid")).unwrap();
+    let count = body.matches("__BRAZESYNC.cb_id.promo__").count();
+    assert_eq!(count, 2, "both occurrences must use the same `promo` key");
     assert!(
-        prod.contains("promo:"),
-        "expected `promo` cb_id key, got:\n{prod}"
-    );
-    assert!(
-        !prod.contains("promo_2"),
-        "repeated ${{promo}} must NOT create a `promo_2` key, got:\n{prod}"
+        !body.contains("__BRAZESYNC.cb_id.promo_2__"),
+        "repeated ${{promo}} must NOT create a `promo_2` key, got:\n{body}"
     );
 }
 

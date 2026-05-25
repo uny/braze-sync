@@ -441,9 +441,9 @@ async fn export_custom_attributes_writes_registry_yaml() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn export_content_block_preserves_local_template_and_refreshes_values() {
-    // When a local template uses `__BRAZESYNC.*__`, export must
-    // preserve the local body and only update the values file
-    // with the lid value extracted from the remote body.
+    // v0.15: when a local template uses `__BRAZESYNC.*__`, export must
+    // preserve the local body verbatim. The values file is NOT touched
+    // — lid / cb_id are resolved at apply/diff time from the remote.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/content_blocks/list"))
@@ -469,18 +469,6 @@ async fn export_content_block_preserves_local_template_and_refreshes_values() {
         "promo",
         "<a href=\"https://example.com/cta\">{{ x | lid: '__BRAZESYNC.lid.cta__' }}go</a>",
     );
-    common::write_values_file(
-        tmp.path(),
-        "test",
-        r#"version: 1
-content_block:
-  promo:
-    lid:
-      cta:
-        value: oldlidvalue1
-        url: https://example.com/cta
-"#,
-    );
 
     tokio::task::spawn_blocking(move || {
         Command::cargo_bin("braze-sync")
@@ -494,22 +482,15 @@ content_block:
     .await
     .unwrap();
 
-    // Body must still be the templated form.
-    let saved = fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
+    let saved =
+        fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
     assert!(
         saved.contains("__BRAZESYNC.lid.cta__"),
         "local template body must survive export round-trip, got:\n{saved}"
     );
-
-    // values file must carry the new lid value.
-    let values = fs::read_to_string(tmp.path().join("values").join("test.yaml")).unwrap();
     assert!(
-        values.contains("newlidvalue1"),
-        "values file must reflect refreshed lid, got:\n{values}"
-    );
-    assert!(
-        !values.contains("oldlidvalue1"),
-        "values file must replace stale lid, got:\n{values}"
+        !saved.contains("newlidvalue1"),
+        "remote lid value must not bleed into the templated body, got:\n{saved}"
     );
 }
 
@@ -561,9 +542,10 @@ async fn export_content_block_without_placeholders_is_unchanged() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn export_warns_about_orphan_values_keys() {
-    // A values key with no corresponding placeholder in the local
-    // template should produce an orphan warning on stderr but NOT
-    // be auto-removed (per RFC §2.5 step 6).
+    // v0.15: export does not touch values yaml at all. A pre-existing
+    // legacy `lid:` / `cb_id:` section is harmless — it is silently
+    // dropped at load (use `braze-sync values cleanup` to physically
+    // remove). Export must not regenerate or modify it.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/content_blocks/list"))
@@ -589,45 +571,29 @@ async fn export_warns_about_orphan_values_keys() {
         "promo",
         "<a href=\"https://example.com/cta\">{{ x | lid: '__BRAZESYNC.lid.cta__' }}go</a>",
     );
-    common::write_values_file(
-        tmp.path(),
-        "test",
-        r#"version: 1
+    let legacy = r#"version: 1
 content_block:
   promo:
     lid:
       cta:
         value: oldlidvalue1
         url: https://example.com/cta
-      stale_key:
-        value: staaaalee1
-        url: https://example.com/removed
-"#,
-    );
+"#;
+    common::write_values_file(tmp.path(), "test", legacy);
 
-    let output = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         Command::cargo_bin("braze-sync")
             .unwrap()
             .env("BRAZE_API_KEY", "test-key")
             .args(["--config", config_path.to_str().unwrap()])
             .args(["export", "--resource", "content_block"])
-            .output()
-            .unwrap()
+            .assert()
+            .success();
     })
     .await
     .unwrap();
 
-    assert!(output.status.success());
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        stderr.contains("orphan lid key 'stale_key'"),
-        "expected orphan warning, got stderr:\n{stderr}"
-    );
-
-    // Orphan must survive (no auto-removal).
-    let values = fs::read_to_string(tmp.path().join("values").join("test.yaml")).unwrap();
-    assert!(
-        values.contains("stale_key"),
-        "orphan key must not be auto-removed, got:\n{values}"
-    );
+    // export must leave the values file byte-identical.
+    let after = fs::read_to_string(tmp.path().join("values").join("test.yaml")).unwrap();
+    assert_eq!(after, legacy, "export must not touch the values yaml");
 }

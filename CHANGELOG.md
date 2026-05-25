@@ -7,6 +7,37 @@ versions follow [semver](https://semver.org/). Per IMPLEMENTATION.md
 changes; v1.0 freezes the public surface (CLI flags, config schema,
 file formats, JSON output, exit codes) for the full v1.x line.
 
+## [Unreleased]
+
+### Changed
+
+- **`lid` / `cb_id` placeholders are now resolved at apply/diff time from
+  the live remote body**, not from `values/<env>.yaml`. The local Git
+  body carries `__BRAZESYNC.lid.<key>__` / `__BRAZESYNC.cb_id.<key>__`;
+  on every `apply` / `diff` braze-sync GETs the remote body and
+  correlates by URL anchor (lid) / `${NAME}` (cb_id). Dashboard edits
+  that reassign `lid` / `cb_id` are invisible to diff — only real
+  template structure changes show up.
+- New resources (not yet in Braze) use a controlled fallback: `lid`
+  resolves to the placeholder key itself; the `| id: '__…__'` filter
+  is stripped from `cb_id` so the POST carries the documented
+  `{{content_blocks.${NAME}}}` form.
+
+### Removed
+
+- **`values/<env>.yaml` is no longer read or written.** The v0.14
+  per-env values mechanism — including `lid` / `cb_id` / `custom` /
+  `global` entries, `globals.custom`, `environments.<env>.values_file`,
+  the pre-flight values gate, and the `values_input_hashes` field on
+  plan files — is gone. Existing values files can be deleted. The
+  `__BRAZESYNC.custom.*__` / `__BRAZESYNC.global.*__` placeholder
+  types are no longer recognized; use literal values until a future
+  release reintroduces user-managed namespaces.
+- `braze-sync export` no longer touches values files. Its only effect
+  on placeholder-bearing resources is to keep the local body verbatim.
+- `braze-sync templatize` no longer generates canonical / skeleton
+  values files — it is now a pure body rewrite.
+
 ## [0.14.3] — 2026-05-24
 
 ### Fixed

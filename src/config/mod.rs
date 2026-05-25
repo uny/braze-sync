@@ -45,10 +45,6 @@ pub struct ResolvedConfig {
     /// [`ConfigFile::resolve_with`] so callers can look up a `&[Regex]`
     /// without recompiling on every invocation.
     pub excludes: HashMap<ResourceKind, Vec<Regex>>,
-    /// Optional explicit path to the per-env values file (RFC
-    /// `feat-per-env-values.md` §2.1). When `None`, the CLI falls back to
-    /// `values/<environment_name>.yaml` relative to the config dir.
-    pub values_file: Option<std::path::PathBuf>,
 }
 
 impl ResolvedConfig {
@@ -169,7 +165,6 @@ impl ConfigFile {
             resources: self.resources,
             naming: self.naming,
             excludes,
-            values_file: env_cfg.values_file,
         })
     }
 }

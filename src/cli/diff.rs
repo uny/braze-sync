@@ -22,10 +22,7 @@ use crate::error::Error;
 use crate::format::OutputFormat;
 use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io, tag_io};
 use crate::resource::{Catalog, ContentBlock, EmailTemplate, ResourceKind};
-use crate::values::{
-    compute_values_input_hashes, preflight_values, resolve_content_block_with_remote,
-    resolve_email_template_with_remote, PreflightArgs, ValuesFile,
-};
+use crate::values::{resolve_content_block_with_remote, resolve_email_template_with_remote};
 use anyhow::Context as _;
 use clap::Args;
 use futures::stream::{StreamExt, TryStreamExt};
@@ -78,28 +75,6 @@ pub async fn run(
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
-    // Pre-flight: resolve all `__BRAZESYNC.*__` placeholders before any
-    // Braze API call (RFC `feat-per-env-values.md` §2.4). Returns the
-    // loaded values file (or None when absent and no placeholders are
-    // present), so downstream compute_*_plan calls can reuse it.
-    let values = preflight_values(PreflightArgs {
-        config_dir,
-        resolved: &resolved,
-        content_blocks_root: &content_blocks_root,
-        email_templates_root: &email_templates_root,
-        kinds: &kinds,
-        cb_name_filter: args
-            .name
-            .as_deref()
-            .filter(|_| args.resource == Some(ResourceKind::ContentBlock)),
-        et_name_filter: args
-            .name
-            .as_deref()
-            .filter(|_| args.resource == Some(ResourceKind::EmailTemplate)),
-        cb_excludes: resolved.excludes_for(ResourceKind::ContentBlock),
-        et_excludes: resolved.excludes_for(ResourceKind::EmailTemplate),
-    })?;
-
     let mut summary = DiffSummary::default();
     for kind in &kinds {
         let kind = *kind;
@@ -124,7 +99,6 @@ pub async fn run(
                     &content_blocks_root,
                     args.name.as_deref(),
                     resolved.excludes_for(ResourceKind::ContentBlock),
-                    values.as_ref(),
                 )
                 .await
                 .context("computing content_block diff")?;
@@ -136,7 +110,6 @@ pub async fn run(
                     &email_templates_root,
                     args.name.as_deref(),
                     resolved.excludes_for(ResourceKind::EmailTemplate),
-                    values.as_ref(),
                 )
                 .await
                 .context("computing email_template diff")?;
@@ -171,44 +144,16 @@ pub async fn run(
     print!("{formatted}");
 
     if let Some(path) = &args.plan_out {
-        let mut plan = PlanFile::from_summary(
+        let plan = PlanFile::from_summary(
             &summary,
             resolved.environment_name.clone(),
             args.resource,
             args.name.clone(),
             args.archive_orphans,
         );
-        // RFC §4 Phase 6: record the per-resource consumed-values
-        // hash so apply --plan can detect a values edit (including
-        // a fan-out global edit) that happened between plan and apply.
-        plan.values_input_hashes = compute_values_input_hashes(
-            PreflightArgs {
-                config_dir,
-                resolved: &resolved,
-                content_blocks_root: &content_blocks_root,
-                email_templates_root: &email_templates_root,
-                kinds: &kinds,
-                cb_name_filter: args
-                    .name
-                    .as_deref()
-                    .filter(|_| args.resource == Some(ResourceKind::ContentBlock)),
-                et_name_filter: args
-                    .name
-                    .as_deref()
-                    .filter(|_| args.resource == Some(ResourceKind::EmailTemplate)),
-                cb_excludes: resolved.excludes_for(ResourceKind::ContentBlock),
-                et_excludes: resolved.excludes_for(ResourceKind::EmailTemplate),
-            },
-            values.as_ref(),
-        )?;
         plan.write_to(path)
             .with_context(|| format!("writing plan file to {}", path.display()))?;
-        eprintln!(
-            "✓ Wrote plan ({} op(s), {} values-hash entry(ies)) to {}",
-            plan.ops.len(),
-            plan.values_input_hashes.len(),
-            path.display()
-        );
+        eprintln!("✓ Wrote plan ({} op(s)) to {}", plan.ops.len(), path.display());
     }
 
     if args.fail_on_drift && summary.changed_count() > 0 {
@@ -276,7 +221,6 @@ pub(crate) async fn compute_content_block_plan(
     content_blocks_root: &Path,
     name_filter: Option<&str>,
     excludes: &[Regex],
-    values: Option<&ValuesFile>,
 ) -> anyhow::Result<(Vec<ResourceDiff>, ContentBlockIdIndex)> {
     let mut local = content_block_io::load_all_content_blocks(content_blocks_root)?;
     if let Some(name) = name_filter {
@@ -328,7 +272,7 @@ pub(crate) async fn compute_content_block_plan(
     drop(local_by_name);
     for cb in &mut local {
         let remote_cb = fetched.get(&cb.name);
-        if let Err(f) = resolve_content_block_with_remote(cb, remote_cb, values) {
+        if let Err(f) = resolve_content_block_with_remote(cb, remote_cb) {
             return Err(anyhow::anyhow!(
                 "content_block '{}': {} unresolved placeholder(s) after remote fetch",
                 f.resource_name,
@@ -380,7 +324,6 @@ pub(crate) async fn compute_email_template_plan(
     email_templates_root: &Path,
     name_filter: Option<&str>,
     excludes: &[Regex],
-    values: Option<&ValuesFile>,
 ) -> anyhow::Result<(Vec<ResourceDiff>, EmailTemplateIdIndex)> {
     let mut local = email_template_io::load_all_email_templates(email_templates_root)?;
     if let Some(name) = name_filter {
@@ -427,7 +370,7 @@ pub(crate) async fn compute_email_template_plan(
     drop(local_by_name);
     for et in &mut local {
         let remote_et = fetched.get(&et.name);
-        if let Err(failures) = resolve_email_template_with_remote(et, remote_et, values) {
+        if let Err(failures) = resolve_email_template_with_remote(et, remote_et) {
             return Err(anyhow::anyhow!(
                 "email_template '{}': {} field(s) failed to resolve after remote fetch",
                 et.name,

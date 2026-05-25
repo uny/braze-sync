@@ -1,14 +1,15 @@
 //! Placeholder extraction and resolution for `__BRAZESYNC.<type>.<key>__`.
 //!
-//! Syntax is fixed by RFC `feat-per-env-values.md` §2.3:
-//!   - Double-underscore envelope
-//!   - Dot namespace
-//!   - `<type>` ∈ {`lid`, `cb_id`, `custom`, `global`}
-//!   - `<key>` matches `^[a-z][a-z0-9_]*$`
+//! v0.15 model: only Braze-managed types (`lid`, `cb_id`) are
+//! recognized. Both resolve at apply/diff time from the live remote
+//! body via URL / `${NAME}` anchor correlation (see
+//! [`crate::values::braze_managed`]).
 //!
-//! This module is intentionally *resource-shape-agnostic*: it returns the
-//! `(type, key)` pairs and lets callers (Phase 2+ wiring) pick the right
-//! namespace (resource-local vs global, field-scoped vs resource-scoped).
+//! Syntax:
+//!   - Double-underscore envelope: `__BRAZESYNC.…__`
+//!   - Dot namespace
+//!   - `<type>` ∈ {`lid`, `cb_id`}
+//!   - `<key>` matches `^[a-z][a-z0-9_]*$`
 
 use regex_lite::Regex;
 use std::collections::BTreeMap;
@@ -19,8 +20,6 @@ use std::sync::OnceLock;
 pub enum PlaceholderType {
     Lid,
     CbId,
-    Custom,
-    Global,
 }
 
 impl PlaceholderType {
@@ -28,8 +27,6 @@ impl PlaceholderType {
         match self {
             PlaceholderType::Lid => "lid",
             PlaceholderType::CbId => "cb_id",
-            PlaceholderType::Custom => "custom",
-            PlaceholderType::Global => "global",
         }
     }
 
@@ -37,8 +34,6 @@ impl PlaceholderType {
         match s {
             "lid" => Some(Self::Lid),
             "cb_id" => Some(Self::CbId),
-            "custom" => Some(Self::Custom),
-            "global" => Some(Self::Global),
             _ => None,
         }
     }
@@ -70,11 +65,11 @@ fn key_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"^[a-z][a-z0-9_]*$").expect("key regex is valid"))
 }
 
-/// Loose envelope-only regex per RFC §2.3 warning rule. Catches typos like
-/// `__BRAZSYNC.…__` or unknown types like `__BRAZESYNC.url.foo__` so they
-/// can be surfaced as warnings rather than silently passing through. The
-/// inner classes deliberately allow `_` so typo-shaped placeholders whose
-/// key contains an underscore (e.g. `spring_sale`) are still caught.
+/// Loose envelope-only regex. Catches typos like `__BRAZSYNC.…__` or
+/// unknown / retired types (`__BRAZESYNC.url.foo__`,
+/// `__BRAZESYNC.custom.foo__`) so they surface as warnings rather than
+/// silently passing through. Inner classes allow `_` so typo-shaped
+/// placeholders whose key contains an underscore are still caught.
 fn loose_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -324,29 +319,26 @@ mod tests {
 
     #[test]
     fn resolves_when_all_keys_present() {
-        let body = "before __BRAZESYNC.lid.cta__ middle __BRAZESYNC.custom.host__ end";
+        let body = "before __BRAZESYNC.lid.cta__ middle __BRAZESYNC.cb_id.shared__ end";
         let map = lookup(&[
             (PlaceholderType::Lid, "cta", "ai8kexrxcp03"),
-            (PlaceholderType::Custom, "host", "api-prod.example.com"),
+            (PlaceholderType::CbId, "shared", "cb42"),
         ]);
         let resolved = resolve_placeholders(body, &map).unwrap();
-        assert_eq!(
-            resolved,
-            "before ai8kexrxcp03 middle api-prod.example.com end"
-        );
+        assert_eq!(resolved, "before ai8kexrxcp03 middle cb42 end");
     }
 
     #[test]
-    fn resolves_repeated_keys_to_same_value() {
-        let body = "__BRAZESYNC.global.host__/a __BRAZESYNC.global.host__/b";
-        let map = lookup(&[(PlaceholderType::Global, "host", "example.com")]);
+    fn resolves_repeated_cb_id_to_same_value() {
+        let body = "{{__BRAZESYNC.cb_id.shared__}}/a {{__BRAZESYNC.cb_id.shared__}}/b";
+        let map = lookup(&[(PlaceholderType::CbId, "shared", "cb42")]);
         let resolved = resolve_placeholders(body, &map).unwrap();
-        assert_eq!(resolved, "example.com/a example.com/b");
+        assert_eq!(resolved, "{{cb42}}/a {{cb42}}/b");
     }
 
     #[test]
     fn aggregates_unresolved_keys() {
-        let body = "__BRAZESYNC.lid.a__ __BRAZESYNC.cb_id.b__ __BRAZESYNC.custom.c__";
+        let body = "__BRAZESYNC.lid.a__ __BRAZESYNC.cb_id.b__ __BRAZESYNC.cb_id.c__";
         let map = lookup(&[(PlaceholderType::Lid, "a", "ai8kexrxcp03")]);
         let err = resolve_placeholders(body, &map).unwrap_err();
         assert_eq!(err.len(), 2);
@@ -358,7 +350,7 @@ mod tests {
             })
             .collect();
         assert!(keys.contains(&(PlaceholderType::CbId, "b".to_string())));
-        assert!(keys.contains(&(PlaceholderType::Custom, "c".to_string())));
+        assert!(keys.contains(&(PlaceholderType::CbId, "c".to_string())));
     }
 
     #[test]
@@ -469,18 +461,18 @@ mod tests {
         // Recovery is gated on the v0.14.2 empty-slug fallbacks
         // (`lid.link_`, `cb_id.cb_`); any other `(type, key)` must
         // leave a trailing `_<text>` in the surrounding body.
-        let body = "__BRAZESYNC.custom.foo___bar";
-        let ps = extract_placeholders(body);
-        assert_eq!(ps.len(), 1);
-        assert_eq!(ps[0].key, "foo");
-        assert_eq!(ps[0].ty, PlaceholderType::Custom);
-        assert_eq!(&body[ps[0].end..], "_bar");
-
         let body = "__BRAZESYNC.lid.other___tail";
         let ps = extract_placeholders(body);
         assert_eq!(ps.len(), 1);
         assert_eq!(ps[0].key, "other");
         assert_eq!(&body[ps[0].end..], "_tail");
+
+        let body = "__BRAZESYNC.cb_id.shared___bar";
+        let ps = extract_placeholders(body);
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].key, "shared");
+        assert_eq!(ps[0].ty, PlaceholderType::CbId);
+        assert_eq!(&body[ps[0].end..], "_bar");
     }
 
     #[test]
@@ -507,12 +499,12 @@ mod tests {
 
     #[test]
     fn underscored_keys_still_extract() {
-        // Sanity: legitimate underscored keys (RFC §2.3 allows them) are
-        // not broken by the boundary-respecting parser.
-        let body = "__BRAZESYNC.lid.spring_sale__ x __BRAZESYNC.custom.api_host__";
+        // Sanity: legitimate underscored keys are not broken by the
+        // boundary-respecting parser.
+        let body = "__BRAZESYNC.lid.spring_sale__ x __BRAZESYNC.cb_id.promo_banner__";
         let ps = extract_placeholders(body);
         assert_eq!(ps.len(), 2);
         assert_eq!(ps[0].key, "spring_sale");
-        assert_eq!(ps[1].key, "api_host");
+        assert_eq!(ps[1].key, "promo_banner");
     }
 }
