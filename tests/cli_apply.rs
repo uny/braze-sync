@@ -1668,13 +1668,28 @@ async fn content_block_apply_falls_back_when_remote_has_fewer_links() {
     );
 
     tokio::task::spawn_blocking(move || {
-        Command::cargo_bin("braze-sync")
+        let assert = Command::cargo_bin("braze-sync")
             .unwrap()
             .env("BRAZE_API_KEY", "test-key")
             .args(["--config", config_path.to_str().unwrap()])
             .args(["apply", "--resource", "content_block", "--confirm"])
             .assert()
             .success();
+        let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+        // The operator-facing Notice block must summarize the fallback
+        // so blind `apply --confirm` runs surface the structural drift.
+        assert!(
+            stderr.contains("Notice: 1 link(s) resolved with fallback lid"),
+            "expected fallback Notice in stderr, got:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("content_block 'promo'"),
+            "expected resource scope in Notice, got:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("https://example.com/cta") && stderr.contains("'cta'"),
+            "expected URL→fallback mapping in Notice, got:\n{stderr}"
+        );
     })
     .await
     .unwrap();

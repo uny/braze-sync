@@ -22,6 +22,7 @@ use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::error::Error;
 use crate::format::OutputFormat;
 use crate::resource::ResourceKind;
+use crate::values::{format_fallback_reports, FallbackReport};
 use anyhow::{anyhow, Context as _};
 use clap::Args;
 use std::path::{Path, PathBuf};
@@ -95,6 +96,7 @@ pub async fn run(
     let mut summary = DiffSummary::default();
     let mut content_block_id_index: Option<ContentBlockIdIndex> = None;
     let mut email_template_id_index: Option<EmailTemplateIdIndex> = None;
+    let mut fallback_reports: Vec<FallbackReport> = Vec::new();
     for kind in &kinds {
         let kind = *kind;
         if warn_if_name_excluded(kind, args.name.as_deref(), resolved.excludes_for(kind)) {
@@ -113,7 +115,7 @@ pub async fn run(
                 summary.diffs.extend(diffs);
             }
             ResourceKind::ContentBlock => {
-                let (diffs, idx) = compute_content_block_plan(
+                let (diffs, idx, reports) = compute_content_block_plan(
                     &client,
                     &content_blocks_root,
                     args.name.as_deref(),
@@ -122,10 +124,11 @@ pub async fn run(
                 .await
                 .context("computing content_block plan")?;
                 summary.diffs.extend(diffs);
+                fallback_reports.extend(reports);
                 content_block_id_index = Some(idx);
             }
             ResourceKind::EmailTemplate => {
-                let (diffs, idx) = compute_email_template_plan(
+                let (diffs, idx, reports) = compute_email_template_plan(
                     &client,
                     &email_templates_root,
                     args.name.as_deref(),
@@ -134,6 +137,7 @@ pub async fn run(
                 .await
                 .context("computing email_template plan")?;
                 summary.diffs.extend(diffs);
+                fallback_reports.extend(reports);
                 email_template_id_index = Some(idx);
             }
             ResourceKind::CustomAttribute => {
@@ -195,6 +199,10 @@ pub async fn run(
     };
     eprintln!("{mode_label}");
     print!("{}", format.formatter().format(&summary));
+    let fallback_block = format_fallback_reports(&fallback_reports);
+    if !fallback_block.is_empty() {
+        eprint!("{fallback_block}");
+    }
 
     // Print the fresh plan first so the operator sees it even on mismatch.
     if let Some(saved) = &saved_plan {

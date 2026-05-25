@@ -35,6 +35,21 @@ pub struct PreparedTemplate {
     /// Non-fatal warnings — ambiguous URL matches, count mismatches,
     /// stripped cb_id filters on new resources.
     pub warnings: Vec<String>,
+    /// Drift-fallback `lid` values: template placeholders that had no
+    /// matching remote anchor and were resolved with a generated slug.
+    /// Brand-new-resource fallbacks are *not* recorded here — they are
+    /// the expected path and would be noise. Populated only when a
+    /// remote body was provided but came up short.
+    pub fallbacks: Vec<LidFallback>,
+}
+
+/// A single drift-fallback assignment. `anchor` is the URL anchor when
+/// available (HTML / plaintext fields); `None` for positional contexts
+/// like subject / preheader where the placeholder has no URL anchor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LidFallback {
+    pub anchor: Option<String>,
+    pub value: String,
 }
 
 /// Resolve every `__BRAZESYNC__` in `template` against `remote`.
@@ -55,6 +70,7 @@ pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> 
             body: template.to_string(),
             errors,
             warnings: Vec::new(),
+            fallbacks: Vec::new(),
         };
     }
 
@@ -62,6 +78,7 @@ pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> 
         Some(_) => (template.to_string(), Vec::new()),
         None => strip_cb_id_filters(template),
     };
+    let mut fallbacks: Vec<LidFallback> = Vec::new();
 
     // Map each `__BRAZESYNC__` occurrence in `body` to its resolved
     // value. None entries are recorded as errors instead.
@@ -85,6 +102,7 @@ pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> 
             remote_body,
             field,
             &mut warnings,
+            &mut fallbacks,
         ),
         None => fallback_lid_batch(&body, &placeholders, &lid_indices, field),
     };
@@ -139,6 +157,7 @@ pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> 
         body: out,
         errors,
         warnings,
+        fallbacks,
     }
 }
 
@@ -151,12 +170,20 @@ fn resolve_lid_batch(
     remote: &str,
     field: FieldKind,
     warnings: &mut Vec<String>,
+    fallbacks: &mut Vec<LidFallback>,
 ) -> Vec<Option<String>> {
     if lid_indices.is_empty() {
         return Vec::new();
     }
     if !field.supports_html_anchor() && !field.supports_plaintext_anchor() {
-        return resolve_lid_positional(placeholders, lid_indices, remote, field, warnings);
+        return resolve_lid_positional(
+            placeholders,
+            lid_indices,
+            remote,
+            field,
+            warnings,
+            fallbacks,
+        );
     }
 
     let remote_pairs: Vec<LidCorrelation> = if field.supports_html_anchor() {
@@ -223,6 +250,10 @@ fn resolve_lid_batch(
                      using fallback value '{fallback}' (new link; Braze will \
                      reassign on first dashboard save)"
                 ));
+                fallbacks.push(LidFallback {
+                    anchor: Some(url.clone()),
+                    value: fallback.clone(),
+                });
                 out.push(Some(fallback));
             }
         }
@@ -263,6 +294,7 @@ fn resolve_lid_positional(
     remote: &str,
     field: FieldKind,
     warnings: &mut Vec<String>,
+    fallbacks: &mut Vec<LidFallback>,
 ) -> Vec<Option<String>> {
     let remote_values = extract_lid_values_unanchored(remote);
     let field_label = match field {
@@ -291,7 +323,14 @@ fn resolve_lid_positional(
     for _ in lid_indices {
         match iter.next() {
             Some(v) => out.push(Some(v)),
-            None => out.push(Some(fallback_lid_for_url(None, &mut used, &mut seq))),
+            None => {
+                let v = fallback_lid_for_url(None, &mut used, &mut seq);
+                fallbacks.push(LidFallback {
+                    anchor: None,
+                    value: v.clone(),
+                });
+                out.push(Some(v));
+            }
         }
     }
     out

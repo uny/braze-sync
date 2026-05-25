@@ -26,6 +26,26 @@ file formats, JSON output, exit codes) for the full v1.x line.
   for the remaining failure mode — a lid placeholder with no URL
   anchor at all. Fixes #52.
 
+- **`diff` and `apply` now print a "Notice" block summarizing any
+  drift-fallback `lid` assignments**, scoped per resource (and field
+  for email_template), with the URL anchor → fallback value mapping.
+  Surfaces what would otherwise hide inside warning noise so an
+  operator running blind `apply --confirm` still sees which links the
+  local template introduced that the remote didn't carry.
+  Brand-new-resource fallbacks are intentionally not listed (they're
+  the expected path).
+
+### Fixed
+
+- **Fallback `lid` values can no longer collide with remote-resolved
+  values.** Previously, if the remote happened to assign lid
+  `'checkout'` to one URL and the local template introduced a new
+  `/checkout` link, the fallback URL-slug `'checkout'` would land in
+  the POSTed body alongside the real one — corrupting Braze's
+  per-link analytics. The fallback generator now seeds its dedupe
+  map with every remote lid value so collisions get the standard
+  `_2`, `_3`, … suffix.
+
 ## [0.16.0] — 2026-05-25
 
 ### Changed (breaking)
