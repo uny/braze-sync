@@ -87,8 +87,8 @@ pub fn templatize_body(body: &str, field: FieldKind) -> TemplatizedField {
         if matches!(field, FieldKind::EmailSubject | FieldKind::EmailPreheader) {
             warnings.push(format!(
                 "lid '{value}' detected in subject/preheader (key '{key}'); \
-                 no URL anchor — apply/diff cannot resolve it from the remote body. \
-                 Use a distinct key per occurrence and review the rendered output."
+                 resolved positionally at apply/diff time (Nth placeholder = Nth remote lid). \
+                 Verify rendered output if the field contains multiple lid values."
             ));
         }
         spans.push(DetectionSpan {
@@ -192,9 +192,14 @@ fn name_lid_for_field(
     used: &mut BTreeMap<String, usize>,
 ) -> (Option<String>, String) {
     let url = preceding_url(body, lid_token_offset, field);
-    let key_source: String = match &url {
-        Some(u) => url_path_tail(u),
-        None => String::new(),
+    // Subject/preheader have no anchors; use a stable field-scoped base
+    // so the generated keys are self-describing rather than the generic
+    // `link` fallback shared with anchor-less HTML.
+    let key_source: String = match (&url, field) {
+        (Some(u), _) => url_path_tail(u),
+        (None, FieldKind::EmailSubject) => "subject_lid".to_string(),
+        (None, FieldKind::EmailPreheader) => "preheader_lid".to_string(),
+        (None, _) => String::new(),
     };
     let slug = slug_for_lid(&key_source);
     let key = unique_key(slug, used);

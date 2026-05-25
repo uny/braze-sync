@@ -14,8 +14,8 @@ use std::sync::OnceLock;
 use regex_lite::Regex;
 
 use crate::values::correlation::{
-    extract_cb_id_values, extract_html_lid_values, extract_plaintext_lid_values, normalize_url,
-    CbIdCorrelation, LidCorrelation,
+    extract_cb_id_values, extract_html_lid_values, extract_lid_values_unanchored,
+    extract_plaintext_lid_values, normalize_url, CbIdCorrelation, LidCorrelation,
 };
 use crate::values::placeholder::{extract_placeholders, LookupKey, PlaceholderType};
 use crate::values::templatize::FieldKind;
@@ -131,13 +131,17 @@ fn resolve_lid_from_remote(
     out: &mut BTreeMap<LookupKey, String>,
     warnings: &mut Vec<String>,
 ) {
+    // subject / preheader: no URL anchors exist. Match remote lid values
+    // to template placeholders positionally in field-appearance order.
+    if !field.supports_html_anchor() && !field.supports_plaintext_anchor() {
+        resolve_lid_positional(template, remote, field, out, warnings);
+        return;
+    }
+
     let remote_pairs: Vec<LidCorrelation> = if field.supports_html_anchor() {
         extract_html_lid_values(remote)
-    } else if field.supports_plaintext_anchor() {
-        extract_plaintext_lid_values(remote)
     } else {
-        // subject / preheader: anchor-less. No correlation source.
-        Vec::new()
+        extract_plaintext_lid_values(remote)
     };
 
     // (template_key, optional URL anchor, byte offset) in template
@@ -149,6 +153,28 @@ fn resolve_lid_from_remote(
     let mut by_url: BTreeMap<String, std::collections::VecDeque<&LidCorrelation>> = BTreeMap::new();
     for p in &remote_pairs {
         by_url.entry(p.url.clone()).or_default().push_back(p);
+    }
+
+    // Ambiguity warning: a URL with multiple remote occurrences AND
+    // multiple template placeholders means a Dashboard-side link
+    // reorder would silently miscorrelate. Emit once per ambiguous URL.
+    let mut tmpl_per_url: BTreeMap<String, usize> = BTreeMap::new();
+    for (_, anchor, _) in &template_lids {
+        if let Some(u) = anchor {
+            *tmpl_per_url.entry(u.clone()).or_insert(0) += 1;
+        }
+    }
+    for (url, bucket) in &by_url {
+        let tmpl_count = tmpl_per_url.get(url).copied().unwrap_or(0);
+        if bucket.len() > 1 && tmpl_count > 1 {
+            warnings.push(format!(
+                "URL '{url}' has {} remote lid occurrences and {tmpl_count} \
+                 template placeholders — using positional FIFO match. \
+                 If links were reordered in Braze, lid values may be assigned \
+                 to the wrong placeholder.",
+                bucket.len()
+            ));
+        }
     }
 
     for (key, anchor, _offset) in template_lids {
@@ -172,6 +198,45 @@ fn resolve_lid_from_remote(
             continue;
         };
         out.insert((PlaceholderType::Lid, key), pick.value.clone());
+    }
+}
+
+/// Positional lid resolution for fields without URL anchors
+/// (subject / preheader). Maps the Nth template lid placeholder to the
+/// Nth `| lid: '…'` value in the remote field. Counts mismatch is a
+/// warning, not a fatal error — leftover unresolved placeholders will
+/// still surface via `resolve_placeholders` if they remain unfilled.
+fn resolve_lid_positional(
+    template: &str,
+    remote: &str,
+    field: FieldKind,
+    out: &mut BTreeMap<LookupKey, String>,
+    warnings: &mut Vec<String>,
+) {
+    let template_keys: Vec<String> = extract_placeholders(template)
+        .into_iter()
+        .filter(|p| matches!(p.ty, PlaceholderType::Lid))
+        .map(|p| p.key)
+        .collect();
+    if template_keys.is_empty() {
+        return;
+    }
+    let remote_values = extract_lid_values_unanchored(remote);
+    let field_label = match field {
+        FieldKind::EmailSubject => "subject",
+        FieldKind::EmailPreheader => "preheader",
+        _ => "field",
+    };
+    if remote_values.len() != template_keys.len() {
+        warnings.push(format!(
+            "{field_label} has {} lid placeholder(s) but remote body has {} lid value(s); \
+             positional match may misalign — review rendered output",
+            template_keys.len(),
+            remote_values.len()
+        ));
+    }
+    for (key, value) in template_keys.into_iter().zip(remote_values.into_iter()) {
+        out.insert((PlaceholderType::Lid, key), value);
     }
 }
 

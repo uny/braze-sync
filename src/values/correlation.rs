@@ -133,6 +133,16 @@ pub fn extract_plaintext_lid_values(body: &str) -> Vec<LidCorrelation> {
     pair_urls_with_lids(plaintext_url_iter(body), body)
 }
 
+/// Extract raw lid values in field appearance order without any URL
+/// anchoring. Used for subject / preheader where no anchor exists; the
+/// caller matches template placeholders to remote values positionally.
+pub fn extract_lid_values_unanchored(body: &str) -> Vec<String> {
+    lid_value_re()
+        .captures_iter(body)
+        .filter_map(|c| c.get(1).or(c.get(2)).map(|m| m.as_str().to_string()))
+        .collect()
+}
+
 fn href_iter(body: &str) -> Vec<(usize, String)> {
     href_re()
         .captures_iter(body)

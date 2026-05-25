@@ -108,13 +108,23 @@ rm -rf values/
 
 ## Known limitations
 
-- **Subject / preheader `lid` cannot be auto-resolved.** There is no
-  URL anchor in those fields, so a `__BRAZESYNC.lid.*__` placeholder
-  there will fail resolution. `templatize` warns about this at
-  detection time.
+- **Subject / preheader `lid` is resolved positionally.** Those fields
+  have no URL anchor, so the Nth `__BRAZESYNC.lid.*__` placeholder is
+  paired with the Nth `| lid: '…'` value in the remote field. If the
+  placeholder count and remote value count differ, the resolver emits
+  a warning and any leftover placeholders fail at resolve time.
 - **Two placeholders sharing one URL** are resolved positionally
-  (template appearance order → remote appearance order). Use distinct
-  keys per occurrence to keep the mapping deterministic.
+  (template appearance order → remote appearance order). When a URL has
+  multiple remote occurrences *and* multiple template placeholders, the
+  resolver emits an ambiguity warning so a dashboard-side link reorder
+  cannot silently miscorrelate. Use distinct keys per occurrence when
+  the mapping must be deterministic regardless of remote order.
 - **Structural drift between local and remote** (e.g. the dashboard
   removed a tracked link your template still references) aborts the
   apply with a clear error pointing at the unresolvable placeholder.
+
+All resolve-time warnings are written to stderr scoped by resource
+(and field for email_template), so `URL anchor 'X' not found in remote
+body`, `cb_id filter stripped for new resource`, and the positional /
+ambiguity warnings above each carry the resource + field they came
+from. Pipe stderr through your CI logger to capture them.
