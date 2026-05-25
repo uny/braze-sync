@@ -1,14 +1,5 @@
-//! `braze-sync templatize` — one-shot migration from raw lid/cb_id
-//! bodies to templated bodies.
-//!
-//! v0.15 model: detection rewrites `| lid: 'X'` and
-//! `{{content_blocks.${NAME} | id: 'cbN'}}` to `__BRAZESYNC.*__`
-//! placeholders. The raw values are NOT persisted to values yaml —
-//! lid / cb_id resolution is deferred to apply/diff time which fetches
-//! the live values from the remote body. Per-env values files are only
-//! needed if the operator adds `custom` / `global` entries manually.
-//!
-//! Operates on local files only — no Braze API calls.
+//! `braze-sync templatize` — one-shot local rewrite of raw lid/cb_id
+//! literals to `__BRAZESYNC.*__` placeholders. No Braze API calls.
 
 use std::path::Path;
 

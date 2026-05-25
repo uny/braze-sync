@@ -85,8 +85,8 @@ pub enum Command {
     Apply(apply::ApplyArgs),
     /// Validate local files (no Braze API access required)
     Validate(validate::ValidateArgs),
-    /// Migrate raw lid/cb_id bodies into templated bodies + per-env values.
-    /// Local-only operation; no Braze API access required.
+    /// Rewrite raw lid/cb_id literals to `__BRAZESYNC.*__` placeholders.
+    /// Local-only; no Braze API access required.
     Templatize(templatize::TemplatizeArgs),
 }
 

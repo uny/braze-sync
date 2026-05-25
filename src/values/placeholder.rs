@@ -15,7 +15,6 @@ use regex_lite::Regex;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-/// Placeholder type. Matches RFC §2.3 enumeration exactly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PlaceholderType {
     Lid,
@@ -78,28 +77,10 @@ fn loose_re() -> &'static Regex {
     })
 }
 
-/// Extract every strict `__BRAZESYNC.<type>.<key>__` occurrence in `body`,
-/// in order of appearance.
-///
-/// Parsing strategy: anchor on the literal `__BRAZESYNC.` prefix and the
-/// *nearest* closing `__` (left-most), so a regex with greedy `[a-z0-9_]*`
-/// can't merge two adjacent placeholders into one.
-///
-/// Legacy recovery: v0.14.2 and earlier emitted exactly two trailing-`_`
-/// keys — `lid.link_` and `cb_id.cb_` (empty-slug fallbacks; see
-/// [`slug_for_cb_id`] / [`slug_for_lid`]). The rendered envelope collapses
-/// to e.g. `…link___` (key's trailing `_` + close `__`). Recovery is
-/// scoped to those two exact `(type, key)` pairs so that hand-written
-/// bodies like `__BRAZESYNC.custom.foo___bar` continue to parse as
-/// key=`foo` + literal `_bar` (rather than silently mutating the key into
-/// `foo_`). The double-`_` guard additionally keeps
-/// `__BRAZESYNC.lid.link____bar__` parsed as key=`link` rather than
-/// absorbing the adjacent `__bar__` token.
 pub fn extract_placeholders(body: &str) -> Vec<Placeholder> {
     let mut out = Vec::new();
-    let bytes = body.as_bytes();
     let mut i = 0;
-    while i + PREFIX.len() <= bytes.len() {
+    while i + PREFIX.len() <= body.len() {
         let Some(rel) = body[i..].find(PREFIX) else {
             break;
         };
@@ -109,23 +90,13 @@ pub fn extract_placeholders(body: &str) -> Vec<Placeholder> {
             break;
         };
         let close_start = inner_start + rel_close;
-        let mut end = close_start + CLOSE.len();
+        let end = close_start + CLOSE.len();
         let inner = &body[inner_start..close_start];
         if let Some((ty_str, key)) = inner.split_once('.') {
             if let (Some(ty), true) = (PlaceholderType::parse(ty_str), key_re().is_match(key)) {
-                let is_legacy_empty_slug = (ty == PlaceholderType::Lid && key == "link")
-                    || (ty == PlaceholderType::CbId && key == "cb");
-                let mut key = key.to_string();
-                if is_legacy_empty_slug
-                    && bytes.get(end) == Some(&b'_')
-                    && bytes.get(end + 1) != Some(&b'_')
-                {
-                    key.push('_');
-                    end += 1;
-                }
                 out.push(Placeholder {
                     ty,
-                    key,
+                    key: key.to_string(),
                     start,
                     end,
                 });
@@ -141,7 +112,6 @@ pub fn extract_placeholders(body: &str) -> Vec<Placeholder> {
 }
 
 /// Find loose envelope matches that don't satisfy the strict pattern.
-/// Caller surfaces these as warnings (RFC §2.3).
 pub fn find_suspicious_placeholders(body: &str) -> Vec<String> {
     let strict_spans: Vec<(usize, usize)> = extract_placeholders(body)
         .into_iter()
@@ -161,8 +131,6 @@ pub fn find_suspicious_placeholders(body: &str) -> Vec<String> {
         .collect()
 }
 
-/// What the resolver couldn't satisfy. Aggregated by the pre-flight phase
-/// (RFC §2.4 / §3 Q7) so apply abort can report every failure at once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolutionError {
     UnknownKey {
@@ -170,29 +138,17 @@ pub enum ResolutionError {
         key: String,
         start: usize,
     },
-    /// Same `lid` key referenced more than once in a single body / field.
-    /// RFC §5 edge case: lid is a per-click-context ID so re-use is
-    /// conceptually wrong — abort rather than substitute the same value.
-    /// `occurrences` holds the byte offsets of every reference so the
-    /// failure report can point operators at the duplicates directly.
+    /// lid is per-click-context — reuse of the same key is an error.
     DuplicateLidKey {
         key: String,
         occurrences: Vec<usize>,
     },
 }
 
-/// Flat key for the resolver's lookup table.
-///
-/// Phase 1 deliberately stays resource-shape-agnostic: callers supply a
-/// flat `(type, key) -> value` map and the resolver doesn't know whether
-/// it came from a resource-local namespace, a field-level namespace, or
-/// the `globals.custom` scope. Phase 2+ wiring composes the table from
-/// the right places per RFC §2.2.
 pub type LookupKey = (PlaceholderType, String);
 
 /// Resolve every placeholder in `body` against `lookup`. Returns the
-/// resolved body on success, or every unresolved placeholder on failure
-/// (errors are aggregated, never short-circuited — matches §3 Q7).
+/// resolved body on success, or every unresolved placeholder on failure.
 pub fn resolve_placeholders(
     body: &str,
     lookup: &BTreeMap<LookupKey, String>,
@@ -429,26 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_underscore_key_extracts_when_envelope_appears_to_have_three_underscores() {
-        // Regression for v0.14.2 templatize output: when a URL slug is
-        // empty the fallback key is `link_`, and the rendered envelope
-        // collapses to `___` (close `__` + trailing `_` from the key).
-        // Greedy-rightmost parse must pick key=`link_`.
-        let body = "lid: '__BRAZESYNC.lid.link___'";
-        let ps = extract_placeholders(body);
-        assert_eq!(ps.len(), 1);
-        assert_eq!(ps[0].key, "link_");
-        assert_eq!(ps[0].ty, PlaceholderType::Lid);
-    }
-
-    #[test]
-    fn placeholder_followed_by_unrelated_double_underscore_token_does_not_absorb_it() {
-        // Regression: an earlier right-most-close strategy would greedily
-        // extend the key across any adjacent `[a-z0-9_]+__` token, e.g.
-        // Python `__init__` or Markdown bold immediately after a
-        // placeholder. The parser must stop at the nearest `__` close
-        // (with at most one trailing `_` for legacy recovery) and leave
-        // the rest of the body untouched.
+    fn stops_at_nearest_close_envelope() {
         let body = "__BRAZESYNC.lid.foo____bar__";
         let ps = extract_placeholders(body);
         assert_eq!(ps.len(), 1);
@@ -457,44 +394,13 @@ mod tests {
     }
 
     #[test]
-    fn non_legacy_key_followed_by_underscore_text_is_not_absorbed() {
-        // Recovery is gated on the v0.14.2 empty-slug fallbacks
-        // (`lid.link_`, `cb_id.cb_`); any other `(type, key)` must
-        // leave a trailing `_<text>` in the surrounding body.
-        let body = "__BRAZESYNC.lid.other___tail";
-        let ps = extract_placeholders(body);
-        assert_eq!(ps.len(), 1);
-        assert_eq!(ps[0].key, "other");
-        assert_eq!(&body[ps[0].end..], "_tail");
-
-        let body = "__BRAZESYNC.cb_id.shared___bar";
-        let ps = extract_placeholders(body);
-        assert_eq!(ps.len(), 1);
-        assert_eq!(ps[0].key, "shared");
-        assert_eq!(ps[0].ty, PlaceholderType::CbId);
-        assert_eq!(&body[ps[0].end..], "_bar");
-    }
-
-    #[test]
-    fn cb_id_empty_slug_fallback_extracts_with_trailing_underscore() {
-        let body = "__BRAZESYNC.cb_id.cb___";
-        let ps = extract_placeholders(body);
-        assert_eq!(ps.len(), 1);
-        assert_eq!(ps[0].key, "cb_");
-        assert_eq!(ps[0].ty, PlaceholderType::CbId);
-    }
-
-    #[test]
-    fn unresolved_trailing_underscore_key_reports_full_key() {
-        // If `link_` isn't in the values map, the error must name
-        // `link_` (not `link`) so the operator can fix the right entry.
+    fn triple_underscore_parses_as_key_plus_trailing() {
+        // `__BRAZESYNC.lid.link___` → key=`link`, remaining `_`
         let body = "__BRAZESYNC.lid.link___";
-        let map = lookup(&[(PlaceholderType::Lid, "ok", "ai8kexrxcp03")]);
-        let err = resolve_placeholders(body, &map).unwrap_err();
-        assert!(err.iter().any(|e| matches!(
-            e,
-            ResolutionError::UnknownKey { key, .. } if key == "link_"
-        )));
+        let ps = extract_placeholders(body);
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].key, "link");
+        assert_eq!(&body[ps[0].end..], "_");
     }
 
     #[test]

@@ -43,9 +43,6 @@ pub async fn run(
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
-    // v0.15: export no longer writes back to values yaml — lid / cb_id
-    // are Braze-managed and resolved at apply/diff time from the remote
-    // body; `custom` / `global` are user-managed and never auto-refreshed.
     let mut total_written: usize = 0;
     for kind in kinds {
         // `custom_attribute` ignores `--name` (registry is a single file),

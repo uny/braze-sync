@@ -1,10 +1,4 @@
 //! Wiring layer between [`crate::values`] and the diff / apply pipeline.
-//!
-//! v0.15 model: all `__BRAZESYNC.*__` placeholders are Braze-managed
-//! (`lid` / `cb_id`) and resolved at apply/diff time from the freshly-
-//! fetched remote body via URL / `${NAME}` anchor correlation. There
-//! is no values yaml, no pre-flight gate, no values_input_hash —
-//! resolution failures surface at compute-plan time with full context.
 
 use std::collections::BTreeMap;
 

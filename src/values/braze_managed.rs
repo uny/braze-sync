@@ -1,31 +1,12 @@
 //! Runtime resolution of Braze-managed placeholders (`lid` / `cb_id`).
 //!
-//! v0.15 model: lid / cb_id values are Braze-owned and never stored in
-//! values yaml. They are resolved at apply/diff time from the remote
-//! body via URL / `${NAME}` anchor correlation.
+//! Resolved at apply/diff time from the remote body via URL / `${NAME}`
+//! anchor correlation.
 //!
-//! ## Inputs
-//! - The local **templatized body** (`__BRAZESYNC.lid.<key>__`,
-//!   `__BRAZESYNC.cb_id.<key>__`).
-//! - The **remote body** just fetched from Braze (carrying live lid /
-//!   cb_id values).
-//! - The [`FieldKind`] (so the anchor scan knows whether to look for
-//!   HTML hrefs, plaintext URLs, etc.).
-//!
-//! ## Outputs
-//! A [`PreparedTemplate`]: a possibly-rewritten body plus a partial
-//! `(type, key) -> value` lookup that the integration layer merges into
-//! the values-yaml-sourced lookup before running `resolve_placeholders`.
-//!
-//! ## New-resource fallback (no remote)
-//! - **lid**: substitute the placeholder key itself as the lid value
-//!   (e.g. `__BRAZESYNC.lid.spring_sale__` → `spring_sale`). Braze
-//!   accepts arbitrary lid strings on POST and reassigns to a workspace
-//!   identifier on first dashboard open; subsequent applies pick up the
-//!   reassigned value via the remote-resolve path above.
-//! - **cb_id**: strip the entire `| id: '__BRAZESYNC.cb_id.<key>__'`
-//!   filter and emit the documented `{{content_blocks.${NAME}}}` form.
-//!   Braze re-derives a cb_id internally on save.
+//! New-resource fallback (no remote):
+//! - **lid**: placeholder key used as the value; Braze reassigns on
+//!   first dashboard open.
+//! - **cb_id**: `| id: '…'` filter stripped; Braze derives internally.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
