@@ -541,7 +541,7 @@ async fn export_content_block_without_placeholders_is_unchanged() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn export_warns_about_orphan_values_keys() {
+async fn export_leaves_legacy_values_yaml_unchanged() {
     // v0.15: export does not touch values yaml at all. A pre-existing
     // legacy `lid:` / `cb_id:` section is harmless — it is silently
     // dropped at load (use `braze-sync values cleanup` to physically

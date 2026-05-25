@@ -1568,7 +1568,7 @@ resources:
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn content_block_apply_resolves_placeholders_from_values_file() {
+async fn content_block_apply_resolves_lid_via_new_resource_fallback() {
     // New-resource path: remote is empty so lid resolves via fallback
     // to the placeholder key itself. Apply must POST the *resolved*
     // body (no `__BRAZESYNC.*__` tokens left).
@@ -1717,12 +1717,11 @@ async fn content_block_apply_works_without_values_file_when_no_placeholders() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn apply_non_cb_et_kind_ignores_malformed_values_file() {
-    // Regression: pre-flight must not parse the values file when the
-    // selected kind has no placeholder semantics. Before the fix, a
-    // malformed values/<env>.yaml aborted `apply --resource <tag|
-    // custom_attribute|catalog_schema>` even though those kinds never
-    // consume the file.
+async fn apply_non_cb_et_kind_ignores_stray_values_directory_files() {
+    // Stray files in values/ must not break unrelated commands.
+    // Before v0.15, a malformed values/<env>.yaml aborted
+    // `apply --resource custom_attribute` even though those kinds
+    // never consumed placeholders.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/custom_attributes"))

@@ -438,10 +438,9 @@ mod tests {
         let template = r#"<a href="https://x.com/cta">__BRAZESYNC.lid.cta__</a>"#;
         let remote = r#"<p>no anchor</p>"#;
         let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
-        assert!(p
+        assert!(!p
             .additions
-            .get(&(PlaceholderType::Lid, "cta".to_string()))
-            .is_none());
+            .contains_key(&(PlaceholderType::Lid, "cta".to_string())));
         assert!(p.warnings.iter().any(|w| w.contains("not found")));
     }
 
