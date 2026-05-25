@@ -79,7 +79,7 @@ pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> 
 
     let lid_values: Vec<Option<String>> = match remote {
         Some(remote_body) => resolve_lid_batch(&body, &placeholders, &lid_indices, remote_body, field, &mut warnings),
-        None => fallback_lid_batch(&body, &placeholders, &lid_indices),
+        None => fallback_lid_batch(&body, &placeholders, &lid_indices, field),
     };
 
     // cb_id resolution map (offset → value or None).
@@ -175,7 +175,7 @@ fn resolve_lid_batch(
     }
     for (url, bucket) in &by_url {
         let tmpl_count = tmpl_per_url.get(url).copied().unwrap_or(0);
-        if bucket.len() > 1 && tmpl_count > 1 {
+        if bucket.len() > 1 || (tmpl_count > 0 && bucket.len() != tmpl_count) {
             warnings.push(format!(
                 "URL '{url}' has {} remote lid occurrences and {tmpl_count} \
                  template placeholders — using positional FIFO match. \
@@ -291,12 +291,13 @@ fn fallback_lid_batch(
     body: &str,
     placeholders: &[crate::values::placeholder::Placeholder],
     lid_indices: &[usize],
+    field: FieldKind,
 ) -> Vec<Option<String>> {
     let mut used: BTreeMap<String, usize> = BTreeMap::new();
     let mut seq = 0usize;
     let mut out = Vec::with_capacity(lid_indices.len());
     for &i in lid_indices {
-        let anchor = lid_anchor_for(body, placeholders[i].start, FieldKind::ContentBlock);
+        let anchor = lid_anchor_for(body, placeholders[i].start, field);
         let base = match anchor.as_deref() {
             Some(u) => {
                 let tail = url_path_tail(u);
@@ -599,5 +600,17 @@ mod tests {
         assert!(p.errors.is_empty(), "{:?}", p.errors);
         assert!(p.body.contains("'firstval123'"));
         assert!(p.body.contains("'secondval2b'"));
+    }
+
+    #[test]
+    fn new_resource_plaintext_lid_uses_url_slug() {
+        let template = "Visit https://x.com/spring-sale {{x | lid: '__BRAZESYNC__'}} now";
+        let p = prepare_field(template, None, FieldKind::EmailPlainBody);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(
+            p.body.contains("'spring_sale'"),
+            "plaintext URL slug must be used, got: {}",
+            p.body
+        );
     }
 }

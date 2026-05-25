@@ -2,7 +2,7 @@
 
 use crate::resource::{ContentBlock, EmailTemplate};
 use crate::values::braze_managed::prepare_field;
-use crate::values::placeholder::{has_placeholders, ResolutionError};
+use crate::values::placeholder::ResolutionError;
 use crate::values::templatize::FieldKind;
 
 /// One resource's worth of placeholder failures, ready to be folded
@@ -131,7 +131,7 @@ pub fn resolve_email_template_with_remote(
 /// Cheap pre-filter: a body needs resolution if it carries the strict
 /// token *or* a retired-namespace token we need to surface as an error.
 fn needs_resolve(body: &str) -> bool {
-    has_placeholders(body) || body.contains("__BRAZESYNC.") || body.contains("__BRAZSYNC")
+    body.contains("__BRAZESYNC") || body.contains("__BRAZSYNC")
 }
 
 fn emit_prep_warnings(
@@ -319,5 +319,15 @@ mod tests {
             .errors
             .iter()
             .any(|e| matches!(e, ResolutionError::RetiredNamespace { .. })));
+    }
+
+    #[test]
+    fn typo_suffixed_token_is_detected() {
+        let mut block = cb("typo", "hello __BRAZESYNCTEST__ world");
+        let err = resolve_content_block_with_remote(&mut block, None).unwrap_err();
+        assert!(
+            !err.errors.is_empty(),
+            "typo-suffixed token must not pass silently"
+        );
     }
 }
