@@ -6,8 +6,6 @@
 //! responsible for joining the config directory with
 //! `resources.<kind>.path` to compute the root. This keeps `fs/` standalone
 //! testable and avoids a `fs/` ↔ `config/` cycle.
-//!
-//! See IMPLEMENTATION.md §5, §9.
 
 pub mod catalog_io;
 pub mod content_block_io;
@@ -62,14 +60,9 @@ pub(crate) fn validate_resource_name(kind_label: &str, name: &str) -> Result<()>
     Ok(())
 }
 
-/// Write `contents` to `path` via write-to-temp-then-rename so readers
-/// never see a partially-written file. Creates parent directories as needed.
-///
-/// The temp file is fsynced before the rename to ensure data reaches stable
-/// storage even on a crash between write and rename. The temp name includes
-/// the process ID to avoid collisions if two braze-sync processes write to
-/// the same workspace concurrently. Same-directory rename guarantees the
-/// operation does not cross filesystem boundaries.
+/// Write-to-temp-then-rename so readers never see a partially-written file.
+/// The temp file is fsynced before rename. The temp name includes the PID
+/// to avoid collisions with concurrent processes.
 pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     use std::io::Write;
 

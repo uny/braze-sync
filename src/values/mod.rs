@@ -1,42 +1,25 @@
-//! Per-env values: template + values separation for Braze resources.
+//! Braze-managed placeholder resolution (`__BRAZESYNC.lid.…__`,
+//! `__BRAZESYNC.cb_id.…__`).
 //!
-//! Implements RFC `docs/local/feat-per-env-values.md` Phase 1: schema +
-//! placeholder resolver. Phase 2 (apply integration), Phase 3 (export),
-//! Phase 4 (diff), Phase 6 (plan-lock) wire this module into the
-//! existing CLI surface.
-//!
-//! ## Module shape
-//!
-//! - [`schema`]: `values/<env>.yaml` deserialization and built-in shape
-//!   validation (lid format, cb_id format, key naming).
-//! - [`placeholder`]: extract and resolve `__BRAZESYNC.<type>.<key>__`
-//!   tokens in a body string. Resolution takes a flat `(type, key) -> value`
-//!   lookup so it stays resource-shape-agnostic.
+//! Resolved at apply/diff time from the freshly-fetched remote body
+//! via URL / `${NAME}` anchor correlation.
 
+pub mod braze_managed;
 pub mod correlation;
-pub mod exporter;
 pub mod integration;
 pub mod placeholder;
-pub mod schema;
 pub mod templatize;
 
+pub use braze_managed::{prepare_field, PreparedTemplate};
 pub use correlation::{
     extract_cb_id_values, extract_html_lid_values, extract_plaintext_lid_values, normalize_url,
     slug_for_cb_id, slug_for_lid, CbIdCorrelation, LidCorrelation,
 };
-pub use exporter::{refresh_content_block_values, refresh_email_template_values, ExportUpdates};
-
 pub use integration::{
-    compute_values_input_hashes, format_failures, load_values_for_env, preflight_values,
-    resolve_content_block_in_place, resolve_email_template_in_place, values_file_path,
-    PreflightArgs, ResolutionFailure,
+    format_failures, resolve_content_block_with_remote, resolve_email_template_with_remote,
+    ResolutionFailure,
 };
-
 pub use placeholder::{
     extract_placeholders, find_suspicious_placeholders, resolve_placeholders, LookupKey,
     Placeholder, PlaceholderType, ResolutionError,
-};
-pub use schema::{
-    default_values_path, CbIdEntry, ContentBlockValues, CustomEntry, EmailTemplateValues,
-    FieldValues, Globals, LidEntry, ValuesFile, SUPPORTED_VERSION,
 };

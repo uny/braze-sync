@@ -23,8 +23,7 @@ use crate::format::OutputFormat;
 use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io, tag_io};
 use crate::resource::{Catalog, ContentBlock, EmailTemplate, ResourceKind};
 use crate::values::{
-    compute_values_input_hashes, preflight_values, resolve_content_block_in_place,
-    resolve_email_template_in_place, PreflightArgs, ValuesFile,
+    format_failures, resolve_content_block_with_remote, resolve_email_template_with_remote,
 };
 use anyhow::Context as _;
 use clap::Args;
@@ -78,28 +77,6 @@ pub async fn run(
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
 
-    // Pre-flight: resolve all `__BRAZESYNC.*__` placeholders before any
-    // Braze API call (RFC `feat-per-env-values.md` §2.4). Returns the
-    // loaded values file (or None when absent and no placeholders are
-    // present), so downstream compute_*_plan calls can reuse it.
-    let values = preflight_values(PreflightArgs {
-        config_dir,
-        resolved: &resolved,
-        content_blocks_root: &content_blocks_root,
-        email_templates_root: &email_templates_root,
-        kinds: &kinds,
-        cb_name_filter: args
-            .name
-            .as_deref()
-            .filter(|_| args.resource == Some(ResourceKind::ContentBlock)),
-        et_name_filter: args
-            .name
-            .as_deref()
-            .filter(|_| args.resource == Some(ResourceKind::EmailTemplate)),
-        cb_excludes: resolved.excludes_for(ResourceKind::ContentBlock),
-        et_excludes: resolved.excludes_for(ResourceKind::EmailTemplate),
-    })?;
-
     let mut summary = DiffSummary::default();
     for kind in &kinds {
         let kind = *kind;
@@ -124,7 +101,6 @@ pub async fn run(
                     &content_blocks_root,
                     args.name.as_deref(),
                     resolved.excludes_for(ResourceKind::ContentBlock),
-                    values.as_ref(),
                 )
                 .await
                 .context("computing content_block diff")?;
@@ -136,7 +112,6 @@ pub async fn run(
                     &email_templates_root,
                     args.name.as_deref(),
                     resolved.excludes_for(ResourceKind::EmailTemplate),
-                    values.as_ref(),
                 )
                 .await
                 .context("computing email_template diff")?;
@@ -171,42 +146,18 @@ pub async fn run(
     print!("{formatted}");
 
     if let Some(path) = &args.plan_out {
-        let mut plan = PlanFile::from_summary(
+        let plan = PlanFile::from_summary(
             &summary,
             resolved.environment_name.clone(),
             args.resource,
             args.name.clone(),
             args.archive_orphans,
         );
-        // RFC §4 Phase 6: record the per-resource consumed-values
-        // hash so apply --plan can detect a values edit (including
-        // a fan-out global edit) that happened between plan and apply.
-        plan.values_input_hashes = compute_values_input_hashes(
-            PreflightArgs {
-                config_dir,
-                resolved: &resolved,
-                content_blocks_root: &content_blocks_root,
-                email_templates_root: &email_templates_root,
-                kinds: &kinds,
-                cb_name_filter: args
-                    .name
-                    .as_deref()
-                    .filter(|_| args.resource == Some(ResourceKind::ContentBlock)),
-                et_name_filter: args
-                    .name
-                    .as_deref()
-                    .filter(|_| args.resource == Some(ResourceKind::EmailTemplate)),
-                cb_excludes: resolved.excludes_for(ResourceKind::ContentBlock),
-                et_excludes: resolved.excludes_for(ResourceKind::EmailTemplate),
-            },
-            values.as_ref(),
-        )?;
         plan.write_to(path)
             .with_context(|| format!("writing plan file to {}", path.display()))?;
         eprintln!(
-            "✓ Wrote plan ({} op(s), {} values-hash entry(ies)) to {}",
+            "✓ Wrote plan ({} op(s)) to {}",
             plan.ops.len(),
-            plan.values_input_hashes.len(),
             path.display()
         );
     }
@@ -276,31 +227,12 @@ pub(crate) async fn compute_content_block_plan(
     content_blocks_root: &Path,
     name_filter: Option<&str>,
     excludes: &[Regex],
-    values: Option<&ValuesFile>,
 ) -> anyhow::Result<(Vec<ResourceDiff>, ContentBlockIdIndex)> {
     let mut local = content_block_io::load_all_content_blocks(content_blocks_root)?;
     if let Some(name) = name_filter {
         local.retain(|c| c.name == name);
     }
     local.retain(|c| !is_excluded(&c.name, excludes));
-
-    // Resolve `__BRAZESYNC.*__` placeholders before any API call so the
-    // diff compares apples to apples (resolved Git body ↔ remote body).
-    // Pre-flight in the entry layer already verifies this can't fail,
-    // but the per-resource check stays as a defense in depth — and it
-    // is the *only* gate when this helper is called from a future
-    // caller that bypasses the entry-layer pre-flight.
-    for cb in &mut local {
-        if let Err(f) = resolve_content_block_in_place(cb, values) {
-            return Err(anyhow::anyhow!(
-                "internal: unresolved placeholders in content_block '{}' \
-                 reached compute layer (pre-flight should have caught this); \
-                 {} error(s)",
-                f.resource_name,
-                f.errors.len()
-            ));
-        }
-    }
 
     let mut summaries = client.list_content_blocks().await?;
     if let Some(name) = name_filter {
@@ -339,6 +271,23 @@ pub(crate) async fn compute_content_block_plan(
         .buffer_unordered(FETCH_CONCURRENCY)
         .try_collect()
         .await?;
+
+    // Resolve `__BRAZESYNC.*__` placeholders now that the remote body
+    // is in hand. lid / cb_id values come from the remote (or fallback
+    // for new resources).
+    drop(local_by_name);
+    let mut cb_failures = Vec::new();
+    for cb in &mut local {
+        let remote_cb = fetched.get(&cb.name);
+        if let Err(f) = resolve_content_block_with_remote(cb, remote_cb) {
+            cb_failures.push(f);
+        }
+    }
+    if !cb_failures.is_empty() {
+        return Err(format_failures(&cb_failures).into());
+    }
+    let local_by_name: BTreeMap<&str, &ContentBlock> =
+        local.iter().map(|c| (c.name.as_str(), c)).collect();
 
     let mut all_names: BTreeSet<&str> = BTreeSet::new();
     all_names.extend(local_by_name.keys().copied());
@@ -381,27 +330,12 @@ pub(crate) async fn compute_email_template_plan(
     email_templates_root: &Path,
     name_filter: Option<&str>,
     excludes: &[Regex],
-    values: Option<&ValuesFile>,
 ) -> anyhow::Result<(Vec<ResourceDiff>, EmailTemplateIdIndex)> {
     let mut local = email_template_io::load_all_email_templates(email_templates_root)?;
     if let Some(name) = name_filter {
         local.retain(|t| t.name == name);
     }
     local.retain(|t| !is_excluded(&t.name, excludes));
-
-    // Defense in depth — entry-layer pre-flight is the user-facing
-    // gate; this only fires when the helper is called outside that path.
-    for et in &mut local {
-        if let Err(failures) = resolve_email_template_in_place(et, values) {
-            return Err(anyhow::anyhow!(
-                "internal: unresolved placeholders in email_template '{}' \
-                 reached compute layer (pre-flight should have caught this); \
-                 {} field(s) failed",
-                et.name,
-                failures.len()
-            ));
-        }
-    }
 
     let mut summaries = client.list_email_templates().await?;
     if let Some(name) = name_filter {
@@ -438,6 +372,20 @@ pub(crate) async fn compute_email_template_plan(
         .buffer_unordered(FETCH_CONCURRENCY)
         .try_collect()
         .await?;
+
+    drop(local_by_name);
+    let mut et_failures = Vec::new();
+    for et in &mut local {
+        let remote_et = fetched.get(&et.name);
+        if let Err(failures) = resolve_email_template_with_remote(et, remote_et) {
+            et_failures.extend(failures);
+        }
+    }
+    if !et_failures.is_empty() {
+        return Err(format_failures(&et_failures).into());
+    }
+    let local_by_name: BTreeMap<&str, &EmailTemplate> =
+        local.iter().map(|t| (t.name.as_str(), t)).collect();
 
     let mut all_names: BTreeSet<&str> = BTreeSet::new();
     all_names.extend(local_by_name.keys().copied());

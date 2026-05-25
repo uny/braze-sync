@@ -1,6 +1,6 @@
 //! Catalog Schema file I/O.
 //!
-//! Layout (IMPLEMENTATION.md §9.1):
+//! Layout:
 //!
 //! ```text
 //! <catalogs_root>/
@@ -25,8 +25,7 @@ const SCHEMA_HEADER: &str =
 
 const SCHEMA_FILE_NAME: &str = "schema.yaml";
 
-/// Load every `schema.yaml` under `catalogs_root` into a `Vec<Catalog>`,
-/// sorted by catalog name for deterministic output.
+/// Sorted by catalog name for deterministic output.
 ///
 /// Behaviour:
 /// - Missing root → `Ok(vec![])`. A fresh project with no catalogs yet is a
@@ -73,12 +72,10 @@ pub fn load_all_schemas(catalogs_root: &Path) -> Result<Vec<Catalog>> {
     Ok(schemas)
 }
 
-/// Read a single `schema.yaml` by absolute path. Does not validate that
-/// the parent directory name matches `cat.name` — the caller (typically
-/// [`load_all_schemas`]) is responsible for that.
+/// Does not validate that the parent directory name matches `cat.name`
+/// — the caller (typically [`load_all_schemas`]) is responsible for that.
 ///
-/// Resource files are forward-compat permissive: unknown fields are
-/// ignored, in line with IMPLEMENTATION.md §2.5.
+/// Resource files are forward-compat permissive: unknown fields are ignored.
 pub fn read_schema_file(path: &Path) -> Result<Catalog> {
     let bytes = std::fs::read_to_string(path)?;
     let cat: Catalog = serde_norway::from_str(&bytes).map_err(|source| Error::YamlParse {
@@ -88,13 +85,11 @@ pub fn read_schema_file(path: &Path) -> Result<Catalog> {
     Ok(cat)
 }
 
-/// Write `catalog` to `<catalogs_root>/<catalog.name>/schema.yaml`,
-/// creating directories as needed. Field ordering is normalized (sorted
-/// alphabetically) for deterministic output and diff stability.
+/// Field ordering is normalized (sorted alphabetically) for deterministic
+/// output and diff stability.
 ///
-/// Rejects catalog names that contain path separators or `..` to prevent
-/// path traversal — defense in depth on top of the validate command's
-/// naming-pattern check (§7.6 / §10).
+/// Rejects catalog names that contain path separators or `..` — defense in
+/// depth on top of the validate command's naming-pattern check (§7.6 / §10).
 pub fn save_schema(catalogs_root: &Path, catalog: &Catalog) -> Result<()> {
     validate_resource_name("catalog", &catalog.name)?;
 
@@ -307,8 +302,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cat_dir = dir.path().join("future");
         std::fs::create_dir_all(&cat_dir).unwrap();
-        // future_v1_3_field is something a v1.3 binary might emit. v1.0
-        // should silently accept it per IMPLEMENTATION.md §2.5.
+        // future_v1_3_field is something a v1.3 binary might emit;
+        // the current binary should silently accept unknown fields.
         let yaml = "\
 name: future
 description: hi

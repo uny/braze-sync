@@ -1,8 +1,7 @@
-//! Email Template domain type. See IMPLEMENTATION.md §6.4.
+//! Email Template domain type.
 //!
 //! `body_plaintext` is always present (`String`, not `Option<String>`); the
-//! empty string is the legitimate value for HTML-only templates. This is a
-//! deliberate decision recorded in §17.
+//! empty string is the legitimate value for HTML-only templates.
 //!
 //! API verification (2026-04-12):
 //! - `from_address`, `from_display_name`, `reply_to` do NOT exist in Braze API

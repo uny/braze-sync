@@ -1,4 +1,4 @@
-//! Catalog Schema endpoints. See IMPLEMENTATION.md §8.3.
+//! Catalog Schema endpoints.
 //!
 //! Catalog **items** endpoints (list / upsert / delete items) are not
 //! wrapped by this client: braze-sync manages Braze configuration, not
@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 
 /// Wire shape of `GET /catalogs` and `GET /catalogs/{name}` responses.
 ///
-/// **ASSUMED** based on IMPLEMENTATION.md §8.3 and Braze public docs.
 /// If the actual shape differs, only this struct and the wrapping
 /// logic in this file need to change.
 ///
@@ -112,9 +111,8 @@ impl BrazeClient {
 
     /// `POST /catalogs/{name}/fields` — add one field to a catalog schema.
     ///
-    /// **ASSUMED** wire format `{"fields": [{"name": "...", "type": "..."}]}`
-    /// per IMPLEMENTATION.md §8.3 + Braze public docs. v0.1.0 sends one
-    /// POST per added field.
+    /// Wire format: `{"fields": [{"name": "...", "type": "..."}]}`.
+    /// Sends one POST per added field.
     pub async fn add_catalog_field(
         &self,
         catalog_name: &str,

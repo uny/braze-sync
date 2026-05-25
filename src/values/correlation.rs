@@ -1,28 +1,18 @@
-//! Remote-body correlation primitives for `export` (RFC §2.5).
+//! Remote-body correlation primitives.
 //!
-//! These functions inspect a *remote* body (HTML, plaintext, subject,
-//! preheader) and return the per-occurrence lid / cb_id values together
-//! with the anchor used to correlate them back to the values file
-//! entries.
+//! Extract lid / cb_id values from a remote body together with the
+//! anchor used to pair them with template placeholders.
 //!
-//! - HTML lid: anchor = the URL of the immediately-preceding
-//!   `<a href="...">`. Multiple `<a>`s with the same URL fall back to
-//!   appearance order (RFC §2.5 "Key 対応の曖昧性").
-//! - Plaintext lid: anchor = the raw URL (`https?://…`) immediately
-//!   preceding the `| lid: '…'` token; trailing punctuation is trimmed
-//!   (RFC §5 Edge case for `]`/`)` etc.).
-//! - subject / preheader lid: anchor = adjacent Liquid identifiers
-//!   inside the same `{{…}}` block. Phase 3 first cut covers the URL
-//!   variants; the anchor-only variant is supported by carrying the
-//!   anchor string verbatim from the existing values entry.
-//! - cb_id: anchor = the `${NAME}` inside the same Liquid token as
-//!   `| id: 'cbN'`. NAME is the source for the slug-derived key.
+//! - HTML lid: anchor = the URL attribute of the enclosing element.
+//!   Same-URL occurrences are matched by appearance order.
+//! - Plaintext lid: anchor = the raw `https?://…` preceding the lid.
+//! - cb_id: anchor = `${NAME}` in the same Liquid include.
 
 use regex_lite::Regex;
 use std::sync::OnceLock;
 
-/// Normalize a URL for anchor comparison per RFC §2.2:
-/// keep `scheme://host/path`, drop `?query` and `#fragment`.
+/// Normalize a URL for anchor comparison: keep `scheme://host/path`,
+/// drop `?query` and `#fragment`.
 ///
 /// Returns the input unchanged if it doesn't look like a URL with a
 /// scheme — callers pass already-detected URLs, but normalizing
@@ -35,11 +25,17 @@ pub fn normalize_url(url: &str) -> String {
 fn href_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        // Tolerant of attribute order and either quote style. The href
-        // value runs up to the matching quote — Braze-issued anchor
-        // tags do not nest quotes inside the URL.
-        Regex::new(r#"(?i)<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')"#)
-            .expect("href regex is valid")
+        // Tolerant of attribute order and either quote style. Matches
+        // `href`, `src`, `action` — with an optional namespace prefix
+        // like `xlink:` or `v:` — on any element, not just `<a>`. This
+        // mirrors templatize::url_attr_re so VML / SVG CTAs whose lid
+        // sits inside a non-anchor element's href round-trip through
+        // apply/diff resolution. Leading `\s` (not `\b`) prevents
+        // `data-href`-style custom attributes from tail-matching.
+        Regex::new(
+            r#"(?i)<[a-z][a-z0-9_.:-]*\b[^>]*?\s(?:[a-z][a-z0-9_-]*:)?(?:href|src|action)\s*=\s*(?:"([^"]*)"|'([^']*)')"#,
+        )
+        .expect("href regex is valid")
     })
 }
 
@@ -82,7 +78,7 @@ fn cb_id_include_re() -> &'static Regex {
 }
 
 /// Trim trailing punctuation that a greedy URL match would otherwise
-/// swallow. Per RFC §5 Edge case, the following are *always* trimmed:
+/// swallow. The following are *always* trimmed:
 /// `.`, `,`, `;`, `:`, `!`, `?`, `>`. The closers `)` and `]` are
 /// trimmed *only* when the URL is preceded by the corresponding opener
 /// (`(` or `[`) — Markdown-style `[text](https://…)` is the motivating
@@ -181,9 +177,9 @@ fn pair_urls_with_lids(urls: Vec<(usize, String)>, body: &str) -> Vec<LidCorrela
     let mut out = Vec::new();
     for (i, (url_off, url)) in urls.iter().enumerate() {
         let next_url_off = urls.get(i + 1).map(|(o, _)| *o).unwrap_or(body.len());
-        if let Some((_, value)) = lids
+        for (_, value) in lids
             .iter()
-            .find(|(off, _)| *off > *url_off && *off < next_url_off)
+            .filter(|(off, _)| *off > *url_off && *off < next_url_off)
         {
             out.push(LidCorrelation {
                 url: url.clone(),
@@ -196,14 +192,14 @@ fn pair_urls_with_lids(urls: Vec<(usize, String)>, body: &str) -> Vec<LidCorrela
 }
 
 /// One cb_id include occurrence extracted from a remote body. Slug is
-/// the RFC §3 Q3 key derived from `${NAME}`.
+/// the key derived from `${NAME}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CbIdCorrelation {
     /// The verbatim `${NAME}` content_block name from the include.
     pub name: String,
     /// `cbN` form, e.g. `cb42`.
     pub value: String,
-    /// Slug-form key per RFC §3 Q3.
+    /// Slug-form key.
     pub key: String,
 }
 
@@ -220,14 +216,10 @@ pub fn extract_cb_id_values(body: &str) -> Vec<CbIdCorrelation> {
         .collect()
 }
 
-/// Slug a content_block name for use as a `cb_id` key per RFC §3 Q3.
+/// Slug a content_block name for use as a `cb_id` key.
 ///
-/// Keys never end in `_`: when the input slugifies to empty the result
-/// is the bare prefix (`cb`), not `cb_`. A trailing `_` followed by the
-/// placeholder envelope `__` produces three consecutive underscores in
-/// the rendered template, which is ambiguous to parse — the resolver
-/// recovers it but operators tripped over the ambiguity (see CHANGELOG
-/// for v0.14.3).
+/// Keys never end in `_` — a trailing underscore followed by the `__`
+/// envelope close produces ambiguous triple-underscores in templates.
 pub fn slug_for_cb_id(name: &str) -> String {
     let base = slug_core(name);
     if base.is_empty() {
@@ -241,7 +233,7 @@ pub fn slug_for_cb_id(name: &str) -> String {
 
 /// Slug a URL path tail or arbitrary anchor for use as a `lid` key.
 /// `link` prefix is applied when the source produces no meaningful
-/// ASCII content (RFC §3 Q3). Keys never end in `_` — see
+/// ASCII content. Keys never end in `_` — see
 /// [`slug_for_cb_id`] for the rationale.
 pub fn slug_for_lid(source: &str) -> String {
     let base = slug_core(source);
@@ -387,7 +379,7 @@ mod tests {
         assert_eq!(slug_for_lid("/spring-sale"), "spring_sale");
         assert_eq!(slug_for_lid("/"), "link");
         assert_eq!(slug_for_lid("123"), "link_123");
-        // Non-ASCII source collapses to empty per RFC §3 Q3 Unicode rule.
+        // Non-ASCII source collapses to empty Unicode rule.
         assert_eq!(slug_for_lid("プロモ"), "link");
     }
 

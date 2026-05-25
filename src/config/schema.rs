@@ -1,10 +1,8 @@
 //! Raw configuration types deserialized from `braze-sync.config.yaml`.
 //!
-//! See IMPLEMENTATION.md §10. Every struct here uses
-//! `#[serde(deny_unknown_fields)]` — the config file is the **only** place in
-//! braze-sync where unknown fields are rejected. Resource files
-//! (`schema.yaml`, `template.yaml`, etc.) stay forward-compat permissive
-//! per §2.5.
+//! Every struct here uses `#[serde(deny_unknown_fields)]` — the config file is
+//! the **only** place in braze-sync where unknown fields are rejected. Resource
+//! files (`schema.yaml`, `template.yaml`, etc.) stay forward-compat permissive.
 
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -32,19 +30,9 @@ pub struct ConfigFile {
 pub struct Defaults {}
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct EnvironmentConfig {
     pub api_endpoint: Url,
-    /// Name of the environment variable holding the Braze API key. The key
-    /// itself MUST NOT live in this file (§2.3 / §10).
     pub api_key_env: String,
-    /// Optional override for the per-env values file location. When unset
-    /// the CLI resolves `values/<env>.yaml` relative to the config dir
-    /// (per RFC `feat-per-env-values.md` §2.1). The file itself is also
-    /// optional — a missing file is OK as long as no resource body
-    /// references a `__BRAZESYNC.…__` placeholder.
-    #[serde(default)]
-    pub values_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

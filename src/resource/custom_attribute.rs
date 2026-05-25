@@ -10,7 +10,7 @@
 //! - `validate`: structural check of the local YAML registry
 //!
 //! New attributes are introduced by application code via `/users/track`,
-//! never by braze-sync. See IMPLEMENTATION.md §2.2 / §6.5 / §11.5.
+//! never by braze-sync.
 
 use serde::{Deserialize, Serialize};
 

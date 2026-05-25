@@ -10,9 +10,9 @@
 //! The split exists so tests can drive [`ConfigFile::resolve_with`] with a
 //! fake env-lookup closure instead of mutating process-global `std::env`.
 //!
-//! See IMPLEMENTATION.md §10. The api key is wrapped in
-//! [`secrecy::SecretString`] from the moment it leaves the OS so that
-//! `Debug`, `tracing`, and panic messages cannot leak it.
+//! The api key is wrapped in [`secrecy::SecretString`] from the moment
+//! it leaves the OS so that `Debug`, `tracing`, and panic messages
+//! cannot leak it.
 
 pub mod schema;
 
@@ -45,15 +45,10 @@ pub struct ResolvedConfig {
     /// [`ConfigFile::resolve_with`] so callers can look up a `&[Regex]`
     /// without recompiling on every invocation.
     pub excludes: HashMap<ResourceKind, Vec<Regex>>,
-    /// Optional explicit path to the per-env values file (RFC
-    /// `feat-per-env-values.md` §2.1). When `None`, the CLI falls back to
-    /// `values/<environment_name>.yaml` relative to the config dir.
-    pub values_file: Option<std::path::PathBuf>,
 }
 
 impl ResolvedConfig {
-    /// Compiled exclude patterns for `kind`. Returns an empty slice when
-    /// no patterns are configured.
+    /// Compiled exclude patterns for `kind`.
     pub fn excludes_for(&self, kind: ResourceKind) -> &[Regex] {
         self.excludes.get(&kind).map(Vec::as_slice).unwrap_or(&[])
     }
@@ -77,7 +72,7 @@ impl ConfigFile {
         if self.version != 1 {
             return Err(Error::Config(format!(
                 "unsupported config version {} (this binary supports version 1; \
-                 see IMPLEMENTATION.md §2.5 for the forward-compat policy)",
+                 see the forward-compat policy)",
                 self.version
             )));
         }
@@ -169,14 +164,11 @@ impl ConfigFile {
             resources: self.resources,
             naming: self.naming,
             excludes,
-            values_file: env_cfg.values_file,
         })
     }
 }
 
-/// Compile a list of raw regex patterns from a resource's
-/// `exclude_patterns` into `Regex` values. The `context` label is used
-/// in error messages (e.g. `"custom_attribute"`).
+/// `context` label is used in error messages (e.g. `"custom_attribute"`).
 pub fn compile_exclude_patterns(patterns: &[String], context: &str) -> Result<Vec<Regex>> {
     patterns
         .iter()
@@ -191,16 +183,11 @@ pub fn compile_exclude_patterns(patterns: &[String], context: &str) -> Result<Ve
         .collect()
 }
 
-/// Return `true` if `name` matches any of the compiled patterns.
 pub fn is_excluded(name: &str, patterns: &[Regex]) -> bool {
     patterns.iter().any(|r| r.is_match(name))
 }
 
-/// Load `.env` from the current working directory only — no parent
-/// traversal — to populate `std::env` before config resolution. A missing
-/// file is the common dev case and is not an error.
-///
-/// IMPLEMENTATION.md §10: via dotenvy, CWD only, no parent traversal.
+/// CWD only, no parent traversal. A missing file is not an error.
 pub fn load_dotenv() -> Result<()> {
     match dotenvy::from_path(".env") {
         Ok(()) => Ok(()),
@@ -351,22 +338,6 @@ environments:
   dev:
     api_endpoint: https://rest.fra-02.braze.eu
     api_key_env: BRAZE_DEV_API_KEY
-"#;
-        let f = write_config(yaml);
-        let err = ConfigFile::load(f.path()).unwrap_err();
-        assert!(matches!(err, Error::YamlParse { .. }), "got: {err:?}");
-    }
-
-    #[test]
-    fn rejects_legacy_environment_rate_limit_per_minute() {
-        let yaml = r#"
-version: 1
-default_environment: dev
-environments:
-  dev:
-    api_endpoint: https://rest.fra-02.braze.eu
-    api_key_env: BRAZE_DEV_API_KEY
-    rate_limit_per_minute: 30
 "#;
         let f = write_config(yaml);
         let err = ConfigFile::load(f.path()).unwrap_err();

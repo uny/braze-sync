@@ -1,4 +1,4 @@
-//! Catalog Schema diff. See IMPLEMENTATION.md §11.1.
+//! Catalog Schema diff.
 
 use crate::diff::DiffOp;
 use crate::resource::{Catalog, CatalogField};

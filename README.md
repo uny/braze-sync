@@ -8,7 +8,7 @@ synchronize it to Braze with the same workflow you'd use for
 detection in CI, and an `--allow-destructive` gate that has to be
 crossed explicitly before anything is dropped.
 
-## Status: v0.14.0 (5 resources + init + per-env values)
+## Status: 5 resources + init + Braze-managed placeholder resolution
 
 braze-sync manages Braze **configuration** as code. The five managed
 resource kinds are:
@@ -32,7 +32,7 @@ use the Braze REST API or data pipelines directly. See
 | `braze-sync diff` | Shows drift between local files and Braze |
 | `braze-sync apply` | Applies local intent to Braze (dry-run by default) |
 | `braze-sync validate` | Local-only structural and naming checks (no API call) |
-| `braze-sync templatize` | One-shot migration to per-env values (see [docs/per-env-values.md](docs/per-env-values.md)) |
+| `braze-sync templatize` | One-shot migration: rewrite raw `lid` / `cb_id` to placeholders (see [docs/per-env-values.md](docs/per-env-values.md)) |
 
 ### Content Block specifics
 
@@ -205,7 +205,7 @@ across all v1.x releases.
 | `4` | Authentication failed (invalid API key) |
 | `5` | Rate limit retries exhausted |
 | `6` | Destructive change blocked (pass `--allow-destructive`) |
-| `7` | Plan/apply mismatch (`apply --plan` integrity check, includes per-env values drift) |
+| `7` | Plan/apply mismatch (`apply --plan` ops drift) |
 
 ## Output formats
 
@@ -249,7 +249,7 @@ only need a content hash.
 - [CI integration](docs/integration.md) — drift detection and apply-on-merge workflows.
 - [Orphan tracking](docs/orphan-tracking.md) — how Content Blocks and Email Templates are handled when Braze has no DELETE.
 - [Custom Attribute registry mode](docs/registry-mode.md) — why attributes work differently and what `apply` actually does.
-- [Per-env values](docs/per-env-values.md) — template + values separation for env-specific `lid` / `cb_id` / custom values (v0.14.0).
+- [Braze-managed placeholders](docs/per-env-values.md) — how `lid` / `cb_id` are templatized in Git and resolved at apply/diff time from the live remote body.
 
 ## License
 

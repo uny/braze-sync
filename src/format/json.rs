@@ -4,7 +4,7 @@
 //! `version: 1` field on the root. New fields may be added (additive
 //! only); existing fields cannot be renamed or removed without bumping
 //! `version`. CI consumers can branch on `version` to support a future
-//! v2 schema. See IMPLEMENTATION.md §12 / §2.5.
+//! v2 schema.
 //!
 //! Wire types are deliberately separate from `crate::diff` /
 //! `crate::resource` types so refactoring a domain type cannot

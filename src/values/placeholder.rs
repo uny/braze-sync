@@ -1,26 +1,24 @@
 //! Placeholder extraction and resolution for `__BRAZESYNC.<type>.<key>__`.
 //!
-//! Syntax is fixed by RFC `feat-per-env-values.md` §2.3:
-//!   - Double-underscore envelope
-//!   - Dot namespace
-//!   - `<type>` ∈ {`lid`, `cb_id`, `custom`, `global`}
-//!   - `<key>` matches `^[a-z][a-z0-9_]*$`
+//! v0.15 model: only Braze-managed types (`lid`, `cb_id`) are
+//! recognized. Both resolve at apply/diff time from the live remote
+//! body via URL / `${NAME}` anchor correlation (see
+//! [`crate::values::braze_managed`]).
 //!
-//! This module is intentionally *resource-shape-agnostic*: it returns the
-//! `(type, key)` pairs and lets callers (Phase 2+ wiring) pick the right
-//! namespace (resource-local vs global, field-scoped vs resource-scoped).
+//! Syntax:
+//!   - Double-underscore envelope: `__BRAZESYNC.…__`
+//!   - Dot namespace
+//!   - `<type>` ∈ {`lid`, `cb_id`}
+//!   - `<key>` matches `^[a-z][a-z0-9_]*$`
 
 use regex_lite::Regex;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-/// Placeholder type. Matches RFC §2.3 enumeration exactly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PlaceholderType {
     Lid,
     CbId,
-    Custom,
-    Global,
 }
 
 impl PlaceholderType {
@@ -28,8 +26,6 @@ impl PlaceholderType {
         match self {
             PlaceholderType::Lid => "lid",
             PlaceholderType::CbId => "cb_id",
-            PlaceholderType::Custom => "custom",
-            PlaceholderType::Global => "global",
         }
     }
 
@@ -37,8 +33,6 @@ impl PlaceholderType {
         match s {
             "lid" => Some(Self::Lid),
             "cb_id" => Some(Self::CbId),
-            "custom" => Some(Self::Custom),
-            "global" => Some(Self::Global),
             _ => None,
         }
     }
@@ -70,11 +64,11 @@ fn key_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"^[a-z][a-z0-9_]*$").expect("key regex is valid"))
 }
 
-/// Loose envelope-only regex per RFC §2.3 warning rule. Catches typos like
-/// `__BRAZSYNC.…__` or unknown types like `__BRAZESYNC.url.foo__` so they
-/// can be surfaced as warnings rather than silently passing through. The
-/// inner classes deliberately allow `_` so typo-shaped placeholders whose
-/// key contains an underscore (e.g. `spring_sale`) are still caught.
+/// Loose envelope-only regex. Catches typos like `__BRAZSYNC.…__` or
+/// unknown / retired types (`__BRAZESYNC.url.foo__`,
+/// `__BRAZESYNC.custom.foo__`) so they surface as warnings rather than
+/// silently passing through. Inner classes allow `_` so typo-shaped
+/// placeholders whose key contains an underscore are still caught.
 fn loose_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -83,28 +77,10 @@ fn loose_re() -> &'static Regex {
     })
 }
 
-/// Extract every strict `__BRAZESYNC.<type>.<key>__` occurrence in `body`,
-/// in order of appearance.
-///
-/// Parsing strategy: anchor on the literal `__BRAZESYNC.` prefix and the
-/// *nearest* closing `__` (left-most), so a regex with greedy `[a-z0-9_]*`
-/// can't merge two adjacent placeholders into one.
-///
-/// Legacy recovery: v0.14.2 and earlier emitted exactly two trailing-`_`
-/// keys — `lid.link_` and `cb_id.cb_` (empty-slug fallbacks; see
-/// [`slug_for_cb_id`] / [`slug_for_lid`]). The rendered envelope collapses
-/// to e.g. `…link___` (key's trailing `_` + close `__`). Recovery is
-/// scoped to those two exact `(type, key)` pairs so that hand-written
-/// bodies like `__BRAZESYNC.custom.foo___bar` continue to parse as
-/// key=`foo` + literal `_bar` (rather than silently mutating the key into
-/// `foo_`). The double-`_` guard additionally keeps
-/// `__BRAZESYNC.lid.link____bar__` parsed as key=`link` rather than
-/// absorbing the adjacent `__bar__` token.
 pub fn extract_placeholders(body: &str) -> Vec<Placeholder> {
     let mut out = Vec::new();
-    let bytes = body.as_bytes();
     let mut i = 0;
-    while i + PREFIX.len() <= bytes.len() {
+    while i + PREFIX.len() <= body.len() {
         let Some(rel) = body[i..].find(PREFIX) else {
             break;
         };
@@ -114,23 +90,13 @@ pub fn extract_placeholders(body: &str) -> Vec<Placeholder> {
             break;
         };
         let close_start = inner_start + rel_close;
-        let mut end = close_start + CLOSE.len();
+        let end = close_start + CLOSE.len();
         let inner = &body[inner_start..close_start];
         if let Some((ty_str, key)) = inner.split_once('.') {
             if let (Some(ty), true) = (PlaceholderType::parse(ty_str), key_re().is_match(key)) {
-                let is_legacy_empty_slug = (ty == PlaceholderType::Lid && key == "link")
-                    || (ty == PlaceholderType::CbId && key == "cb");
-                let mut key = key.to_string();
-                if is_legacy_empty_slug
-                    && bytes.get(end) == Some(&b'_')
-                    && bytes.get(end + 1) != Some(&b'_')
-                {
-                    key.push('_');
-                    end += 1;
-                }
                 out.push(Placeholder {
                     ty,
-                    key,
+                    key: key.to_string(),
                     start,
                     end,
                 });
@@ -146,7 +112,6 @@ pub fn extract_placeholders(body: &str) -> Vec<Placeholder> {
 }
 
 /// Find loose envelope matches that don't satisfy the strict pattern.
-/// Caller surfaces these as warnings (RFC §2.3).
 pub fn find_suspicious_placeholders(body: &str) -> Vec<String> {
     let strict_spans: Vec<(usize, usize)> = extract_placeholders(body)
         .into_iter()
@@ -166,8 +131,6 @@ pub fn find_suspicious_placeholders(body: &str) -> Vec<String> {
         .collect()
 }
 
-/// What the resolver couldn't satisfy. Aggregated by the pre-flight phase
-/// (RFC §2.4 / §3 Q7) so apply abort can report every failure at once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolutionError {
     UnknownKey {
@@ -175,29 +138,20 @@ pub enum ResolutionError {
         key: String,
         start: usize,
     },
-    /// Same `lid` key referenced more than once in a single body / field.
-    /// RFC §5 edge case: lid is a per-click-context ID so re-use is
-    /// conceptually wrong — abort rather than substitute the same value.
-    /// `occurrences` holds the byte offsets of every reference so the
-    /// failure report can point operators at the duplicates directly.
+    /// lid is per-click-context — reuse of the same key is an error.
     DuplicateLidKey {
         key: String,
         occurrences: Vec<usize>,
     },
+    /// Token uses the `__BRAZESYNC.` prefix but with a retired namespace
+    /// (e.g. `custom`, `global`) that is no longer resolved.
+    RetiredNamespace { token: String },
 }
 
-/// Flat key for the resolver's lookup table.
-///
-/// Phase 1 deliberately stays resource-shape-agnostic: callers supply a
-/// flat `(type, key) -> value` map and the resolver doesn't know whether
-/// it came from a resource-local namespace, a field-level namespace, or
-/// the `globals.custom` scope. Phase 2+ wiring composes the table from
-/// the right places per RFC §2.2.
 pub type LookupKey = (PlaceholderType, String);
 
 /// Resolve every placeholder in `body` against `lookup`. Returns the
-/// resolved body on success, or every unresolved placeholder on failure
-/// (errors are aggregated, never short-circuited — matches §3 Q7).
+/// resolved body on success, or every unresolved placeholder on failure.
 pub fn resolve_placeholders(
     body: &str,
     lookup: &BTreeMap<LookupKey, String>,
@@ -324,29 +278,26 @@ mod tests {
 
     #[test]
     fn resolves_when_all_keys_present() {
-        let body = "before __BRAZESYNC.lid.cta__ middle __BRAZESYNC.custom.host__ end";
+        let body = "before __BRAZESYNC.lid.cta__ middle __BRAZESYNC.cb_id.shared__ end";
         let map = lookup(&[
             (PlaceholderType::Lid, "cta", "ai8kexrxcp03"),
-            (PlaceholderType::Custom, "host", "api-prod.example.com"),
+            (PlaceholderType::CbId, "shared", "cb42"),
         ]);
         let resolved = resolve_placeholders(body, &map).unwrap();
-        assert_eq!(
-            resolved,
-            "before ai8kexrxcp03 middle api-prod.example.com end"
-        );
+        assert_eq!(resolved, "before ai8kexrxcp03 middle cb42 end");
     }
 
     #[test]
-    fn resolves_repeated_keys_to_same_value() {
-        let body = "__BRAZESYNC.global.host__/a __BRAZESYNC.global.host__/b";
-        let map = lookup(&[(PlaceholderType::Global, "host", "example.com")]);
+    fn resolves_repeated_cb_id_to_same_value() {
+        let body = "{{__BRAZESYNC.cb_id.shared__}}/a {{__BRAZESYNC.cb_id.shared__}}/b";
+        let map = lookup(&[(PlaceholderType::CbId, "shared", "cb42")]);
         let resolved = resolve_placeholders(body, &map).unwrap();
-        assert_eq!(resolved, "example.com/a example.com/b");
+        assert_eq!(resolved, "{{cb42}}/a {{cb42}}/b");
     }
 
     #[test]
     fn aggregates_unresolved_keys() {
-        let body = "__BRAZESYNC.lid.a__ __BRAZESYNC.cb_id.b__ __BRAZESYNC.custom.c__";
+        let body = "__BRAZESYNC.lid.a__ __BRAZESYNC.cb_id.b__ __BRAZESYNC.cb_id.c__";
         let map = lookup(&[(PlaceholderType::Lid, "a", "ai8kexrxcp03")]);
         let err = resolve_placeholders(body, &map).unwrap_err();
         assert_eq!(err.len(), 2);
@@ -354,11 +305,11 @@ mod tests {
             .iter()
             .map(|e| match e {
                 ResolutionError::UnknownKey { ty, key, .. } => (*ty, key.clone()),
-                ResolutionError::DuplicateLidKey { .. } => unreachable!(),
+                _ => unreachable!(),
             })
             .collect();
         assert!(keys.contains(&(PlaceholderType::CbId, "b".to_string())));
-        assert!(keys.contains(&(PlaceholderType::Custom, "c".to_string())));
+        assert!(keys.contains(&(PlaceholderType::CbId, "c".to_string())));
     }
 
     #[test]
@@ -386,7 +337,7 @@ mod tests {
 
     #[test]
     fn duplicate_cb_id_is_not_an_error() {
-        // cb_id / custom / global re-use is normal substitution per §5.
+        // cb_id re-use is normal (same block referenced twice).
         let body = "{{cb.__BRAZESYNC.cb_id.x__}} {{cb.__BRAZESYNC.cb_id.x__}}";
         let map = lookup(&[(PlaceholderType::CbId, "x", "cb42")]);
         let out = resolve_placeholders(body, &map).unwrap();
@@ -437,26 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_underscore_key_extracts_when_envelope_appears_to_have_three_underscores() {
-        // Regression for v0.14.2 templatize output: when a URL slug is
-        // empty the fallback key is `link_`, and the rendered envelope
-        // collapses to `___` (close `__` + trailing `_` from the key).
-        // Greedy-rightmost parse must pick key=`link_`.
-        let body = "lid: '__BRAZESYNC.lid.link___'";
-        let ps = extract_placeholders(body);
-        assert_eq!(ps.len(), 1);
-        assert_eq!(ps[0].key, "link_");
-        assert_eq!(ps[0].ty, PlaceholderType::Lid);
-    }
-
-    #[test]
-    fn placeholder_followed_by_unrelated_double_underscore_token_does_not_absorb_it() {
-        // Regression: an earlier right-most-close strategy would greedily
-        // extend the key across any adjacent `[a-z0-9_]+__` token, e.g.
-        // Python `__init__` or Markdown bold immediately after a
-        // placeholder. The parser must stop at the nearest `__` close
-        // (with at most one trailing `_` for legacy recovery) and leave
-        // the rest of the body untouched.
+    fn stops_at_nearest_close_envelope() {
         let body = "__BRAZESYNC.lid.foo____bar__";
         let ps = extract_placeholders(body);
         assert_eq!(ps.len(), 1);
@@ -465,54 +397,23 @@ mod tests {
     }
 
     #[test]
-    fn non_legacy_key_followed_by_underscore_text_is_not_absorbed() {
-        // Recovery is gated on the v0.14.2 empty-slug fallbacks
-        // (`lid.link_`, `cb_id.cb_`); any other `(type, key)` must
-        // leave a trailing `_<text>` in the surrounding body.
-        let body = "__BRAZESYNC.custom.foo___bar";
-        let ps = extract_placeholders(body);
-        assert_eq!(ps.len(), 1);
-        assert_eq!(ps[0].key, "foo");
-        assert_eq!(ps[0].ty, PlaceholderType::Custom);
-        assert_eq!(&body[ps[0].end..], "_bar");
-
-        let body = "__BRAZESYNC.lid.other___tail";
-        let ps = extract_placeholders(body);
-        assert_eq!(ps.len(), 1);
-        assert_eq!(ps[0].key, "other");
-        assert_eq!(&body[ps[0].end..], "_tail");
-    }
-
-    #[test]
-    fn cb_id_empty_slug_fallback_extracts_with_trailing_underscore() {
-        let body = "__BRAZESYNC.cb_id.cb___";
-        let ps = extract_placeholders(body);
-        assert_eq!(ps.len(), 1);
-        assert_eq!(ps[0].key, "cb_");
-        assert_eq!(ps[0].ty, PlaceholderType::CbId);
-    }
-
-    #[test]
-    fn unresolved_trailing_underscore_key_reports_full_key() {
-        // If `link_` isn't in the values map, the error must name
-        // `link_` (not `link`) so the operator can fix the right entry.
+    fn triple_underscore_parses_as_key_plus_trailing() {
+        // `__BRAZESYNC.lid.link___` → key=`link`, remaining `_`
         let body = "__BRAZESYNC.lid.link___";
-        let map = lookup(&[(PlaceholderType::Lid, "ok", "ai8kexrxcp03")]);
-        let err = resolve_placeholders(body, &map).unwrap_err();
-        assert!(err.iter().any(|e| matches!(
-            e,
-            ResolutionError::UnknownKey { key, .. } if key == "link_"
-        )));
+        let ps = extract_placeholders(body);
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].key, "link");
+        assert_eq!(&body[ps[0].end..], "_");
     }
 
     #[test]
     fn underscored_keys_still_extract() {
-        // Sanity: legitimate underscored keys (RFC §2.3 allows them) are
-        // not broken by the boundary-respecting parser.
-        let body = "__BRAZESYNC.lid.spring_sale__ x __BRAZESYNC.custom.api_host__";
+        // Sanity: legitimate underscored keys are not broken by the
+        // boundary-respecting parser.
+        let body = "__BRAZESYNC.lid.spring_sale__ x __BRAZESYNC.cb_id.promo_banner__";
         let ps = extract_placeholders(body);
         assert_eq!(ps.len(), 2);
         assert_eq!(ps[0].key, "spring_sale");
-        assert_eq!(ps[1].key, "api_host");
+        assert_eq!(ps[1].key, "promo_banner");
     }
 }

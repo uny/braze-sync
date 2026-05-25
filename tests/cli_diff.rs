@@ -744,10 +744,9 @@ async fn diff_custom_attribute_name_filter_narrows_output() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn content_block_diff_no_drift_when_placeholders_resolve_to_remote() {
-    // Without per-env values resolution, the Git body containing
-    // `__BRAZESYNC.lid.cta__` would never compare equal to the
-    // remote body containing the literal `ai8kexrxcp03`. This test
-    // pins the desired behavior: values resolved → 0 diff.
+    // v0.15: lid values come from the remote body via URL anchor
+    // correlation. Template uses `__BRAZESYNC.lid.<key>__` inside an
+    // `<a href>` so the resolver can pair it with the remote lid.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/content_blocks/list"))
@@ -761,7 +760,7 @@ async fn content_block_diff_no_drift_when_placeholders_resolve_to_remote() {
         .and(query_param("content_block_id", "id-promo"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "name": "promo",
-            "content": "cta=ai8kexrxcp03\n",
+            "content": "<a href=\"https://example.com/cta\">{{x | lid: 'ai8kexrxcp03'}}</a>\n",
             "tags": []
         })))
         .mount(&server)
@@ -769,18 +768,10 @@ async fn content_block_diff_no_drift_when_placeholders_resolve_to_remote() {
 
     let tmp = tempfile::tempdir().unwrap();
     let config_path = write_config(tmp.path(), &server.uri());
-    write_local_content_block(tmp.path(), "promo", "cta=__BRAZESYNC.lid.cta__\n");
-    common::write_values_file(
+    write_local_content_block(
         tmp.path(),
-        "test",
-        r#"version: 1
-content_block:
-  promo:
-    lid:
-      cta:
-        value: ai8kexrxcp03
-        url: https://example.com/cta
-"#,
+        "promo",
+        "<a href=\"https://example.com/cta\">{{x | lid: '__BRAZESYNC.lid.cta__'}}</a>\n",
     );
 
     let output = tokio::task::spawn_blocking(move || {
@@ -828,7 +819,7 @@ async fn email_template_diff_no_drift_when_placeholders_resolve_to_remote() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "template_name": "welcome",
             "subject": "Hi",
-            "body": "<a>ai8kexrxcp03</a>",
+            "body": "<a href=\"https://example.com/cta\">{{x | lid: 'ai8kexrxcp03'}}</a>",
             "plaintext_body": "Hi",
             "tags": [],
             "message": "success"
@@ -842,21 +833,8 @@ async fn email_template_diff_no_drift_when_placeholders_resolve_to_remote() {
         tmp.path(),
         "welcome",
         "Hi",
-        "<a>__BRAZESYNC.lid.cta__</a>",
+        "<a href=\"https://example.com/cta\">{{x | lid: '__BRAZESYNC.lid.cta__'}}</a>",
         "Hi",
-    );
-    common::write_values_file(
-        tmp.path(),
-        "test",
-        r#"version: 1
-email_template:
-  welcome:
-    body_html:
-      lid:
-        cta:
-          value: ai8kexrxcp03
-          url: https://example.com/cta
-"#,
     );
 
     let output = tokio::task::spawn_blocking(move || {

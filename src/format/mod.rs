@@ -2,13 +2,12 @@
 //!
 //! Two formatters are exposed:
 //!
-//! - [`TableFormatter`] — human-readable, multi-resource indented layout
-//!   matching IMPLEMENTATION.md §7.4. v0.1.0 ships without ANSI colors;
-//!   the global `--no-color` flag is therefore a no-op until a future
-//!   cosmetic pass adds color.
-//! - [`JsonFormatter`] — frozen v1 schema for CI consumption (§12). The
-//!   wire shape carries an explicit `version: 1` field so consumers can
-//!   branch on a future schema bump.
+//! - [`TableFormatter`] — human-readable, multi-resource indented layout.
+//!   v0.1.0 ships without ANSI colors; the global `--no-color` flag is
+//!   therefore a no-op until a future cosmetic pass adds color.
+//! - [`JsonFormatter`] — frozen v1 schema for CI consumption. The wire
+//!   shape carries an explicit `version: 1` field so consumers can branch
+//!   on a future schema bump.
 //!
 //! The wire types in [`json`] are deliberately separate from the domain
 //! types in [`crate::resource`] / [`crate::diff`]. Refactoring a domain

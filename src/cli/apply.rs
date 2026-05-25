@@ -22,7 +22,6 @@ use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::error::Error;
 use crate::format::OutputFormat;
 use crate::resource::ResourceKind;
-use crate::values::{compute_values_input_hashes, preflight_values, PreflightArgs};
 use anyhow::{anyhow, Context as _};
 use clap::Args;
 use std::path::{Path, PathBuf};
@@ -93,28 +92,6 @@ pub async fn run(
         None
     };
 
-    // Pre-flight: resolve all `__BRAZESYNC.*__` placeholders before any
-    // Braze API call (RFC `feat-per-env-values.md` §2.4 / §3 Q7). Sits
-    // alongside `enforce_tag_preflight()` below — both are "no API
-    // calls have happened yet, refuse known-bad work" gates.
-    let values = preflight_values(PreflightArgs {
-        config_dir,
-        resolved: &resolved,
-        content_blocks_root: &content_blocks_root,
-        email_templates_root: &email_templates_root,
-        kinds: &kinds,
-        cb_name_filter: args
-            .name
-            .as_deref()
-            .filter(|_| args.resource == Some(ResourceKind::ContentBlock)),
-        et_name_filter: args
-            .name
-            .as_deref()
-            .filter(|_| args.resource == Some(ResourceKind::EmailTemplate)),
-        cb_excludes: resolved.excludes_for(ResourceKind::ContentBlock),
-        et_excludes: resolved.excludes_for(ResourceKind::EmailTemplate),
-    })?;
-
     let mut summary = DiffSummary::default();
     let mut content_block_id_index: Option<ContentBlockIdIndex> = None;
     let mut email_template_id_index: Option<EmailTemplateIdIndex> = None;
@@ -141,7 +118,6 @@ pub async fn run(
                     &content_blocks_root,
                     args.name.as_deref(),
                     resolved.excludes_for(ResourceKind::ContentBlock),
-                    values.as_ref(),
                 )
                 .await
                 .context("computing content_block plan")?;
@@ -154,7 +130,6 @@ pub async fn run(
                     &email_templates_root,
                     args.name.as_deref(),
                     resolved.excludes_for(ResourceKind::EmailTemplate),
-                    values.as_ref(),
                 )
                 .await
                 .context("computing email_template plan")?;
@@ -224,49 +199,7 @@ pub async fn run(
     // Print the fresh plan first so the operator sees it even on mismatch.
     if let Some(saved) = &saved_plan {
         check_plan_ops(saved, &summary)?;
-        // RFC §4 Phase 6: also verify per-resource consumed-values
-        // hashes. Catches values edits (including fan-out global
-        // edits) that occurred after the plan was written.
-        let fresh_hashes = compute_values_input_hashes(
-            PreflightArgs {
-                config_dir,
-                resolved: &resolved,
-                content_blocks_root: &content_blocks_root,
-                email_templates_root: &email_templates_root,
-                // Use the same kinds the operator scoped this apply to
-                // (check_plan_scope has already verified args.resource ==
-                // plan.scope.resource). Hardcoding [CB, ET] here would
-                // produce ET hashes that are absent from a saved plan
-                // built with `diff --resource content_block --plan-out`,
-                // and `check_plan_values_hashes` would report them as
-                // `extra` → spurious PlanDrift.
-                kinds: &kinds,
-                cb_name_filter: args
-                    .name
-                    .as_deref()
-                    .filter(|_| args.resource == Some(ResourceKind::ContentBlock)),
-                et_name_filter: args
-                    .name
-                    .as_deref()
-                    .filter(|_| args.resource == Some(ResourceKind::EmailTemplate)),
-                cb_excludes: resolved.excludes_for(ResourceKind::ContentBlock),
-                et_excludes: resolved.excludes_for(ResourceKind::EmailTemplate),
-            },
-            values.as_ref(),
-        )?;
-        check_plan_values_hashes(saved, &fresh_hashes)?;
-        eprintln!(
-            "✓ Plan matches saved plan ({} op(s){}).",
-            saved.ops.len(),
-            if saved.values_input_hashes.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    ", {} values hash(es) verified",
-                    saved.values_input_hashes.len()
-                )
-            }
-        );
+        eprintln!("✓ Plan matches saved plan ({} op(s)).", saved.ops.len());
     }
 
     if summary.actionable_count() == 0 {
@@ -503,73 +436,6 @@ fn warn_on_plan_metadata(plan: &PlanFile) {
             age.num_hours(),
         );
     }
-}
-
-/// Compare the saved plan's `values_input_hashes` against the
-/// freshly-computed hashes (RFC §4 Phase 6). Reuses `Error::PlanDrift`
-/// (exit 7) because the user-facing remedy is identical to ops drift:
-/// regenerate the plan with `diff --plan-out` and review.
-///
-/// Pre-v0.14 plan files have an empty `values_input_hashes` map; we
-/// treat that as "plan pre-dates the values hash feature, skip the
-/// integrity check" instead of forcing a regenerate.
-fn check_plan_values_hashes(
-    saved: &PlanFile,
-    fresh: &std::collections::BTreeMap<String, String>,
-) -> anyhow::Result<()> {
-    if saved.values_input_hashes.is_empty() {
-        return Ok(());
-    }
-    let mut mismatches: Vec<String> = Vec::new();
-    let mut missing_in_fresh: Vec<String> = Vec::new();
-    for (key, saved_hash) in &saved.values_input_hashes {
-        match fresh.get(key) {
-            Some(fresh_hash) if fresh_hash == saved_hash => {}
-            Some(_) => mismatches.push(key.clone()),
-            None => missing_in_fresh.push(key.clone()),
-        }
-    }
-    let extra: Vec<String> = fresh
-        .keys()
-        .filter(|k| !saved.values_input_hashes.contains_key(*k))
-        .cloned()
-        .collect();
-
-    if mismatches.is_empty() && missing_in_fresh.is_empty() && extra.is_empty() {
-        return Ok(());
-    }
-
-    eprintln!("✗ plan drift: values inputs changed since plan was generated");
-    if !mismatches.is_empty() {
-        eprintln!("  consumed values changed for:");
-        for k in &mismatches {
-            eprintln!("    - {k}");
-        }
-        // Heuristic: if many resources mismatch at once it's almost
-        // always a globals.custom edit fanning out to every consumer.
-        // Surface that hint so the operator looks in the right place.
-        if mismatches.len() > 1 {
-            eprintln!(
-                "  hint: {} resources changed simultaneously — likely a `globals.custom.<key>` \
-                 edit that affects every consumer (RFC §4 Phase 6)",
-                mismatches.len()
-            );
-        }
-    }
-    if !missing_in_fresh.is_empty() {
-        eprintln!("  resources in saved plan but no fresh hash (placeholders removed?):");
-        for k in &missing_in_fresh {
-            eprintln!("    - {k}");
-        }
-    }
-    if !extra.is_empty() {
-        eprintln!("  resources with fresh hashes not in saved plan (placeholders added?):");
-        for k in &extra {
-            eprintln!("    - {k}");
-        }
-    }
-    eprintln!("  → regenerate with `diff --plan-out` and review before re-applying");
-    Err(Error::PlanDrift.into())
 }
 
 /// Compare the saved plan's ops against the freshly-computed summary.
