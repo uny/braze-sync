@@ -194,6 +194,8 @@ fn resolve_lid_batch(
     }
 
     let mut out = Vec::with_capacity(lid_indices.len());
+    let mut used: BTreeMap<String, usize> = BTreeMap::new();
+    let mut seq = 0usize;
     for anchor in anchors {
         let Some(url) = anchor else {
             warnings.push(
@@ -208,12 +210,43 @@ fn resolve_lid_batch(
         match pick {
             Some(p) => out.push(Some(p.value.clone())),
             None => {
-                warnings.push(format!("lid: URL anchor '{url}' not found in remote body"));
-                out.push(None);
+                let fallback = fallback_lid_for_url(Some(&url), &mut used, &mut seq);
+                warnings.push(format!(
+                    "lid: URL anchor '{url}' not found in remote body — \
+                     using fallback value '{fallback}' (new link; Braze will \
+                     reassign on first dashboard save)"
+                ));
+                out.push(Some(fallback));
             }
         }
     }
     out
+}
+
+/// Slug fallback for a single lid placeholder. `used` is shared across
+/// the batch so collisions are disambiguated with `_2`, `_3`, ….
+fn fallback_lid_for_url(
+    url: Option<&str>,
+    used: &mut BTreeMap<String, usize>,
+    seq: &mut usize,
+) -> String {
+    let base = match url {
+        Some(u) => {
+            let tail = url_path_tail(u);
+            let slug = slug_for_lid(&tail);
+            if slug.is_empty() {
+                *seq += 1;
+                format!("lid_{seq}", seq = *seq)
+            } else {
+                slug
+            }
+        }
+        None => {
+            *seq += 1;
+            format!("lid_{seq}", seq = *seq)
+        }
+    };
+    unique(base, used)
 }
 
 /// Positional FIFO match for subject / preheader.
@@ -241,8 +274,13 @@ fn resolve_lid_positional(
     let _ = placeholders;
     let mut out = Vec::with_capacity(lid_indices.len());
     let mut iter = remote_values.into_iter();
+    let mut used: BTreeMap<String, usize> = BTreeMap::new();
+    let mut seq = 0usize;
     for _ in lid_indices {
-        out.push(iter.next());
+        match iter.next() {
+            Some(v) => out.push(Some(v)),
+            None => out.push(Some(fallback_lid_for_url(None, &mut used, &mut seq))),
+        }
     }
     out
 }
@@ -303,23 +341,11 @@ fn fallback_lid_batch(
     let mut out = Vec::with_capacity(lid_indices.len());
     for &i in lid_indices {
         let anchor = lid_anchor_for(body, placeholders[i].start, field);
-        let base = match anchor.as_deref() {
-            Some(u) => {
-                let tail = url_path_tail(u);
-                let slug = slug_for_lid(&tail);
-                if slug.is_empty() {
-                    seq += 1;
-                    format!("lid_{seq}")
-                } else {
-                    slug
-                }
-            }
-            None => {
-                seq += 1;
-                format!("lid_{seq}")
-            }
-        };
-        out.push(Some(unique(base, &mut used)));
+        out.push(Some(fallback_lid_for_url(
+            anchor.as_deref(),
+            &mut used,
+            &mut seq,
+        )));
     }
     out
 }
@@ -548,14 +574,39 @@ mod tests {
     }
 
     #[test]
-    fn lid_without_remote_match_surfaces_error() {
+    fn lid_without_remote_match_falls_back_to_slug() {
         let template = r#"<a href="https://x.com/cta">{{x | lid: '__BRAZESYNC__'}}</a>"#;
         let remote = r#"<p>no anchor</p>"#;
         let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.body.contains("'cta'"), "got: {}", p.body);
         assert!(p
-            .errors
+            .warnings
             .iter()
-            .any(|e| matches!(e, ResolutionError::UnresolvedLid { .. })));
+            .any(|w| w.contains("not found in remote body")));
+    }
+
+    #[test]
+    fn template_with_more_lids_than_remote_resolves_extras_via_fallback() {
+        let template = r#"<a href="https://x.com/a">{{x | lid: '__BRAZESYNC__'}}</a>
+<a href="https://x.com/b">{{x | lid: '__BRAZESYNC__'}}</a>
+<a href="https://x.com/c">{{x | lid: '__BRAZESYNC__'}}</a>"#;
+        let remote = r#"<a href="https://x.com/a">{{x | lid: 'remoteval1a'}}</a>"#;
+        let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.body.contains("'remoteval1a'"));
+        assert!(p.body.contains("'b'"), "got: {}", p.body);
+        assert!(p.body.contains("'c'"), "got: {}", p.body);
+    }
+
+    #[test]
+    fn subject_with_more_lids_than_remote_falls_back() {
+        let template = "{{x | lid: '__BRAZESYNC__'}} A {{y | lid: '__BRAZESYNC__'}}";
+        let remote = "{{x | lid: 'firstval123'}} A";
+        let p = prepare_field(template, Some(remote), FieldKind::EmailSubject);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.body.contains("'firstval123'"));
+        assert!(p.body.contains("'lid_1'"), "got: {}", p.body);
     }
 
     #[test]

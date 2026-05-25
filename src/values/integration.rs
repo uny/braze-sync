@@ -282,18 +282,14 @@ mod tests {
     }
 
     #[test]
-    fn missing_remote_anchor_surfaces_as_failure() {
+    fn missing_remote_anchor_falls_back_to_slug() {
         let mut block = cb(
             "promo",
             r#"<a href="https://x.com/cta">{{x | lid: '__BRAZESYNC__'}}</a>"#,
         );
         let remote = cb("promo", "<p>no anchor here</p>");
-        let err = resolve_content_block_with_remote(&mut block, Some(&remote)).unwrap_err();
-        assert_eq!(err.errors.len(), 1);
-        assert!(matches!(
-            err.errors[0],
-            ResolutionError::UnresolvedLid { .. }
-        ));
+        resolve_content_block_with_remote(&mut block, Some(&remote)).unwrap();
+        assert!(block.content.contains("'cta'"), "got: {}", block.content);
     }
 
     #[test]

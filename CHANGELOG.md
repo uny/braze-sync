@@ -7,6 +7,25 @@ versions follow [semver](https://semver.org/). Per IMPLEMENTATION.md
 changes; v1.0 freezes the public surface (CLI flags, config schema,
 file formats, JSON output, exit codes) for the full v1.x line.
 
+## [0.16.1] — 2026-05-25
+
+### Changed
+
+- **Unmatched `lid` placeholders now resolve via fallback instead of
+  aborting.** When the local template carries more `lid` placeholders
+  than the remote body has `lid` values (e.g. a `footer` content
+  block has 9 links in Prod structure but only 5 in Dev), the
+  unmatched placeholders now resolve to the URL path-tail slug —
+  identical to the new-resource path — and a warning is emitted per
+  unmatched anchor. `diff` then surfaces a meaningful structural
+  diff and `apply` POSTs the full template so the remote gains the
+  missing links; Braze reassigns the lid value on first dashboard
+  save. The subject/preheader positional resolver applies the same
+  fallback when the remote yields fewer lid values than the
+  template. The `ResolutionError::UnresolvedLid` variant is retained
+  for the remaining failure mode — a lid placeholder with no URL
+  anchor at all. Fixes #52.
+
 ## [0.16.0] — 2026-05-25
 
 ### Changed (breaking)

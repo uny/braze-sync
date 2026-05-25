@@ -20,7 +20,7 @@ use common::{
     write_local_email_template, write_local_schema,
 };
 use serde_json::json;
-use wiremock::matchers::{body_json, method, path, query_param};
+use wiremock::matchers::{body_json, body_partial_json, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1618,14 +1618,13 @@ async fn content_block_apply_resolves_lid_via_new_resource_fallback() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn content_block_apply_aborts_when_placeholder_unresolved() {
-    // v0.15: lid resolution aborts when the remote exists but does
-    // not contain a matching URL anchor (structural drift between
-    // local template and remote). The list call IS made (it's the
-    // existence probe), but no /info follows for a name that's not
-    // present, and no /create follows because the existing remote
-    // means we go through diff/update path — the diff finds no
-    // matching URL in remote and aborts.
+async fn content_block_apply_falls_back_when_remote_has_fewer_links() {
+    // When the local template has more lid placeholders than the
+    // remote body has lid values, the extra placeholders resolve to
+    // a URL-slug fallback instead of aborting. The diff therefore
+    // surfaces a content drift and apply POSTs an update so the
+    // remote gains the missing links (Braze reassigns lid values on
+    // first dashboard save).
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/content_blocks/list"))
@@ -1644,6 +1643,17 @@ async fn content_block_apply_aborts_when_placeholder_unresolved() {
         .mount(&server)
         .await;
     Mock::given(method("POST"))
+        .and(path("/content_blocks/update"))
+        .and(body_partial_json(json!({
+            "content_block_id": "id-promo",
+            "content": "<a href=\"https://example.com/cta\">{{x | lid: 'cta'}}</a>"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/content_blocks/create"))
         .respond_with(ResponseTemplate::new(500))
         .expect(0)
         .mount(&server)
@@ -1658,20 +1668,13 @@ async fn content_block_apply_aborts_when_placeholder_unresolved() {
     );
 
     tokio::task::spawn_blocking(move || {
-        let assert = Command::cargo_bin("braze-sync")
+        Command::cargo_bin("braze-sync")
             .unwrap()
             .env("BRAZE_API_KEY", "test-key")
             .args(["--config", config_path.to_str().unwrap()])
             .args(["apply", "--resource", "content_block", "--confirm"])
             .assert()
-            .failure();
-        let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
-        assert!(
-            stderr.contains("UnresolvedLid")
-                || stderr.contains("__BRAZESYNC__")
-                || stderr.contains("anchor"),
-            "expected resolution error mentioning the unresolved lid, got:\n{stderr}"
-        );
+            .success();
     })
     .await
     .unwrap();
