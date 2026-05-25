@@ -296,8 +296,9 @@ mod tests {
     #[test]
     fn no_placeholders_skips_resolution() {
         let mut block = cb("plain", "<p>hi there</p>");
-        resolve_content_block_with_remote(&mut block, None).unwrap();
+        let reports = resolve_content_block_with_remote(&mut block, None).unwrap();
         assert_eq!(block.content, "<p>hi there</p>");
+        assert!(reports.is_empty());
     }
 
     #[test]
@@ -310,8 +311,9 @@ mod tests {
             "promo",
             r#"<a href="https://x.com/cta">{{x | lid: 'newlidvalue1'}}</a>"#,
         );
-        resolve_content_block_with_remote(&mut block, Some(&remote)).unwrap();
+        let reports = resolve_content_block_with_remote(&mut block, Some(&remote)).unwrap();
         assert!(block.content.contains("'newlidvalue1'"));
+        assert!(reports.is_empty());
     }
 
     #[test]
@@ -320,19 +322,21 @@ mod tests {
             "promo",
             r#"<a href="https://x.com/spring-sale">{{x | lid: '__BRAZESYNC__'}}</a>"#,
         );
-        resolve_content_block_with_remote(&mut block, None).unwrap();
+        let reports = resolve_content_block_with_remote(&mut block, None).unwrap();
         assert!(
             block.content.contains("'spring_sale'"),
             "got: {}",
             block.content
         );
+        assert!(reports.is_empty());
     }
 
     #[test]
     fn new_resource_cb_id_filter_is_stripped() {
         let mut block = cb("page", "{{content_blocks.${promo} | id: '__BRAZESYNC__'}}");
-        resolve_content_block_with_remote(&mut block, None).unwrap();
+        let reports = resolve_content_block_with_remote(&mut block, None).unwrap();
         assert_eq!(block.content, "{{content_blocks.${promo}}}");
+        assert!(reports.is_empty());
     }
 
     #[test]
@@ -341,8 +345,9 @@ mod tests {
         t.body_html = r#"<a href="https://x.com/cta">{{x | lid: '__BRAZESYNC__'}}</a>"#.into();
         let mut remote = et("welcome");
         remote.body_html = r#"<a href="https://x.com/cta">{{x | lid: 'newhtmllidx'}}</a>"#.into();
-        resolve_email_template_with_remote(&mut t, Some(&remote)).unwrap();
+        let reports = resolve_email_template_with_remote(&mut t, Some(&remote)).unwrap();
         assert!(t.body_html.contains("'newhtmllidx'"));
+        assert!(reports.is_empty());
     }
 
     #[test]
@@ -352,8 +357,12 @@ mod tests {
             r#"<a href="https://x.com/cta">{{x | lid: '__BRAZESYNC__'}}</a>"#,
         );
         let remote = cb("promo", "<p>no anchor here</p>");
-        resolve_content_block_with_remote(&mut block, Some(&remote)).unwrap();
+        let reports = resolve_content_block_with_remote(&mut block, Some(&remote)).unwrap();
         assert!(block.content.contains("'cta'"), "got: {}", block.content);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].fallbacks.len(), 1);
+        assert_eq!(reports[0].fallbacks[0].anchor.as_deref(), Some("https://x.com/cta"));
+        assert_eq!(reports[0].fallbacks[0].value, "cta");
     }
 
     #[test]
@@ -362,8 +371,9 @@ mod tests {
         t.subject = "Spring sale {{x | lid: '__BRAZESYNC__'}}".into();
         let mut remote = et("promo");
         remote.subject = "Spring sale {{x | lid: 'subjectlid1'}}".into();
-        resolve_email_template_with_remote(&mut t, Some(&remote)).unwrap();
+        let reports = resolve_email_template_with_remote(&mut t, Some(&remote)).unwrap();
         assert!(t.subject.contains("'subjectlid1'"));
+        assert!(reports.is_empty());
     }
 
     #[test]

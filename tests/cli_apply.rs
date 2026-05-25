@@ -1696,6 +1696,58 @@ async fn content_block_apply_falls_back_when_remote_has_fewer_links() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn content_block_apply_aborts_on_anchor_less_lid_with_remote() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [{"content_block_id": "id-promo", "name": "promo"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "promo",
+            "content": "<p>existing remote body</p>",
+            "tags": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    common::write_local_content_block(
+        tmp.path(),
+        "promo",
+        "no link tag here {{x | lid: '__BRAZESYNC__'}} just text",
+    );
+
+    tokio::task::spawn_blocking(move || {
+        let assert = Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "content_block", "--confirm"])
+            .assert()
+            .failure()
+            .code(3);
+        let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+        assert!(
+            stderr.contains("placeholder resolution failure"),
+            "expected resolution failure message in stderr, got:\n{stderr}"
+        );
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn content_block_apply_works_without_values_file_when_no_placeholders() {
     // Backwards compat: existing users without placeholders must keep
     // working with no values file present.
