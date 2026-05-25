@@ -7,7 +7,7 @@ versions follow [semver](https://semver.org/). Per IMPLEMENTATION.md
 changes; v1.0 freezes the public surface (CLI flags, config schema,
 file formats, JSON output, exit codes) for the full v1.x line.
 
-## [Unreleased]
+## [0.15.0] — 2026-05-25
 
 ### Changed
 
@@ -22,6 +22,19 @@ file formats, JSON output, exit codes) for the full v1.x line.
   resolves to the placeholder key itself; the `| id: '__…__'` filter
   is stripped from `cb_id` so the POST carries the documented
   `{{content_blocks.${NAME}}}` form.
+- **Subject / preheader `lid` placeholders are now resolved
+  positionally** (Nth template placeholder ↔ Nth remote `| lid: '…'`
+  value). Previously these failed at resolve time because the
+  anchor-based correlator had no URL to match on. `templatize` now
+  emits `subject_lid` / `preheader_lid` keys for these fields.
+- **Same-URL ambiguity warning.** When a URL has multiple remote `lid`
+  occurrences *and* multiple template placeholders, the resolver emits
+  a warning so a dashboard-side link reorder cannot silently
+  miscorrelate values.
+- **Resolve-time diagnostics are now surfaced.** Warnings collected by
+  the runtime resolver (URL anchor not found, cb_id filter stripped
+  for a new resource, positional count mismatch) are written to stderr
+  scoped by resource and field instead of being silently discarded.
 
 ### Removed
 

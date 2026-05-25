@@ -38,6 +38,7 @@ pub fn resolve_content_block_with_remote(
         remote.map(|r| r.content.as_str()),
         FieldKind::ContentBlock,
     );
+    emit_prep_warnings("content_block", &cb.name, None, &prep.warnings);
     let lookup: BTreeMap<LookupKey, String> = prep.additions;
     match resolve_placeholders(&prep.body, &lookup) {
         Ok(resolved) => {
@@ -68,6 +69,12 @@ pub fn resolve_email_template_with_remote(
             }
             if body_has_placeholders(body) {
                 let prep = prepare_field(body, $remote_accessor, $field_kind);
+                emit_prep_warnings(
+                    "email_template",
+                    &et.name,
+                    Some($field_name),
+                    &prep.warnings,
+                );
                 match resolve_placeholders(&prep.body, &prep.additions) {
                     Ok(resolved) => Some(resolved),
                     Err(errors) => {
@@ -135,6 +142,29 @@ pub fn resolve_email_template_with_remote(
 
 fn body_has_placeholders(body: &str) -> bool {
     body.contains("__BRAZESYNC.")
+}
+
+/// Surface diagnostic warnings collected by [`prepare_field`] to stderr
+/// with a resource-qualified scope. Silent dead-letter previously hid
+/// the most actionable info (which URL anchor failed, which subject lid
+/// fell back, which cb_id filter was stripped) — without this the user
+/// only sees a generic "unresolved placeholder" failure downstream.
+fn emit_prep_warnings(
+    kind: &'static str,
+    name: &str,
+    field: Option<&'static str>,
+    warnings: &[String],
+) {
+    if warnings.is_empty() {
+        return;
+    }
+    let scope = match field {
+        Some(f) => format!("{kind} '{name}' ({f})"),
+        None => format!("{kind} '{name}'"),
+    };
+    for w in warnings {
+        eprintln!("warning: {scope}: {w}");
+    }
 }
 
 fn warn_suspicious(
@@ -313,11 +343,23 @@ mod tests {
     }
 
     #[test]
-    fn subject_lid_placeholder_fails_no_anchor_correlation() {
+    fn subject_lid_resolves_positionally_from_remote() {
         let mut t = et("promo");
-        t.subject = "__BRAZESYNC.lid.promo_lid__".into();
+        t.subject = "Spring sale {{x | lid: '__BRAZESYNC.lid.subject_lid__'}}".into();
         let mut remote = et("promo");
-        remote.subject = "{{x | lid: 'subjectlid1'}}".into();
+        remote.subject = "Spring sale {{x | lid: 'subjectlid1'}}".into();
+        resolve_email_template_with_remote(&mut t, Some(&remote)).unwrap();
+        assert!(t.subject.contains("'subjectlid1'"));
+    }
+
+    #[test]
+    fn subject_lid_count_mismatch_still_resolves_overlap() {
+        let mut t = et("promo");
+        t.subject = "{{x | lid: '__BRAZESYNC.lid.a__'}} {{y | lid: '__BRAZESYNC.lid.b__'}}".into();
+        let mut remote = et("promo");
+        remote.subject = "{{x | lid: 'firstvalue'}}".into();
+        // First placeholder resolves positionally, second remains
+        // unresolved → fatal at resolve_placeholders.
         let err = resolve_email_template_with_remote(&mut t, Some(&remote)).unwrap_err();
         assert_eq!(err.len(), 1);
         assert_eq!(err[0].field, Some("subject"));
