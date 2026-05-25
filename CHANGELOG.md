@@ -7,6 +7,49 @@ versions follow [semver](https://semver.org/). Per IMPLEMENTATION.md
 changes; v1.0 freezes the public surface (CLI flags, config schema,
 file formats, JSON output, exit codes) for the full v1.x line.
 
+## [0.16.0] — 2026-05-25
+
+### Changed (breaking)
+
+- **Placeholder syntax simplified to anonymous `__BRAZESYNC__`**. The
+  v0.15 form `__BRAZESYNC.<type>.<key>__` is removed. Type (lid vs
+  cb_id) is inferred from the surrounding `| lid:` / `| id:` filter
+  context, and the key is no longer needed (correlation has always
+  been done by URL / `${NAME}` / positional — the key was an internal
+  identifier with no role in matching).
+
+  ```liquid
+  # Before (v0.15)
+  | lid: '__BRAZESYNC.lid.spring_sale__'
+  | id:  '__BRAZESYNC.cb_id.promo_banner__'
+
+  # After (v0.16)
+  | lid: '__BRAZESYNC__'
+  | id:  '__BRAZESYNC__'
+  ```
+
+  **Migration**: re-run `braze-sync templatize` on each workspace
+  before upgrading. The old envelope is detected and surfaced as a
+  fatal `RetiredNamespace` error so partial migrations fail loudly
+  rather than ship broken templates. No `--modernize` / dual-parser
+  compat path is provided.
+
+- **New-resource lid fallback** now derives from the URL path tail
+  (e.g. `https://example.com/spring-sale` → `spring_sale`) rather than
+  from the placeholder key. URL-less placeholders fall back to
+  positional `lid_1`, `lid_2`, …
+
+- **`DuplicateLidKey` error removed.** Anonymous placeholders have no
+  keys, so the per-key duplicate detection no longer applies.
+  Ambiguous URL anchors still produce a positional-FIFO warning.
+
+### Removed
+
+- `Placeholder.key`, `PlaceholderType::parse`,
+  `ResolutionError::UnknownKey`, `ResolutionError::DuplicateLidKey`,
+  `LookupKey`, `resolve_placeholders`. Resolution is now offset-based
+  and lives entirely in `crate::values::braze_managed::prepare_field`.
+
 ## [0.15.0] — 2026-05-25
 
 ### Changed

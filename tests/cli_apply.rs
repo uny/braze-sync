@@ -1570,8 +1570,8 @@ resources:
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn content_block_apply_resolves_lid_via_new_resource_fallback() {
     // New-resource path: remote is empty so lid resolves via fallback
-    // to the placeholder key itself. Apply must POST the *resolved*
-    // body (no `__BRAZESYNC.*__` tokens left).
+    // to the URL path tail slug. Apply must POST the *resolved* body
+    // (no `__BRAZESYNC__` tokens left).
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/content_blocks/list"))
@@ -1584,7 +1584,7 @@ async fn content_block_apply_resolves_lid_via_new_resource_fallback() {
         .and(path("/content_blocks/create"))
         .and(body_json(json!({
             "name": "promo",
-            "content": "<a href=\"https://example.com/cta\">{{x | lid: 'spring_sale'}}</a>\n",
+            "content": "<a href=\"https://example.com/cta\">{{x | lid: 'cta'}}</a>\n",
             "tags": [],
             "state": "active"
         })))
@@ -1601,7 +1601,7 @@ async fn content_block_apply_resolves_lid_via_new_resource_fallback() {
     common::write_local_content_block(
         tmp.path(),
         "promo",
-        "<a href=\"https://example.com/cta\">{{x | lid: '__BRAZESYNC.lid.spring_sale__'}}</a>\n",
+        "<a href=\"https://example.com/cta\">{{x | lid: '__BRAZESYNC__'}}</a>\n",
     );
 
     tokio::task::spawn_blocking(move || {
@@ -1654,7 +1654,7 @@ async fn content_block_apply_aborts_when_placeholder_unresolved() {
     common::write_local_content_block(
         tmp.path(),
         "promo",
-        "<a href=\"https://example.com/cta\">{{x | lid: '__BRAZESYNC.lid.cta__'}}</a>",
+        "<a href=\"https://example.com/cta\">{{x | lid: '__BRAZESYNC__'}}</a>",
     );
 
     tokio::task::spawn_blocking(move || {
@@ -1667,8 +1667,8 @@ async fn content_block_apply_aborts_when_placeholder_unresolved() {
             .failure();
         let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
         assert!(
-            stderr.contains("unresolved placeholder")
-                || stderr.contains("__BRAZESYNC.lid.cta__")
+            stderr.contains("UnresolvedLid")
+                || stderr.contains("__BRAZESYNC__")
                 || stderr.contains("anchor"),
             "expected resolution error mentioning the unresolved lid, got:\n{stderr}"
         );

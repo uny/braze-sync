@@ -1,10 +1,11 @@
-//! Runtime resolution of Braze-managed placeholders (`lid` / `cb_id`).
+//! Runtime resolution of anonymous `__BRAZESYNC__` placeholders.
 //!
 //! Resolved at apply/diff time from the remote body via URL / `${NAME}`
-//! anchor correlation.
+//! anchor correlation. Type (`lid` vs `cb_id`) is inferred from the
+//! surrounding `| lid:` / `| id:` filter syntax.
 //!
 //! New-resource fallback (no remote):
-//! - **lid**: placeholder key used as the value; Braze reassigns on
+//! - **lid**: URL path tail slug used as the value; Braze reassigns on
 //!   first dashboard open.
 //! - **cb_id**: `| id: '…'` filter stripped; Braze derives internally.
 
@@ -15,125 +16,140 @@ use regex_lite::Regex;
 
 use crate::values::correlation::{
     extract_cb_id_values, extract_html_lid_values, extract_lid_values_unanchored,
-    extract_plaintext_lid_values, normalize_url, CbIdCorrelation, LidCorrelation,
+    extract_plaintext_lid_values, normalize_url, slug_for_lid, CbIdCorrelation, LidCorrelation,
 };
-use crate::values::placeholder::{extract_placeholders, LookupKey, PlaceholderType};
+use crate::values::placeholder::{
+    extract_placeholders, find_suspicious_placeholders, PlaceholderType, ResolutionError, TOKEN,
+};
 use crate::values::templatize::FieldKind;
 
-/// Per-field result of preparing a templatized body for resolution.
+/// Per-field result of resolving a templatized body.
 #[derive(Debug, Clone)]
 pub struct PreparedTemplate {
-    /// Body to feed to `resolve_placeholders` after merging
-    /// `additions` into the lookup. May equal the input verbatim, or
-    /// differ when cb_id filter stripping was applied (new-resource
-    /// path).
+    /// Fully-resolved body. When `errors` is non-empty some `__BRAZESYNC__`
+    /// tokens may still be present — the caller treats the field as
+    /// failed and surfaces the errors.
     pub body: String,
-    /// `(type, key) -> value` entries to merge into the caller's
-    /// resolution lookup. Only carries lid / cb_id keys actually
-    /// referenced by `body`; never carries custom or global keys.
-    pub additions: BTreeMap<LookupKey, String>,
-    /// Non-fatal warnings — e.g. ambiguous URL matches, anchor-less
-    /// lid placeholders in subject/preheader.
+    /// Unresolved placeholders, retired-namespace tokens, etc.
+    pub errors: Vec<ResolutionError>,
+    /// Non-fatal warnings — ambiguous URL matches, count mismatches,
+    /// stripped cb_id filters on new resources.
     pub warnings: Vec<String>,
 }
 
-/// Prepare a templatized field for resolution.
+/// Resolve every `__BRAZESYNC__` in `template` against `remote`.
 ///
-/// `remote` is `None` when the resource does not yet exist in Braze
-/// (new resource on first apply). `field` selects the URL-anchor
-/// strategy (HTML href, plaintext URL, etc.).
+/// `remote = None` means the resource does not yet exist in Braze
+/// (new-resource path: lid → slug fallback, cb_id → filter stripped).
 pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> PreparedTemplate {
-    if !template.contains("__BRAZESYNC.") {
+    let mut errors: Vec<ResolutionError> = Vec::new();
+
+    // Retired v0.15 envelope detection — fatal so operators re-run
+    // `templatize`.
+    for tok in find_suspicious_placeholders(template) {
+        errors.push(ResolutionError::RetiredNamespace { token: tok });
+    }
+
+    if !template.contains(TOKEN) {
         return PreparedTemplate {
             body: template.to_string(),
-            additions: BTreeMap::new(),
+            errors,
             warnings: Vec::new(),
         };
     }
 
-    // For new resources we first strip the cb_id `| id: '…'` filter
-    // out of the template entirely. The remaining `__BRAZESYNC.lid.*__`
-    // placeholders get fallback values below.
     let (body, mut warnings) = match remote {
         Some(_) => (template.to_string(), Vec::new()),
         None => strip_cb_id_filters(template),
     };
 
-    let mut additions: BTreeMap<LookupKey, String> = BTreeMap::new();
+    // Map each `__BRAZESYNC__` occurrence in `body` to its resolved
+    // value. None entries are recorded as errors instead.
+    let placeholders = extract_placeholders(&body);
+    let mut resolved: Vec<(usize, usize, Option<String>)> = Vec::new();
 
-    match remote {
-        Some(remote_body) => {
-            resolve_lid_from_remote(&body, remote_body, field, &mut additions, &mut warnings);
-            resolve_cb_id_from_remote(&body, remote_body, &mut additions, &mut warnings);
+    // Collect lid placeholders so we can do the URL-bucket FIFO match in
+    // one pass.
+    let lid_indices: Vec<usize> = placeholders
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.ty == Some(PlaceholderType::Lid))
+        .map(|(i, _)| i)
+        .collect();
+
+    let lid_values: Vec<Option<String>> = match remote {
+        Some(remote_body) => resolve_lid_batch(&body, &placeholders, &lid_indices, remote_body, field, &mut warnings),
+        None => fallback_lid_batch(&body, &placeholders, &lid_indices),
+    };
+
+    // cb_id resolution map (offset → value or None).
+    let cb_id_resolved: BTreeMap<usize, Option<String>> = match remote {
+        Some(remote_body) => resolve_cb_id_batch(&body, &placeholders, remote_body, &mut warnings),
+        None => BTreeMap::new(),
+    };
+
+    let mut lid_iter = lid_values.into_iter();
+    for ph in &placeholders {
+        match ph.ty {
+            None => {
+                errors.push(ResolutionError::UnknownContext { start: ph.start });
+                resolved.push((ph.start, ph.end, None));
+            }
+            Some(PlaceholderType::Lid) => {
+                let v = lid_iter.next().flatten();
+                if v.is_none() {
+                    let anchor = lid_anchor_for(&body, ph.start, field);
+                    errors.push(ResolutionError::UnresolvedLid {
+                        start: ph.start,
+                        anchor,
+                    });
+                }
+                resolved.push((ph.start, ph.end, v));
+            }
+            Some(PlaceholderType::CbId) => {
+                let v = cb_id_resolved.get(&ph.start).cloned().flatten();
+                if v.is_none() {
+                    let name = cb_id_name_at(&body, ph.start);
+                    errors.push(ResolutionError::UnresolvedCbId {
+                        start: ph.start,
+                        name,
+                    });
+                }
+                resolved.push((ph.start, ph.end, v));
+            }
         }
-        None => {
-            fallback_lid_values(&body, &mut additions);
-            // cb_id placeholders no longer exist after stripping; nothing
-            // to add for cb_id in the new-resource path.
+    }
+
+    // Substitute back-to-front so byte offsets stay valid.
+    let mut out = body;
+    for (start, end, value) in resolved.into_iter().rev() {
+        if let Some(v) = value {
+            out.replace_range(start..end, &v);
         }
     }
 
     PreparedTemplate {
-        body,
-        additions,
+        body: out,
+        errors,
         warnings,
     }
 }
 
-/// Strip `| id: '__BRAZESYNC.cb_id.<key>__'` filters from a template
-/// body. Used for the new-resource fallback path so we POST the
-/// documented `{{content_blocks.${NAME}}}` form.
-///
-/// Returns the rewritten body plus one informational warning per
-/// stripped occurrence.
-fn strip_cb_id_filters(body: &str) -> (String, Vec<String>) {
-    let re = cb_id_filter_re();
-    let mut warnings: Vec<String> = Vec::new();
-    for cap in re.captures_iter(body) {
-        if let Some(key) = cap.get(1) {
-            warnings.push(format!(
-                "cb_id '{}': new resource — stripping `| id: '…'` filter; \
-                 Braze will assign a cb_id on first save",
-                key.as_str()
-            ));
-        }
-    }
-    let out = re.replace_all(body, "").to_string();
-    (out, warnings)
-}
-
-fn cb_id_filter_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        // Match `\s*| id: '__BRAZESYNC.cb_id.<key>__'` so the rendered
-        // form is `{{content_blocks.${NAME}}}` with no stray pipe.
-        Regex::new(r#"\s*\|\s*id:\s*['"]__BRAZESYNC\.cb_id\.([a-z][a-z0-9_]*)__['"]"#)
-            .expect("cb_id filter regex is valid")
-    })
-}
-
-fn fallback_lid_values(body: &str, out: &mut BTreeMap<LookupKey, String>) {
-    for ph in extract_placeholders(body) {
-        if matches!(ph.ty, PlaceholderType::Lid) {
-            out.insert((PlaceholderType::Lid, ph.key.clone()), ph.key);
-        }
-    }
-}
-
-/// Pair lid placeholders in `template` with `| lid: '…'` values in
-/// `remote` by URL anchor. Multiple placeholders sharing one anchor
-/// URL consume distinct remote occurrences in template appearance
-/// order.
-fn resolve_lid_from_remote(
-    template: &str,
+/// Resolve lid placeholders against `remote`. Returns one entry per
+/// lid placeholder in template-appearance order.
+fn resolve_lid_batch(
+    body: &str,
+    placeholders: &[crate::values::placeholder::Placeholder],
+    lid_indices: &[usize],
     remote: &str,
     field: FieldKind,
-    out: &mut BTreeMap<LookupKey, String>,
     warnings: &mut Vec<String>,
-) {
+) -> Vec<Option<String>> {
+    if lid_indices.is_empty() {
+        return Vec::new();
+    }
     if !field.supports_html_anchor() && !field.supports_plaintext_anchor() {
-        resolve_lid_positional(template, remote, field, out, warnings);
-        return;
+        return resolve_lid_positional(placeholders, lid_indices, remote, field, warnings);
     }
 
     let remote_pairs: Vec<LidCorrelation> = if field.supports_html_anchor() {
@@ -142,25 +158,20 @@ fn resolve_lid_from_remote(
         extract_plaintext_lid_values(remote)
     };
 
-    // (template_key, optional URL anchor, byte offset) in template
-    // appearance order.
-    let template_lids = collect_template_lid_anchors(template, field);
+    // Each lid placeholder's anchor URL in template-appearance order.
+    let anchors: Vec<Option<String>> = lid_indices
+        .iter()
+        .map(|&i| lid_anchor_for(body, placeholders[i].start, field))
+        .collect();
 
-    // Group remote pairs by normalized URL, FIFO so positional
-    // assignment is deterministic.
     let mut by_url: BTreeMap<String, std::collections::VecDeque<&LidCorrelation>> = BTreeMap::new();
     for p in &remote_pairs {
         by_url.entry(p.url.clone()).or_default().push_back(p);
     }
 
-    // Ambiguity warning: a URL with multiple remote occurrences AND
-    // multiple template placeholders means a Dashboard-side link
-    // reorder would silently miscorrelate. Emit once per ambiguous URL.
     let mut tmpl_per_url: BTreeMap<String, usize> = BTreeMap::new();
-    for (_, anchor, _) in &template_lids {
-        if let Some(u) = anchor {
-            *tmpl_per_url.entry(u.clone()).or_insert(0) += 1;
-        }
+    for u in anchors.iter().flatten() {
+        *tmpl_per_url.entry(u.clone()).or_insert(0) += 1;
     }
     for (url, bucket) in &by_url {
         let tmpl_count = tmpl_per_url.get(url).copied().unwrap_or(0);
@@ -175,145 +186,224 @@ fn resolve_lid_from_remote(
         }
     }
 
-    for (key, anchor, _offset) in template_lids {
+    let mut out = Vec::with_capacity(lid_indices.len());
+    for anchor in anchors {
         let Some(url) = anchor else {
-            warnings.push(format!(
-                "lid '{key}': placeholder has no URL anchor in template — \
+            warnings.push(
+                "lid placeholder has no URL anchor in template — \
                  anchor-less correlation is not supported; resolve will fail"
-            ));
+                    .to_string(),
+            );
+            out.push(None);
             continue;
         };
-        let needle = normalize_url(&url);
-        let pick = by_url
-            .get_mut(&needle)
-            .and_then(|bucket| bucket.pop_front());
-        let Some(pick) = pick else {
-            // Leave it unresolved — `resolve_placeholders` will surface
-            // the unresolved key with full context (offset, etc.).
-            warnings.push(format!(
-                "lid '{key}': URL anchor '{needle}' not found in remote body"
-            ));
-            continue;
-        };
-        out.insert((PlaceholderType::Lid, key), pick.value.clone());
+        let pick = by_url.get_mut(&url).and_then(|b| b.pop_front());
+        match pick {
+            Some(p) => out.push(Some(p.value.clone())),
+            None => {
+                warnings.push(format!(
+                    "lid: URL anchor '{url}' not found in remote body"
+                ));
+                out.push(None);
+            }
+        }
     }
+    out
 }
 
-/// Positional lid resolution for fields without URL anchors
-/// (subject / preheader). Maps the Nth template lid placeholder to the
-/// Nth `| lid: '…'` value in the remote field. Counts mismatch is a
-/// warning, not a fatal error — leftover unresolved placeholders will
-/// still surface via `resolve_placeholders` if they remain unfilled.
+/// Positional FIFO match for subject / preheader.
 fn resolve_lid_positional(
-    template: &str,
+    placeholders: &[crate::values::placeholder::Placeholder],
+    lid_indices: &[usize],
     remote: &str,
     field: FieldKind,
-    out: &mut BTreeMap<LookupKey, String>,
     warnings: &mut Vec<String>,
-) {
-    let template_keys: Vec<String> = extract_placeholders(template)
-        .into_iter()
-        .filter(|p| matches!(p.ty, PlaceholderType::Lid))
-        .map(|p| p.key)
-        .collect();
-    if template_keys.is_empty() {
-        return;
-    }
+) -> Vec<Option<String>> {
     let remote_values = extract_lid_values_unanchored(remote);
     let field_label = match field {
         FieldKind::EmailSubject => "subject",
         FieldKind::EmailPreheader => "preheader",
         _ => "field",
     };
-    if remote_values.len() != template_keys.len() {
+    if remote_values.len() != lid_indices.len() {
         warnings.push(format!(
             "{field_label} has {} lid placeholder(s) but remote body has {} lid value(s); \
              positional match may misalign — review rendered output",
-            template_keys.len(),
+            lid_indices.len(),
             remote_values.len()
         ));
     }
-    for (key, value) in template_keys.into_iter().zip(remote_values) {
-        out.insert((PlaceholderType::Lid, key), value);
-    }
-}
-
-/// Pair cb_id placeholders in `template` with `${NAME}` includes in
-/// `remote` by Liquid name. Same `${NAME}` referenced twice in the
-/// template shares one remote cb_id value.
-fn resolve_cb_id_from_remote(
-    template: &str,
-    remote: &str,
-    out: &mut BTreeMap<LookupKey, String>,
-    warnings: &mut Vec<String>,
-) {
-    let remote_pairs = extract_cb_id_values(remote);
-    let remote_by_name: BTreeMap<&str, &CbIdCorrelation> =
-        remote_pairs.iter().map(|p| (p.name.as_str(), p)).collect();
-
-    for (key, name) in collect_template_cb_id_names(template) {
-        match remote_by_name.get(name.as_str()) {
-            Some(pick) => {
-                out.insert((PlaceholderType::CbId, key), pick.value.clone());
-            }
-            None => {
-                warnings.push(format!(
-                    "cb_id '{key}': `${{{name}}}` include not found in remote body"
-                ));
-            }
-        }
-    }
-}
-
-/// Walk a templatized body and emit `(key, optional URL anchor, offset)`
-/// for every `__BRAZESYNC.lid.<key>__`. URL anchor extraction mirrors
-/// templatize's `preceding_url` logic but is rerun here because the
-/// templatized body has the same surrounding HTML/text as the original.
-fn collect_template_lid_anchors(
-    body: &str,
-    field: FieldKind,
-) -> Vec<(String, Option<String>, usize)> {
-    let mut out = Vec::new();
-    for ph in extract_placeholders(body) {
-        if !matches!(ph.ty, PlaceholderType::Lid) {
-            continue;
-        }
-        let anchor = lid_anchor_for(body, ph.start, field);
-        out.push((ph.key, anchor, ph.start));
+    let _ = placeholders;
+    let mut out = Vec::with_capacity(lid_indices.len());
+    let mut iter = remote_values.into_iter();
+    for _ in lid_indices {
+        out.push(iter.next());
     }
     out
 }
 
-/// Walk a templatized body and emit `(key, name)` for every
-/// `{{content_blocks.${NAME} | id: '__BRAZESYNC.cb_id.<key>__'}}`.
-fn collect_template_cb_id_names(body: &str) -> Vec<(String, String)> {
+/// Pair cb_id placeholders with remote `${NAME} | id: 'cbN'` matches by
+/// `${NAME}`. Returns an offset → value map.
+fn resolve_cb_id_batch(
+    body: &str,
+    placeholders: &[crate::values::placeholder::Placeholder],
+    remote: &str,
+    warnings: &mut Vec<String>,
+) -> BTreeMap<usize, Option<String>> {
+    let remote_pairs = extract_cb_id_values(remote);
+    let remote_by_name: BTreeMap<&str, &CbIdCorrelation> =
+        remote_pairs.iter().map(|p| (p.name.as_str(), p)).collect();
+
+    let mut out: BTreeMap<usize, Option<String>> = BTreeMap::new();
+    for ph in placeholders {
+        if ph.ty != Some(PlaceholderType::CbId) {
+            continue;
+        }
+        let name = match cb_id_name_at(body, ph.start) {
+            Some(n) => n,
+            None => {
+                warnings.push(format!(
+                    "cb_id: `__BRAZESYNC__` at byte {} not inside `{{{{content_blocks.${{NAME}} | id: '…'}}}}` — cannot correlate",
+                    ph.start
+                ));
+                out.insert(ph.start, None);
+                continue;
+            }
+        };
+        match remote_by_name.get(name.as_str()) {
+            Some(pick) => {
+                out.insert(ph.start, Some(pick.value.clone()));
+            }
+            None => {
+                warnings.push(format!(
+                    "cb_id: `${{{name}}}` include not found in remote body"
+                ));
+                out.insert(ph.start, None);
+            }
+        }
+    }
+    out
+}
+
+/// Generate fallback lid values for the new-resource path. Uses URL
+/// path tail slug; collisions are disambiguated with `_2`, `_3`, ….
+fn fallback_lid_batch(
+    body: &str,
+    placeholders: &[crate::values::placeholder::Placeholder],
+    lid_indices: &[usize],
+) -> Vec<Option<String>> {
+    let mut used: BTreeMap<String, usize> = BTreeMap::new();
+    let mut seq = 0usize;
+    let mut out = Vec::with_capacity(lid_indices.len());
+    for &i in lid_indices {
+        let anchor = lid_anchor_for(body, placeholders[i].start, FieldKind::ContentBlock);
+        let base = match anchor.as_deref() {
+            Some(u) => {
+                let tail = url_path_tail(u);
+                let slug = slug_for_lid(&tail);
+                if slug.is_empty() {
+                    seq += 1;
+                    format!("lid_{seq}")
+                } else {
+                    slug
+                }
+            }
+            None => {
+                seq += 1;
+                format!("lid_{seq}")
+            }
+        };
+        out.push(Some(unique(base, &mut used)));
+    }
+    out
+}
+
+fn unique(base: String, used: &mut BTreeMap<String, usize>) -> String {
+    let count = used.entry(base.clone()).or_insert(0);
+    *count += 1;
+    if *count == 1 {
+        base
+    } else {
+        format!("{base}_{count}")
+    }
+}
+
+fn url_path_tail(url: &str) -> String {
+    let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let path_start = after_scheme
+        .find('/')
+        .map(|i| i + 1)
+        .unwrap_or(after_scheme.len());
+    let path = &after_scheme[path_start..];
+    path.rsplit('/')
+        .find(|s| !s.is_empty())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Strip `| id: '__BRAZESYNC__'` filters from a template body. Used
+/// for the new-resource fallback so we POST the documented
+/// `{{content_blocks.${NAME}}}` form.
+fn strip_cb_id_filters(body: &str) -> (String, Vec<String>) {
+    let re = cb_id_filter_re();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut spans: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+    for cap in re.captures_iter(body) {
+        let whole = cap.get(0).expect("group 0 always present");
+        let name = cap
+            .get(1)
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        warnings.push(format!(
+            "cb_id `${{{name}}}`: new resource — stripping `| id: '…'` filter; \
+             Braze will assign a cb_id on first save"
+        ));
+        spans.push((
+            whole.range(),
+            format!("{{{{content_blocks.${{{name}}}}}}}"),
+        ));
+    }
+    let mut out = body.to_string();
+    for (range, replacement) in spans.into_iter().rev() {
+        out.replace_range(range, &replacement);
+    }
+    (out, warnings)
+}
+
+fn cb_id_filter_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        // Captures `${NAME}` so we can re-emit the documented form
+        // (`{{content_blocks.${NAME}}}`) without the cb_id filter.
+        Regex::new(
+            r#"\{\{\s*content_blocks\.\$\{\s*([^\s}|]+)\s*\}\s*\|\s*id:\s*['"]__BRAZESYNC__['"]\s*\}\}"#,
+        )
+        .expect("cb_id filter regex is valid")
+    })
+}
+
+/// Look up the `${NAME}` enclosing a cb_id `__BRAZESYNC__` token.
+fn cb_id_name_at(body: &str, offset: usize) -> Option<String> {
     let re = cb_id_template_re();
-    re.captures_iter(body)
-        .filter_map(|cap| {
-            let name = cap.get(1)?.as_str().to_string();
-            let key = cap.get(2)?.as_str().to_string();
-            Some((key, name))
-        })
-        .collect()
+    for cap in re.captures_iter(body) {
+        let whole = cap.get(0)?;
+        if whole.start() <= offset && offset < whole.end() {
+            return cap.get(1).map(|m| m.as_str().to_string());
+        }
+    }
+    None
 }
 
 fn cb_id_template_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"\{\{\s*content_blocks\.\$\{\s*([^\s}|]+)\s*\}\s*\|\s*id:\s*['"]__BRAZESYNC\.cb_id\.([a-z][a-z0-9_]*)__['"]\s*\}\}"#,
+            r#"\{\{\s*content_blocks\.\$\{\s*([^\s}|]+)\s*\}\s*\|\s*id:\s*['"]__BRAZESYNC__['"]\s*\}\}"#,
         )
         .expect("cb_id template regex is valid")
     })
 }
 
-/// Find the URL anchor for a lid placeholder at `offset` in `body`.
-///
-/// Same precedence as templatize:
-/// - HTML / content_block: enclosing element's URL attribute wins;
-///   else nearest prior `<a href>`.
-/// - Plaintext: nearest prior `https?://…`.
-/// - Subject / preheader: no URL anchor (returns None).
 fn lid_anchor_for(body: &str, offset: usize, field: FieldKind) -> Option<String> {
     if field.supports_html_anchor() {
         if let Some(tag) = enclosing_open_tag(body, offset) {
@@ -323,9 +413,6 @@ fn lid_anchor_for(body: &str, offset: usize, field: FieldKind) -> Option<String>
             {
                 return Some(normalize_url(url.as_str()));
             }
-            // Inside a non-URL open tag (e.g. `<a name>` or `<custom data-x>`):
-            // do NOT fall through to a prior `<a href>` (matches the
-            // templatize semantics that tests pin).
             return None;
         }
         let prefix = &body[..offset];
@@ -393,120 +480,124 @@ mod tests {
 
     #[test]
     fn no_placeholders_returns_body_verbatim() {
-        let p = prepare_field(
-            "<p>hello</p>",
-            Some("<p>hello</p>"),
-            FieldKind::ContentBlock,
-        );
-        assert_eq!(p.body, "<p>hello</p>");
-        assert!(p.additions.is_empty());
+        let p = prepare_field("<p>hi</p>", Some("<p>hi</p>"), FieldKind::ContentBlock);
+        assert_eq!(p.body, "<p>hi</p>");
+        assert!(p.errors.is_empty());
     }
 
     #[test]
     fn html_lid_resolved_via_url_anchor() {
-        let template = r#"<a href="https://example.com/cta">__BRAZESYNC.lid.cta__</a>"#;
+        let template = r#"<a href="https://example.com/cta">{{x | lid: '__BRAZESYNC__'}}</a>"#;
         let remote = r#"<a href="https://example.com/cta">{{x | lid: 'newlidvalue1'}}</a>"#;
         let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
-        assert_eq!(
-            p.additions
-                .get(&(PlaceholderType::Lid, "cta".to_string()))
-                .map(String::as_str),
-            Some("newlidvalue1")
-        );
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.body.contains("'newlidvalue1'"));
     }
 
     #[test]
     fn two_lid_placeholders_sharing_one_url_consume_distinct_remote_values() {
-        let template = r#"<a href="https://x.com/a">__BRAZESYNC.lid.a__</a>
-<a href="https://x.com/a">__BRAZESYNC.lid.b__</a>"#;
+        let template = r#"<a href="https://x.com/a">{{x | lid: '__BRAZESYNC__'}}</a>
+<a href="https://x.com/a">{{x | lid: '__BRAZESYNC__'}}</a>"#;
         let remote = r#"<a href="https://x.com/a">{{x | lid: 'firstvalu1a'}}</a>
 <a href="https://x.com/a">{{x | lid: 'secondval2b'}}</a>"#;
         let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
-        assert_eq!(
-            p.additions[&(PlaceholderType::Lid, "a".into())],
-            "firstvalu1a"
-        );
-        assert_eq!(
-            p.additions[&(PlaceholderType::Lid, "b".into())],
-            "secondval2b"
-        );
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.body.contains("'firstvalu1a'"));
+        assert!(p.body.contains("'secondval2b'"));
     }
 
     #[test]
     fn cb_id_resolved_via_name() {
         let template =
-            "{{content_blocks.${promo_banner} | id: '__BRAZESYNC.cb_id.promo_banner__'}}";
+            "{{content_blocks.${promo_banner} | id: '__BRAZESYNC__'}}";
         let remote = "{{content_blocks.${promo_banner} | id: 'cb99'}}";
         let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
-        assert_eq!(
-            p.additions
-                .get(&(PlaceholderType::CbId, "promo_banner".to_string()))
-                .map(String::as_str),
-            Some("cb99")
-        );
+        assert!(p.errors.is_empty());
+        assert!(p.body.contains("'cb99'"));
     }
 
     #[test]
-    fn new_resource_lid_falls_back_to_placeholder_key() {
-        let template = r#"<a href="https://x.com/cta">__BRAZESYNC.lid.spring_sale__</a>"#;
+    fn new_resource_lid_uses_url_slug_fallback() {
+        let template =
+            r#"<a href="https://x.com/spring-sale">{{x | lid: '__BRAZESYNC__'}}</a>"#;
         let p = prepare_field(template, None, FieldKind::ContentBlock);
-        assert_eq!(
-            p.additions
-                .get(&(PlaceholderType::Lid, "spring_sale".to_string()))
-                .map(String::as_str),
-            Some("spring_sale")
-        );
+        assert!(p.errors.is_empty());
+        assert!(p.body.contains("'spring_sale'"), "got: {}", p.body);
+    }
+
+    #[test]
+    fn new_resource_lid_without_anchor_uses_sequential() {
+        let template = "no anchor {{x | lid: '__BRAZESYNC__'}} mid {{x | lid: '__BRAZESYNC__'}}";
+        let p = prepare_field(template, None, FieldKind::EmailSubject);
+        assert!(p.body.contains("'lid_1'"));
+        assert!(p.body.contains("'lid_2'"));
     }
 
     #[test]
     fn new_resource_strips_cb_id_filter() {
-        let template = "before {{content_blocks.${promo} | id: '__BRAZESYNC.cb_id.promo__'}} after";
+        let template =
+            "before {{content_blocks.${promo} | id: '__BRAZESYNC__'}} after";
         let p = prepare_field(template, None, FieldKind::ContentBlock);
-        assert_eq!(
-            p.body, "before {{content_blocks.${promo}}} after",
-            "cb_id filter must be stripped for new resources"
-        );
-        assert!(
-            !p.additions
-                .contains_key(&(PlaceholderType::CbId, "promo".into())),
-            "no cb_id addition needed once filter is stripped"
-        );
+        assert_eq!(p.body, "before {{content_blocks.${promo}}} after");
         assert!(p.warnings.iter().any(|w| w.contains("promo")));
     }
 
     #[test]
-    fn lid_without_remote_match_emits_warning_and_no_addition() {
-        let template = r#"<a href="https://x.com/cta">__BRAZESYNC.lid.cta__</a>"#;
+    fn lid_without_remote_match_surfaces_error() {
+        let template = r#"<a href="https://x.com/cta">{{x | lid: '__BRAZESYNC__'}}</a>"#;
         let remote = r#"<p>no anchor</p>"#;
         let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
-        assert!(!p
-            .additions
-            .contains_key(&(PlaceholderType::Lid, "cta".to_string())));
-        assert!(p.warnings.iter().any(|w| w.contains("not found")));
+        assert!(p
+            .errors
+            .iter()
+            .any(|e| matches!(e, ResolutionError::UnresolvedLid { .. })));
+    }
+
+    #[test]
+    fn retired_envelope_is_fatal() {
+        let template = "stuff __BRAZESYNC.lid.foo__ stuff";
+        let p = prepare_field(template, None, FieldKind::ContentBlock);
+        assert!(p
+            .errors
+            .iter()
+            .any(|e| matches!(e, ResolutionError::RetiredNamespace { .. })));
+    }
+
+    #[test]
+    fn unknown_context_is_fatal() {
+        let template = "bare __BRAZESYNC__ token";
+        let p = prepare_field(template, Some(""), FieldKind::ContentBlock);
+        assert!(p
+            .errors
+            .iter()
+            .any(|e| matches!(e, ResolutionError::UnknownContext { .. })));
     }
 
     #[test]
     fn vml_href_anchors_lid() {
-        // Real templatized form: the lid placeholder is INSIDE the
-        // open-tag's href attribute value (matches what templatize
-        // emits for `<v:roundrect href="…?lid={{x | lid: 'X'}}">`).
-        let template = r#"<v:roundrect href="https://x.com/page/?lid={{x | lid: '__BRAZESYNC.lid.page__'}}">label</v:roundrect>"#;
+        let template = r#"<v:roundrect href="https://x.com/page/?lid={{x | lid: '__BRAZESYNC__'}}">label</v:roundrect>"#;
         let remote = r#"<v:roundrect href="https://x.com/page/?lid={{x | lid: 'liveeeeeeee1'}}">label</v:roundrect>"#;
         let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
-        assert_eq!(
-            p.additions[&(PlaceholderType::Lid, "page".into())],
-            "liveeeeeeee1"
-        );
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.body.contains("'liveeeeeeee1'"));
     }
 
     #[test]
     fn plaintext_url_anchor_matches() {
-        let template = "Visit https://x.com/cta __BRAZESYNC.lid.cta__ now";
+        let template = "Visit https://x.com/cta {{x | lid: '__BRAZESYNC__'}} now";
         let remote = "Visit https://x.com/cta {{x | lid: 'liveeeeeeee1'}} now";
         let p = prepare_field(template, Some(remote), FieldKind::EmailPlainBody);
-        assert_eq!(
-            p.additions[&(PlaceholderType::Lid, "cta".into())],
-            "liveeeeeeee1"
-        );
+        assert!(p.errors.is_empty());
+        assert!(p.body.contains("'liveeeeeeee1'"));
+    }
+
+    #[test]
+    fn subject_lid_resolves_positionally() {
+        let template = "{{x | lid: '__BRAZESYNC__'}} A {{y | lid: '__BRAZESYNC__'}}";
+        let remote = "{{x | lid: 'firstval123'}} A {{y | lid: 'secondval2b'}}";
+        let p = prepare_field(template, Some(remote), FieldKind::EmailSubject);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.body.contains("'firstval123'"));
+        assert!(p.body.contains("'secondval2b'"));
     }
 }

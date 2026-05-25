@@ -51,7 +51,7 @@ fn templatize_rewrites_body_and_writes_canonical_and_skeleton() {
 
     let body = fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
     assert!(
-        body.contains("__BRAZESYNC.lid.cta__"),
+        body.contains("| lid: '__BRAZESYNC__'"),
         "expected placeholder in rewritten body, got:\n{body}"
     );
     assert!(
@@ -99,7 +99,7 @@ fn templatize_skips_already_templated_resources() {
     write_local_content_block(
         tmp.path(),
         "promo",
-        "<a href=\"https://example.com/cta\">{{ x | lid: '__BRAZESYNC.lid.cta__' }}go</a>",
+        "<a href=\"https://example.com/cta\">{{ x | lid: '__BRAZESYNC__' }}go</a>",
     );
 
     let output = Command::cargo_bin("braze-sync")
@@ -118,7 +118,7 @@ fn templatize_skips_already_templated_resources() {
 
     // Body unchanged.
     let body = fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
-    assert!(body.contains("__BRAZESYNC.lid.cta__"));
+    assert!(body.contains("__BRAZESYNC__"));
     // No canonical values file written because no rewrite occurred.
     assert!(!tmp.path().join("values").join("prod.yaml").exists());
 }
@@ -173,11 +173,12 @@ fn templatize_repeated_cb_id_name_yields_single_key() {
         .success();
 
     let body = fs::read_to_string(tmp.path().join("content_blocks").join("duo.liquid")).unwrap();
-    let count = body.matches("__BRAZESYNC.cb_id.promo__").count();
-    assert_eq!(count, 2, "both occurrences must use the same `promo` key");
-    assert!(
-        !body.contains("__BRAZESYNC.cb_id.promo_2__"),
-        "repeated ${{promo}} must NOT create a `promo_2` key, got:\n{body}"
+    let count = body
+        .matches("{{content_blocks.${promo} | id: '__BRAZESYNC__'}}")
+        .count();
+    assert_eq!(
+        count, 2,
+        "both occurrences must rewrite to the anonymous token, got:\n{body}"
     );
 }
 
@@ -191,7 +192,7 @@ fn templatize_picks_up_remaining_raw_lid_after_partial_migration() {
     write_local_content_block(
         tmp.path(),
         "promo",
-        "<a href=\"https://example.com/cta\">{{ x | lid: '__BRAZESYNC.lid.cta__' }}A</a>\n\
+        "<a href=\"https://example.com/cta\">{{ x | lid: '__BRAZESYNC__' }}A</a>\n\
          <a href=\"https://example.com/promo\">{{ x | lid: 'rawvalue1234' }}B</a>",
     );
 
@@ -203,13 +204,10 @@ fn templatize_picks_up_remaining_raw_lid_after_partial_migration() {
         .success();
 
     let body = fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
-    assert!(
-        body.contains("__BRAZESYNC.lid.cta__"),
-        "existing placeholder must be preserved, got:\n{body}"
-    );
-    assert!(
-        body.contains("__BRAZESYNC.lid.promo__"),
-        "remaining raw lid must now be templated, got:\n{body}"
+    let count = body.matches("| lid: '__BRAZESYNC__'").count();
+    assert_eq!(
+        count, 2,
+        "both lid occurrences must end up as anonymous placeholders, got:\n{body}"
     );
     assert!(
         !body.contains("rawvalue1234"),

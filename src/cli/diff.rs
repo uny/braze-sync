@@ -272,7 +272,7 @@ pub(crate) async fn compute_content_block_plan(
         .try_collect()
         .await?;
 
-    // Resolve `__BRAZESYNC.*__` placeholders now that the remote body
+    // Resolve `__BRAZESYNC__` placeholders now that the remote body
     // is in hand. lid / cb_id values come from the remote (or fallback
     // for new resources).
     drop(local_by_name);

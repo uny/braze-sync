@@ -771,7 +771,7 @@ async fn content_block_diff_no_drift_when_placeholders_resolve_to_remote() {
     write_local_content_block(
         tmp.path(),
         "promo",
-        "<a href=\"https://example.com/cta\">{{x | lid: '__BRAZESYNC.lid.cta__'}}</a>\n",
+        "<a href=\"https://example.com/cta\">{{x | lid: '__BRAZESYNC__'}}</a>\n",
     );
 
     let output = tokio::task::spawn_blocking(move || {
@@ -833,7 +833,7 @@ async fn email_template_diff_no_drift_when_placeholders_resolve_to_remote() {
         tmp.path(),
         "welcome",
         "Hi",
-        "<a href=\"https://example.com/cta\">{{x | lid: '__BRAZESYNC.lid.cta__'}}</a>",
+        "<a href=\"https://example.com/cta\">{{x | lid: '__BRAZESYNC__'}}</a>",
         "Hi",
     );
 

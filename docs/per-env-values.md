@@ -1,4 +1,4 @@
-# Braze-managed placeholders (`__BRAZESYNC.lid.*__`, `__BRAZESYNC.cb_id.*__`)
+# Braze-managed placeholders (`__BRAZESYNC__`)
 
 When braze-sync pushes from Git to multiple environments, two values
 inside a resource body are **structurally identical but literally
@@ -14,45 +14,52 @@ Both are **Braze-owned**: each workspace assigns its own values on
 first save, the dashboard may reassign them after manual edits, and
 nothing the operator does in Git can guarantee a specific value.
 braze-sync therefore treats them as **runtime-resolved** — the local
-Git body carries a stable `__BRAZESYNC.*__` placeholder, and resolution
+Git body carries a stable `__BRAZESYNC__` placeholder, and resolution
 happens at apply/diff time by reading the live remote body via the
 Braze API.
 
 ## Placeholder syntax
 
 ```text
-__BRAZESYNC.<type>.<key>__
+__BRAZESYNC__
 ```
 
-- `<type>` ∈ `lid` | `cb_id`
-- `<key>` matches `[a-z][a-z0-9_]*` (snake_case)
+A single anonymous token represents both `lid` and `cb_id`
+placeholders. The type is inferred from the surrounding filter syntax:
+
+- `| lid: '__BRAZESYNC__'` → `lid`
+- `| id:  '__BRAZESYNC__'` → `cb_id`
 
 Example template body (this is what `braze-sync templatize` produces):
 
 ```liquid
-<a href="https://example.com/spring-sale">{{ ${cblid} | lid: '__BRAZESYNC.lid.spring_sale__' }}click</a>
-{{ content_blocks.${cb_promo_image} | id: '__BRAZESYNC.cb_id.cb_promo_image__' }}
+<a href="https://example.com/spring-sale">{{ ${cblid} | lid: '__BRAZESYNC__' }}click</a>
+{{ content_blocks.${cb_promo_image} | id: '__BRAZESYNC__' }}
 ```
 
-The double-underscore envelope and dot namespace are picked so the
-token is verbatim-safe in Liquid, HTML, and JSON contexts.
+The double-underscore envelope is picked so the token is verbatim-safe
+in Liquid, HTML, and JSON contexts. A `__BRAZESYNC__` outside a
+recognized `| lid:` / `| id:` argument fails resolution with an
+`UnknownContext` error so the typo doesn't slip through silently.
 
-A typo with the wrong envelope (`__BRAZSYNC.…__`) or a retired/unknown
-type (`__BRAZESYNC.custom.foo__`) surfaces as a `WARN:` line so it
-doesn't slip through silently.
+The v0.15 form `__BRAZESYNC.<type>.<key>__` is **retired**. It is
+detected on parse and surfaces as a `RetiredNamespace` error pointing
+operators at `braze-sync templatize`.
 
 ## How resolution works
 
 For every `apply` and `diff`:
 
 1. braze-sync `GET`s the live remote body for the resource.
-2. For each `__BRAZESYNC.lid.<key>__` in the local template, it
-   identifies the **URL anchor** (the surrounding `<a href>`,
-   VML/SVG `href`, or bare URL in plaintext) and pairs it with the
-   matching anchor in the remote body to lift the live `lid` value.
-3. For each `__BRAZESYNC.cb_id.<key>__`, it identifies the surrounding
-   `{{content_blocks.${NAME}}}` include and looks up the live `cb_id`
-   under the same `${NAME}` in the remote body.
+2. For each `__BRAZESYNC__` in a `| lid:` argument, it identifies the
+   **URL anchor** (the surrounding `<a href>`, VML/SVG `href`, or
+   bare URL in plaintext) and pairs it with the matching anchor in
+   the remote body to lift the live `lid` value. Multiple
+   placeholders sharing one URL consume distinct remote values in
+   template appearance order.
+3. For each `__BRAZESYNC__` in a `| id:` argument inside a
+   `{{content_blocks.${NAME} ...}}` include, it looks up the live
+   `cb_id` under the same `${NAME}` in the remote body.
 4. The resolved body is what diff compares against remote and what
    apply POSTs.
 
@@ -65,15 +72,15 @@ structure changes show up.
 When a resource doesn't exist in Braze yet, there is no remote body to
 correlate against. braze-sync applies a controlled fallback:
 
-- **`lid`**: the placeholder key is used verbatim as the lid value
-  (e.g. `__BRAZESYNC.lid.spring_sale__` → `spring_sale`). Braze
-  accepts arbitrary strings and may reassign on first dashboard open;
-  the next apply picks up the reassigned value via the
-  remote-resolution path above.
-- **`cb_id`**: the `| id: '__BRAZESYNC.cb_id.<key>__'` filter is
-  stripped entirely, leaving the documented form
-  `{{content_blocks.${NAME}}}`. Braze derives an internal `cb_id` on
-  save.
+- **`lid`**: derived from the URL path tail of the surrounding anchor,
+  slug-normalized (e.g. `https://example.com/spring-sale` →
+  `spring_sale`). Repeated slugs are disambiguated with `_2`, `_3`, …
+  URL-less placeholders fall back to positional `lid_1`, `lid_2`, …
+  Braze may reassign on first dashboard open; the next apply picks up
+  the reassigned value via the remote-resolution path above.
+- **`cb_id`**: the `| id: '__BRAZESYNC__'` filter is stripped
+  entirely, leaving the documented form `{{content_blocks.${NAME}}}`.
+  Braze derives an internal `cb_id` on save.
 
 ## How it ties into existing commands
 
@@ -86,39 +93,37 @@ correlate against. braze-sync applies a controlled fallback:
   `cb_id` are never round-tripped through Git.
 - **`templatize`** is the one-shot migration that detects raw
   `| lid: 'X'` and `{{content_blocks.${NAME} | id: 'cbN'}}` literals
-  in your existing files and rewrites them to `__BRAZESYNC.*__`
-  placeholders. Idempotent; safe to re-run.
+  in your existing files and rewrites them to `__BRAZESYNC__`.
+  Idempotent; safe to re-run.
 
-## Migration from v0.14.x
+## Migration from v0.15.x
 
-v0.14.x stored `lid` / `cb_id` values in per-env `values/<env>.yaml`.
-v0.15 removes that mechanism entirely: bodies templatized in v0.14
-keep working (the placeholder envelope is unchanged), and stale
-`values/<env>.yaml` files can simply be deleted — no command in
-v0.15 reads them.
+v0.15.x used the keyed form `__BRAZESYNC.<type>.<key>__`. v0.16
+removes it entirely. Re-run `braze-sync templatize` against each
+workspace before upgrading — that regenerates bodies with the new
+anonymous token. The v0.15 envelope is surfaced as a fatal error if
+it ever reaches resolve, so a partial migration fails loudly rather
+than shipping broken templates.
 
 ```bash
-# Confirm everything still resolves cleanly after upgrading:
-braze-sync diff --env=prod
-braze-sync diff --env=dev
-
-# Delete the now-unused values directory once diff is happy:
-rm -rf values/
+# On v0.15 (or earlier), re-templatize from the raw remote body to
+# emit the v0.16 anonymous form:
+braze-sync export --env=prod        # pull raw remote bodies
+braze-sync templatize               # rewrite to __BRAZESYNC__
 ```
 
 ## Known limitations
 
 - **Subject / preheader `lid` is resolved positionally.** Those fields
-  have no URL anchor, so the Nth `__BRAZESYNC.lid.*__` placeholder is
-  paired with the Nth `| lid: '…'` value in the remote field. If the
-  placeholder count and remote value count differ, the resolver emits
-  a warning and any leftover placeholders fail at resolve time.
+  have no URL anchor, so the Nth `__BRAZESYNC__` is paired with the
+  Nth `| lid: '…'` value in the remote field. If the placeholder
+  count and remote value count differ, the resolver emits a warning
+  and any leftover placeholders fail at resolve time.
 - **Two placeholders sharing one URL** are resolved positionally
-  (template appearance order → remote appearance order). When a URL has
-  multiple remote occurrences *and* multiple template placeholders, the
-  resolver emits an ambiguity warning so a dashboard-side link reorder
-  cannot silently miscorrelate. Use distinct keys per occurrence when
-  the mapping must be deterministic regardless of remote order.
+  (template appearance order → remote appearance order). When a URL
+  has multiple remote occurrences *and* multiple template
+  placeholders, the resolver emits an ambiguity warning so a
+  dashboard-side link reorder cannot silently miscorrelate.
 - **Structural drift between local and remote** (e.g. the dashboard
   removed a tracked link your template still references) aborts the
   apply with a clear error pointing at the unresolvable placeholder.
