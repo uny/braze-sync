@@ -235,7 +235,7 @@ fn resolve_lid_positional(
             remote_values.len()
         ));
     }
-    for (key, value) in template_keys.into_iter().zip(remote_values.into_iter()) {
+    for (key, value) in template_keys.into_iter().zip(remote_values) {
         out.insert((PlaceholderType::Lid, key), value);
     }
 }
