@@ -494,6 +494,136 @@ async fn export_content_block_preserves_local_template_and_refreshes_values() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_captures_dashboard_html_edit_on_templated_content_block() {
+    // Issue #54: when a local template uses `__BRAZESYNC__` and the
+    // Dashboard user edits the surrounding HTML (not lid/cb_id), export
+    // must reverse-templatize the remote body so the edit is captured
+    // while placeholders stay anonymous.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [{"content_block_id": "id-promo", "name": "promo"}]
+        })))
+        .mount(&server)
+        .await;
+    // Remote: dashboard user changed "go" → "Buy now"; lid value also
+    // rotated (which alone should not produce drift).
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "promo",
+            "content": "<a href=\"https://example.com/cta\">{{ x | lid: 'rotatedlid1' }}Buy now</a>",
+            "tags": []
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    common::write_local_content_block(
+        tmp.path(),
+        "promo",
+        "<a href=\"https://example.com/cta\">{{ x | lid: '__BRAZESYNC__' }}go</a>",
+    );
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["export", "--resource", "content_block"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    let saved = fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
+    assert!(
+        saved.contains("Buy now"),
+        "dashboard HTML edit must be captured, got:\n{saved}"
+    );
+    assert!(
+        saved.contains("__BRAZESYNC__"),
+        "lid placeholder must remain anonymous, got:\n{saved}"
+    );
+    assert!(
+        !saved.contains("rotatedlid1"),
+        "remote lid value must not bleed into the templated body, got:\n{saved}"
+    );
+    assert!(
+        !saved.contains(">go<"),
+        "stale local copy must be replaced, got:\n{saved}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_captures_dashboard_html_edit_on_templated_email_template() {
+    // Issue #54: same property for email_template — Dashboard edits to
+    // subject / body_html / body_plaintext / preheader on a templated
+    // template must be captured field-by-field via reverse-templatize.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "templates": [
+                {"email_template_id": "id-welcome", "template_name": "welcome"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "template_name": "welcome",
+            "subject": "Welcome!",
+            // Dashboard edited copy: "Hello" → "Hi there"; lid rotated.
+            "body": "<a href=\"https://example.com/cta\">{{ x | lid: 'rotatedlid1' }}Hi there</a>",
+            "plaintext_body": "Hi there",
+            "preheader": "Get started today",
+            "tags": [],
+            "message": "success"
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    common::write_local_email_template(
+        tmp.path(),
+        "welcome",
+        "Welcome!",
+        "<a href=\"https://example.com/cta\">{{ x | lid: '__BRAZESYNC__' }}Hello</a>",
+        "Hello",
+    );
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["export", "--resource", "email_template"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    let et_dir = tmp.path().join("email_templates/welcome");
+    let html = fs::read_to_string(et_dir.join("body.html")).unwrap();
+    assert!(html.contains("Hi there"), "dashboard edit captured: {html}");
+    assert!(
+        html.contains("__BRAZESYNC__"),
+        "placeholder preserved: {html}"
+    );
+    assert!(
+        !html.contains("rotatedlid1"),
+        "remote lid must not leak: {html}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn export_content_block_without_placeholders_is_unchanged() {
     // Backwards compat: a plain (no placeholder) content_block must
     // still be written verbatim from remote, and no values file
