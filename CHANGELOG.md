@@ -7,6 +7,28 @@ versions follow [semver](https://semver.org/). Per IMPLEMENTATION.md
 changes; v1.0 freezes the public surface (CLI flags, config schema,
 file formats, JSON output, exit codes) for the full v1.x line.
 
+## [0.16.2] — 2026-05-27
+
+### Fixed
+
+- **`export` now captures Dashboard HTML edits on templated resources.**
+  Previously, when a local file contained `__BRAZESYNC__` placeholders,
+  `export` preserved the local body verbatim — silently discarding any
+  surrounding HTML changes made in the Braze Dashboard. Now the remote
+  body is reverse-templatized (lid / cb_id values rewritten back to
+  `__BRAZESYNC__`) before saving, so Dashboard edits are captured while
+  runtime-volatile identifiers do not produce spurious drift. Fixes #54.
+
+- **`lid` regex broadened to match fallback slugs.** Both
+  `lid_match_re` (templatize) and `lid_value_re` (correlation) now
+  accept short names and underscores (`[a-z][a-z0-9_]*`), aligning with
+  fallback slug generation introduced in v0.16.1.
+
+- **Positional lid warning relaxed.** The resolver now only warns when
+  the remote body has *more* lid values than local placeholders (extra
+  values are dropped); fewer remote values is handled gracefully via
+  the existing fallback mechanism without a warning.
+
 ## [0.16.1] — 2026-05-25
 
 ### Changed
