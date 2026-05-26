@@ -302,10 +302,10 @@ fn resolve_lid_positional(
         FieldKind::EmailPreheader => "preheader",
         _ => "field",
     };
-    if remote_values.len() != lid_indices.len() {
+    if remote_values.len() > lid_indices.len() {
         warnings.push(format!(
             "{field_label} has {} lid placeholder(s) but remote body has {} lid value(s); \
-             positional match may misalign — review rendered output",
+             extra remote values will be dropped — review rendered output",
             lid_indices.len(),
             remote_values.len()
         ));

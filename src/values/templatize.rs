@@ -47,7 +47,7 @@ pub struct TemplatizedField {
 
 /// Rewrite every raw `| lid: 'X'` and `{{content_blocks.${NAME} | id: 'cbN'}}`
 /// to the anonymous `__BRAZESYNC__` token. Idempotent: the detection
-/// regexes require raw literals (`[a-z0-9]{8,}` for lid, `cb[0-9]+` for
+/// regexes require raw literals (`[a-z][a-z0-9_]*` for lid, `cb[0-9]+` for
 /// cb_id), so an already-templated `__BRAZESYNC__` never re-matches.
 pub fn templatize_body(body: &str, field: FieldKind) -> TemplatizedField {
     let mut spans: Vec<DetectionSpan> = Vec::new();
@@ -104,7 +104,7 @@ struct DetectionSpan {
 fn lid_match_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r#"\|\s*lid:\s*(?:"[a-z0-9]{8,}"|'[a-z0-9]{8,}')"#)
+        Regex::new(r#"\|\s*lid:\s*(?:"[a-z][a-z0-9_]*"|'[a-z][a-z0-9_]*')"#)
             .expect("lid match regex is valid")
     })
 }
@@ -187,5 +187,21 @@ mod tests {
         let r = templatize_body(body, FieldKind::EmailSubject);
         assert!(r.new_body.contains("| lid: '__BRAZESYNC__'"));
         assert!(!r.warnings.is_empty());
+    }
+
+    #[test]
+    fn rewrites_short_fallback_slug() {
+        let body = r#"<a href="https://x.com/cta">{{x | lid: 'cta'}}</a>"#;
+        let r = templatize_body(body, FieldKind::ContentBlock);
+        assert!(r.new_body.contains("| lid: '__BRAZESYNC__'"), "got: {}", r.new_body);
+        assert_eq!(r.lid_rewrites, 1);
+    }
+
+    #[test]
+    fn rewrites_underscore_fallback_slug() {
+        let body = r#"{{x | lid: 'lid_1'}} A {{y | lid: 'spring_sale'}}"#;
+        let r = templatize_body(body, FieldKind::EmailSubject);
+        let n = r.new_body.matches("| lid: '__BRAZESYNC__'").count();
+        assert_eq!(n, 2, "got: {}", r.new_body);
     }
 }
