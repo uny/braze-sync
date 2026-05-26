@@ -8,6 +8,7 @@ use crate::resource::{
     ContentBlock, CustomAttributeRegistry, EmailTemplate, ResourceKind, Tag, TagRegistry,
 };
 use crate::values::has_placeholders;
+use crate::values::templatize::{templatize_body, FieldKind};
 use anyhow::Context as _;
 use clap::Args;
 use futures::stream::{StreamExt, TryStreamExt};
@@ -166,9 +167,12 @@ async fn export_catalog_schemas(
 /// the matching block's body is fetched.
 ///
 /// When a local template with `__BRAZESYNC__` placeholders exists for
-/// a given name, the local body is preserved verbatim (templatized
-/// form is the source of truth). v0.15: no values-file writeback —
-/// lid / cb_id are resolved from the remote body at apply/diff time.
+/// a given name, the remote body is reverse-templatized (raw lid /
+/// cb_id values rewritten back to `__BRAZESYNC__`) before being
+/// written to disk, so Dashboard HTML edits are captured while
+/// runtime-volatile lid / cb_id values do not produce spurious drift.
+/// v0.15: no values-file writeback — lid / cb_id are resolved from
+/// the remote body at apply/diff time.
 async fn export_content_blocks(
     client: &BrazeClient,
     content_blocks_root: &Path,
@@ -213,7 +217,8 @@ async fn export_content_blocks(
         let mut to_save = remote.clone();
         if let Some(local) = local.as_ref() {
             if has_placeholders(&local.content) {
-                to_save.content = local.content.clone();
+                to_save.content =
+                    templatize_body(&remote.content, FieldKind::ContentBlock).new_body;
             }
         }
         content_block_io::save_content_block(content_blocks_root, &to_save)?;
@@ -221,11 +226,12 @@ async fn export_content_blocks(
     Ok(blocks.len())
 }
 
-/// Same list-then-fetch pattern as content blocks. Per-field placeholder
-/// preservation: each of `subject`, `body_html`, `body_plaintext`,
+/// Same list-then-fetch pattern as content blocks. Per-field reverse-
+/// templatize: each of `subject`, `body_html`, `body_plaintext`,
 /// `preheader` is independently checked for `__BRAZESYNC__` content
-/// and, when present, kept from the local template instead of being
-/// overwritten by the remote body.
+/// in the local template and, when present, the remote field is
+/// rewritten back to placeholder form before saving, so Dashboard
+/// edits are captured without lid / cb_id rotation producing drift.
 async fn export_email_templates(
     client: &BrazeClient,
     email_templates_root: &Path,
@@ -274,16 +280,22 @@ async fn export_email_templates(
             let body_plain_has = has_placeholders(&local.body_plaintext);
             let preheader_has = local.preheader.as_deref().is_some_and(has_placeholders);
             if subject_has {
-                to_save.subject = local.subject.clone();
+                to_save.subject =
+                    templatize_body(&remote.subject, FieldKind::EmailSubject).new_body;
             }
             if body_html_has {
-                to_save.body_html = local.body_html.clone();
+                to_save.body_html =
+                    templatize_body(&remote.body_html, FieldKind::EmailHtmlBody).new_body;
             }
             if body_plain_has {
-                to_save.body_plaintext = local.body_plaintext.clone();
+                to_save.body_plaintext =
+                    templatize_body(&remote.body_plaintext, FieldKind::EmailPlainBody).new_body;
             }
             if preheader_has {
-                to_save.preheader = local.preheader.clone();
+                to_save.preheader = remote
+                    .preheader
+                    .as_deref()
+                    .map(|p| templatize_body(p, FieldKind::EmailPreheader).new_body);
             }
         }
         email_template_io::save_email_template(email_templates_root, &to_save)?;
