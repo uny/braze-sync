@@ -42,11 +42,8 @@ fn href_re() -> &'static Regex {
 fn lid_value_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        // The pipe anchor (`|`) prevents false matches on hash literals
-        // or unrelated keyword args that happen to spell `lid:`. Matches
-        // both quote styles, and the value class matches the built-in
-        // shape check (`^[a-z0-9]{8,}$`).
-        Regex::new(r#"\|\s*lid:\s*(?:"([a-z0-9]{8,})"|'([a-z0-9]{8,})')"#)
+        // Must stay in sync with templatize::lid_match_re().
+        Regex::new(r#"\|\s*lid:\s*(?:"([a-z][a-z0-9_]*)"|'([a-z][a-z0-9_]*)')"#)
             .expect("lid value regex is valid")
     })
 }
@@ -397,5 +394,29 @@ mod tests {
     fn slug_collapses_multiple_separators() {
         assert_eq!(slug_for_lid("foo//bar--baz"), "foo_bar_baz");
         assert_eq!(slug_for_lid("--leading"), "leading");
+    }
+
+    #[test]
+    fn lid_value_extracts_short_fallback_slug() {
+        let vals = extract_lid_values_unanchored("{{ x | lid: 'cta' }}");
+        assert_eq!(vals, vec!["cta"]);
+    }
+
+    #[test]
+    fn lid_value_extracts_underscore_fallback_slug() {
+        let vals = extract_lid_values_unanchored(
+            "{{ x | lid: 'lid_1' }} {{ y | lid: 'spring_sale' }}",
+        );
+        assert_eq!(vals, vec!["lid_1", "spring_sale"]);
+    }
+
+    #[test]
+    fn html_lid_pairs_fallback_slug_with_anchor() {
+        let body =
+            r#"<a href="https://example.com/promo">{{ x | lid: 'cta' }}Buy</a>"#;
+        let pairs = extract_html_lid_values(body);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].value, "cta");
+        assert_eq!(pairs[0].url, "https://example.com/promo");
     }
 }

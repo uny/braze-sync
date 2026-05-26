@@ -104,6 +104,7 @@ struct DetectionSpan {
 fn lid_match_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
+        // Must stay in sync with correlation::lid_value_re().
         Regex::new(r#"\|\s*lid:\s*(?:"[a-z][a-z0-9_]*"|'[a-z][a-z0-9_]*')"#)
             .expect("lid match regex is valid")
     })
