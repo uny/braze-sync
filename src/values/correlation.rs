@@ -404,16 +404,14 @@ mod tests {
 
     #[test]
     fn lid_value_extracts_underscore_fallback_slug() {
-        let vals = extract_lid_values_unanchored(
-            "{{ x | lid: 'lid_1' }} {{ y | lid: 'spring_sale' }}",
-        );
+        let vals =
+            extract_lid_values_unanchored("{{ x | lid: 'lid_1' }} {{ y | lid: 'spring_sale' }}");
         assert_eq!(vals, vec!["lid_1", "spring_sale"]);
     }
 
     #[test]
     fn html_lid_pairs_fallback_slug_with_anchor() {
-        let body =
-            r#"<a href="https://example.com/promo">{{ x | lid: 'cta' }}Buy</a>"#;
+        let body = r#"<a href="https://example.com/promo">{{ x | lid: 'cta' }}Buy</a>"#;
         let pairs = extract_html_lid_values(body);
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].value, "cta");

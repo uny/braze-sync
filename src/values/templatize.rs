@@ -194,7 +194,11 @@ mod tests {
     fn rewrites_short_fallback_slug() {
         let body = r#"<a href="https://x.com/cta">{{x | lid: 'cta'}}</a>"#;
         let r = templatize_body(body, FieldKind::ContentBlock);
-        assert!(r.new_body.contains("| lid: '__BRAZESYNC__'"), "got: {}", r.new_body);
+        assert!(
+            r.new_body.contains("| lid: '__BRAZESYNC__'"),
+            "got: {}",
+            r.new_body
+        );
         assert_eq!(r.lid_rewrites, 1);
     }
 
