@@ -47,7 +47,7 @@ pub struct TemplatizedField {
 
 /// Rewrite every raw `| lid: 'X'` and `{{content_blocks.${NAME} | id: 'cbN'}}`
 /// to the anonymous `__BRAZESYNC__` token. Idempotent: the detection
-/// regexes require raw literals (`[a-z][a-z0-9_]*` for lid, `cb[0-9]+` for
+/// regexes require raw literals (`[a-z0-9][a-z0-9_]*` for lid, `cb[0-9]+` for
 /// cb_id), so an already-templated `__BRAZESYNC__` never re-matches.
 pub fn templatize_body(body: &str, field: FieldKind) -> TemplatizedField {
     let mut spans: Vec<DetectionSpan> = Vec::new();
@@ -105,7 +105,7 @@ fn lid_match_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         // Must stay in sync with correlation::lid_value_re().
-        Regex::new(r#"\|\s*lid:\s*(?:"[a-z][a-z0-9_]*"|'[a-z][a-z0-9_]*')"#)
+        Regex::new(r#"\|\s*lid:\s*(?:"[a-z0-9][a-z0-9_]*"|'[a-z0-9][a-z0-9_]*')"#)
             .expect("lid match regex is valid")
     })
 }
@@ -208,5 +208,18 @@ mod tests {
         let r = templatize_body(body, FieldKind::EmailSubject);
         let n = r.new_body.matches("| lid: '__BRAZESYNC__'").count();
         assert_eq!(n, 2, "got: {}", r.new_body);
+    }
+
+    #[test]
+    fn rewrites_digit_leading_lid() {
+        let body =
+            r#"<a href="https://example.com/sale">{{x | lid: '275ua26snuk7'}}</a>"#;
+        let r = templatize_body(body, FieldKind::ContentBlock);
+        assert!(
+            r.new_body.contains("| lid: '__BRAZESYNC__'"),
+            "got: {}",
+            r.new_body
+        );
+        assert_eq!(r.lid_rewrites, 1);
     }
 }
