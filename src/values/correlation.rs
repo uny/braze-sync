@@ -11,6 +11,9 @@
 use regex_lite::Regex;
 use std::sync::OnceLock;
 
+/// Shared pattern for raw lid values so templatize and correlation cannot drift.
+pub(crate) const LID_VALUE_PATTERN: &str = "[a-z0-9][a-z0-9_]*";
+
 /// Normalize a URL for anchor comparison: keep `scheme://host/path`,
 /// drop `?query` and `#fragment`.
 ///
@@ -42,9 +45,11 @@ fn href_re() -> &'static Regex {
 fn lid_value_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        // Must stay in sync with templatize::lid_match_re().
-        Regex::new(r#"\|\s*lid:\s*(?:"([a-z][a-z0-9_]*)"|'([a-z][a-z0-9_]*)')"#)
-            .expect("lid value regex is valid")
+        Regex::new(&format!(
+            r#"\|\s*lid:\s*(?:"({p})"|'({p})')"#,
+            p = LID_VALUE_PATTERN
+        ))
+        .expect("lid value regex is valid")
     })
 }
 
@@ -416,5 +421,25 @@ mod tests {
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].value, "cta");
         assert_eq!(pairs[0].url, "https://example.com/promo");
+    }
+
+    #[test]
+    fn lid_value_ignores_brazesync_placeholder() {
+        let vals = extract_lid_values_unanchored("{{ x | lid: '__BRAZESYNC__' }}");
+        assert!(vals.is_empty());
+    }
+
+    #[test]
+    fn lid_value_extracts_digit_leading_value() {
+        let vals = extract_lid_values_unanchored("{{ x | lid: '275ua26snuk7' }}");
+        assert_eq!(vals, vec!["275ua26snuk7"]);
+    }
+
+    #[test]
+    fn html_lid_pairs_digit_leading_value() {
+        let body = r#"<a href="https://example.com/sale">{{ x | lid: '47043wg2o5wi' }}Buy</a>"#;
+        let pairs = extract_html_lid_values(body);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].value, "47043wg2o5wi");
     }
 }
