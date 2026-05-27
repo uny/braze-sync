@@ -9,6 +9,7 @@
 //! are NOT persisted — they are re-fetched from the remote body at
 //! apply/diff time (see [`crate::values::braze_managed`]).
 
+use crate::values::correlation::LID_VALUE_PATTERN;
 use regex_lite::Regex;
 use std::sync::OnceLock;
 
@@ -47,7 +48,7 @@ pub struct TemplatizedField {
 
 /// Rewrite every raw `| lid: 'X'` and `{{content_blocks.${NAME} | id: 'cbN'}}`
 /// to the anonymous `__BRAZESYNC__` token. Idempotent: the detection
-/// regexes require raw literals (`[a-z0-9][a-z0-9_]*` for lid, `cb[0-9]+` for
+/// regexes require raw literals ([`LID_VALUE_PATTERN`] for lid, `cb[0-9]+` for
 /// cb_id), so an already-templated `__BRAZESYNC__` never re-matches.
 pub fn templatize_body(body: &str, field: FieldKind) -> TemplatizedField {
     let mut spans: Vec<DetectionSpan> = Vec::new();
@@ -104,9 +105,11 @@ struct DetectionSpan {
 fn lid_match_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        // Must stay in sync with correlation::lid_value_re().
-        Regex::new(r#"\|\s*lid:\s*(?:"[a-z0-9][a-z0-9_]*"|'[a-z0-9][a-z0-9_]*')"#)
-            .expect("lid match regex is valid")
+        Regex::new(&format!(
+            r#"\|\s*lid:\s*(?:"{p}"|'{p}')"#,
+            p = LID_VALUE_PATTERN
+        ))
+        .expect("lid match regex is valid")
     })
 }
 
@@ -127,6 +130,14 @@ mod tests {
     #[test]
     fn idempotent_on_already_templatized_body() {
         let body = "<p>__BRAZESYNC__ kept verbatim</p>";
+        let r = templatize_body(body, FieldKind::ContentBlock);
+        assert_eq!(r.new_body, body);
+        assert_eq!(r.lid_rewrites, 0);
+    }
+
+    #[test]
+    fn idempotent_on_templatized_lid_filter() {
+        let body = r#"<a href="https://example.com">{{x | lid: '__BRAZESYNC__'}}</a>"#;
         let r = templatize_body(body, FieldKind::ContentBlock);
         assert_eq!(r.new_body, body);
         assert_eq!(r.lid_rewrites, 0);
