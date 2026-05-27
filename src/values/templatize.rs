@@ -223,8 +223,7 @@ mod tests {
 
     #[test]
     fn rewrites_digit_leading_lid() {
-        let body =
-            r#"<a href="https://example.com/sale">{{x | lid: '275ua26snuk7'}}</a>"#;
+        let body = r#"<a href="https://example.com/sale">{{x | lid: '275ua26snuk7'}}</a>"#;
         let r = templatize_body(body, FieldKind::ContentBlock);
         assert!(
             r.new_body.contains("| lid: '__BRAZESYNC__'"),

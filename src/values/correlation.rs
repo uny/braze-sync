@@ -437,8 +437,7 @@ mod tests {
 
     #[test]
     fn html_lid_pairs_digit_leading_value() {
-        let body =
-            r#"<a href="https://example.com/sale">{{ x | lid: '47043wg2o5wi' }}Buy</a>"#;
+        let body = r#"<a href="https://example.com/sale">{{ x | lid: '47043wg2o5wi' }}Buy</a>"#;
         let pairs = extract_html_lid_values(body);
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].value, "47043wg2o5wi");
