@@ -11,9 +11,7 @@
 use regex_lite::Regex;
 use std::sync::OnceLock;
 
-/// Character pattern for a raw lid value (e.g. `ai8kexrxcp03`, `275ua26snuk7`).
-/// Shared between `lid_value_re()` here and `templatize::lid_match_re()` so the
-/// two regexes cannot drift.
+/// Shared pattern for raw lid values so templatize and correlation cannot drift.
 pub(crate) const LID_VALUE_PATTERN: &str = "[a-z0-9][a-z0-9_]*";
 
 /// Normalize a URL for anchor comparison: keep `scheme://host/path`,
