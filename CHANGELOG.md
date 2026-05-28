@@ -7,6 +7,55 @@ versions follow [semver](https://semver.org/). Per IMPLEMENTATION.md
 changes; v1.0 freezes the public surface (CLI flags, config schema,
 file formats, JSON output, exit codes) for the full v1.x line.
 
+## [0.16.5] — 2026-05-28
+
+### Fixed
+
+- **`apply --archive-orphans` no longer aborts on orphan content blocks.**
+  Braze rejects renaming a content block after activation (`HTTP 400:
+  "Content Block name cannot be changed after activation."`), so the
+  rename-based archival aborted the whole apply on the first activated
+  orphan — and since Braze has no cross-resource transaction, earlier
+  writes in the same run were left applied. Fixes #62.
+
+### Changed
+
+- **Content block orphans are now report-only.** `--archive-orphans`
+  cannot rename content blocks (Braze locks the name after activation,
+  and `/content_blocks/info` exposes no state field to tell draft from
+  active ahead of time), so content block orphans are listed for manual
+  removal in the Braze dashboard and `apply` exits 0 instead of issuing
+  a rename Braze rejects. Email template orphan archival is unchanged —
+  Braze allows post-activation renames there.
+
+## [0.16.4] — 2026-05-28
+
+### Fixed
+
+- **`export` now templatizes new resources without a local template.**
+  Previously `export` only reverse-templatized remote bodies when a local
+  file with `__BRAZESYNC__` placeholders already existed; brand-new
+  resources (no local file yet) were written with raw `lid`/`cb_id`
+  values, causing spurious drift on subsequent diff cycles until a manual
+  templatize. `templatize_body` is now applied unconditionally for new
+  resources; the only opt-out is an existing local file that deliberately
+  contains no placeholders. Fixes #59.
+
+- **Email template preheader is now templatized when locally absent.**
+  A local template with no `preheader` field previously skipped
+  templatization of the remote preheader, leaving raw `lid` values on
+  disk.
+
+## [0.16.3] — 2026-05-28
+
+### Fixed
+
+- **`lid` regex now accepts digit-leading values.** The first character
+  class in both `lid_match_re` and `lid_value_re` was widened from
+  `[a-z]` to `[a-z0-9]` so Braze-generated `lid` values that start with a
+  digit (e.g. `275ua26snuk7`) are matched correctly. The `__BRAZESYNC__`
+  placeholder remains excluded, preserving idempotency. Fixes #56.
+
 ## [0.16.2] — 2026-05-27
 
 ### Fixed
