@@ -232,8 +232,9 @@ async fn export_content_blocks(
 
 /// Same list-then-fetch pattern as content blocks. Per-field reverse-
 /// templatize: each of `subject`, `body_html`, `body_plaintext`,
-/// `preheader` is templatized for new resources (no local dir) or
-/// when the corresponding local field already contains placeholders.
+/// `preheader` is templatized for new resources (no local dir), when
+/// the corresponding local field already contains placeholders, or
+/// when the local field is absent (preheader not yet saved locally).
 async fn export_email_templates(
     client: &BrazeClient,
     email_templates_root: &Path,
@@ -276,24 +277,18 @@ async fn export_email_templates(
             None
         };
         let mut to_save = remote.clone();
-        let no_local = local.is_none();
-        let subject_templ = no_local
-            || local
-                .as_ref()
-                .is_some_and(|l| has_placeholders(&l.subject));
-        let body_html_templ = no_local
-            || local
-                .as_ref()
-                .is_some_and(|l| has_placeholders(&l.body_html));
-        let body_plain_templ = no_local
-            || local
-                .as_ref()
-                .is_some_and(|l| has_placeholders(&l.body_plaintext));
-        let preheader_templ = no_local
-            || local
-                .as_ref()
-                .and_then(|l| l.preheader.as_deref())
-                .is_some_and(has_placeholders);
+        let subject_templ = local
+            .as_ref()
+            .is_none_or(|l| has_placeholders(&l.subject));
+        let body_html_templ = local
+            .as_ref()
+            .is_none_or(|l| has_placeholders(&l.body_html));
+        let body_plain_templ = local
+            .as_ref()
+            .is_none_or(|l| has_placeholders(&l.body_plaintext));
+        let preheader_templ = local
+            .as_ref()
+            .is_none_or(|l| l.preheader.as_deref().is_none_or(has_placeholders));
         if subject_templ {
             to_save.subject =
                 templatize_body(&remote.subject, FieldKind::EmailSubject).new_body;

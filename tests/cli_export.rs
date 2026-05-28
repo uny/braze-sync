@@ -893,3 +893,64 @@ async fn export_existing_content_block_without_placeholders_skips_templatize() {
         "must not introduce placeholders when local file opts out, got:\n{saved}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_existing_email_template_without_placeholders_skips_templatize() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "templates": [
+                {"email_template_id": "id-noplc-et", "template_name": "no_placeholder_et"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "template_name": "no_placeholder_et",
+            "subject": "Hello {{ x | lid: 'raw_subj' }}",
+            "body": "<a href=\"https://example.com\">{{ x | lid: 'raw_html' }}click</a>",
+            "plaintext_body": "{{ x | lid: 'raw_plain' }}",
+            "preheader": "{{ x | lid: 'raw_pre' }}",
+            "tags": [],
+            "message": "success"
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    common::write_local_email_template(
+        tmp.path(),
+        "no_placeholder_et",
+        "Hello",
+        "<a href=\"https://example.com\">{{ x | lid: 'old_html' }}click</a>",
+        "{{ x | lid: 'old_plain' }}",
+    );
+
+    let tmp_path = tmp.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["export", "--resource", "email_template"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    let et_dir = tmp_path.join("email_templates/no_placeholder_et");
+    let html = fs::read_to_string(et_dir.join("body.html")).unwrap();
+    assert!(
+        html.contains("raw_html"),
+        "existing email template without placeholders must keep raw values, got:\n{html}"
+    );
+    assert!(
+        !html.contains("__BRAZESYNC__"),
+        "must not introduce placeholders when local email template opts out, got:\n{html}"
+    );
+}
