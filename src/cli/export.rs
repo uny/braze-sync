@@ -218,12 +218,9 @@ async fn export_content_blocks(
             None
         };
         let mut to_save = remote.clone();
-        let should_templatize = local
-            .as_ref()
-            .is_none_or(|l| has_placeholders(&l.content));
+        let should_templatize = local.as_ref().is_none_or(|l| has_placeholders(&l.content));
         if should_templatize {
-            to_save.content =
-                templatize_body(&remote.content, FieldKind::ContentBlock).new_body;
+            to_save.content = templatize_body(&remote.content, FieldKind::ContentBlock).new_body;
         }
         content_block_io::save_content_block(content_blocks_root, &to_save)?;
     }
@@ -277,9 +274,7 @@ async fn export_email_templates(
             None
         };
         let mut to_save = remote.clone();
-        let subject_templ = local
-            .as_ref()
-            .is_none_or(|l| has_placeholders(&l.subject));
+        let subject_templ = local.as_ref().is_none_or(|l| has_placeholders(&l.subject));
         let body_html_templ = local
             .as_ref()
             .is_none_or(|l| has_placeholders(&l.body_html));
@@ -290,8 +285,7 @@ async fn export_email_templates(
             .as_ref()
             .is_none_or(|l| l.preheader.as_deref().is_none_or(has_placeholders));
         if subject_templ {
-            to_save.subject =
-                templatize_body(&remote.subject, FieldKind::EmailSubject).new_body;
+            to_save.subject = templatize_body(&remote.subject, FieldKind::EmailSubject).new_body;
         }
         if body_html_templ {
             to_save.body_html =
