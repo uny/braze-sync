@@ -726,3 +726,231 @@ content_block:
     let after = fs::read_to_string(tmp.path().join("values").join("test.yaml")).unwrap();
     assert_eq!(after, legacy, "export must not touch the values yaml");
 }
+
+// =====================================================================
+// Issue #59: new resources (no local file) must be templatized on export
+// =====================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_new_content_block_templatizes_lid() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [{"content_block_id": "id-new", "name": "new_block"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "new_block",
+            "content": "<a href=\"https://example.com\">{{ x | lid: 'abc123' }}click</a>",
+            "tags": []
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    // No local file — this is a brand-new resource.
+
+    let tmp_path = tmp.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["export", "--resource", "content_block"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    let saved =
+        fs::read_to_string(tmp_path.join("content_blocks").join("new_block.liquid")).unwrap();
+    assert!(
+        saved.contains("__BRAZESYNC__"),
+        "new resource must be templatized, got:\n{saved}"
+    );
+    assert!(
+        !saved.contains("abc123"),
+        "raw lid value must not persist for new resources, got:\n{saved}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_new_email_template_templatizes_lid() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "templates": [
+                {"email_template_id": "id-new-et", "template_name": "new_email"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "template_name": "new_email",
+            "subject": "Hello",
+            "body": "<a href=\"https://example.com\">{{ x | lid: 'xyz789' }}click</a>",
+            "plaintext_body": "click here",
+            "preheader": "News",
+            "tags": [],
+            "message": "success"
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    // No local email template directory — brand-new resource.
+
+    let tmp_path = tmp.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["export", "--resource", "email_template"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    let et_dir = tmp_path.join("email_templates/new_email");
+    let html = fs::read_to_string(et_dir.join("body.html")).unwrap();
+    assert!(
+        html.contains("__BRAZESYNC__"),
+        "new email template must be templatized, got:\n{html}"
+    );
+    assert!(
+        !html.contains("xyz789"),
+        "raw lid value must not persist for new email templates, got:\n{html}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_existing_content_block_without_placeholders_skips_templatize() {
+    // When a local file exists but deliberately has no placeholders,
+    // templatization must be skipped (opt-out).
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [{"content_block_id": "id-noplc", "name": "no_placeholder"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "no_placeholder",
+            "content": "<a href=\"https://example.com\">{{ x | lid: 'raw123' }}click</a>",
+            "tags": []
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    common::write_local_content_block(
+        tmp.path(),
+        "no_placeholder",
+        "<a href=\"https://example.com\">{{ x | lid: 'old_raw' }}click</a>",
+    );
+
+    let tmp_path = tmp.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["export", "--resource", "content_block"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    let saved = fs::read_to_string(
+        tmp_path
+            .join("content_blocks")
+            .join("no_placeholder.liquid"),
+    )
+    .unwrap();
+    assert!(
+        saved.contains("raw123"),
+        "existing file without placeholders must keep raw values, got:\n{saved}"
+    );
+    assert!(
+        !saved.contains("__BRAZESYNC__"),
+        "must not introduce placeholders when local file opts out, got:\n{saved}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_existing_email_template_without_placeholders_skips_templatize() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "templates": [
+                {"email_template_id": "id-noplc-et", "template_name": "no_placeholder_et"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/templates/email/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "template_name": "no_placeholder_et",
+            "subject": "Hello {{ x | lid: 'raw_subj' }}",
+            "body": "<a href=\"https://example.com\">{{ x | lid: 'raw_html' }}click</a>",
+            "plaintext_body": "{{ x | lid: 'raw_plain' }}",
+            "preheader": "{{ x | lid: 'raw_pre' }}",
+            "tags": [],
+            "message": "success"
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    common::write_local_email_template(
+        tmp.path(),
+        "no_placeholder_et",
+        "Hello",
+        "<a href=\"https://example.com\">{{ x | lid: 'old_html' }}click</a>",
+        "{{ x | lid: 'old_plain' }}",
+    );
+
+    let tmp_path = tmp.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["export", "--resource", "email_template"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    let et_dir = tmp_path.join("email_templates/no_placeholder_et");
+    let html = fs::read_to_string(et_dir.join("body.html")).unwrap();
+    assert!(
+        html.contains("raw_html"),
+        "existing email template without placeholders must keep raw values, got:\n{html}"
+    );
+    assert!(
+        !html.contains("__BRAZESYNC__"),
+        "must not introduce placeholders when local email template opts out, got:\n{html}"
+    );
+}

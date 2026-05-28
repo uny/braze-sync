@@ -166,11 +166,14 @@ async fn export_catalog_schemas(
 /// `--name`, the list still happens (to translate name → id) but only
 /// the matching block's body is fetched.
 ///
-/// When a local template with `__BRAZESYNC__` placeholders exists for
-/// a given name, the remote body is reverse-templatized (raw lid /
-/// cb_id values rewritten back to `__BRAZESYNC__`) before being
-/// written to disk, so Dashboard HTML edits are captured while
-/// runtime-volatile lid / cb_id values do not produce spurious drift.
+/// Remote bodies are reverse-templatized (raw lid / cb_id values
+/// rewritten back to `__BRAZESYNC__`) before being written to disk,
+/// so Dashboard HTML edits are captured while runtime-volatile lid /
+/// cb_id values do not produce spurious drift. This applies to both
+/// new resources (no local file yet) and existing ones whose local
+/// template already contains placeholders. The only case where
+/// templatization is skipped is when a local file exists but
+/// deliberately contains no placeholders.
 /// v0.15: no values-file writeback — lid / cb_id are resolved from
 /// the remote body at apply/diff time.
 async fn export_content_blocks(
@@ -215,11 +218,9 @@ async fn export_content_blocks(
             None
         };
         let mut to_save = remote.clone();
-        if let Some(local) = local.as_ref() {
-            if has_placeholders(&local.content) {
-                to_save.content =
-                    templatize_body(&remote.content, FieldKind::ContentBlock).new_body;
-            }
+        let should_templatize = local.as_ref().is_none_or(|l| has_placeholders(&l.content));
+        if should_templatize {
+            to_save.content = templatize_body(&remote.content, FieldKind::ContentBlock).new_body;
         }
         content_block_io::save_content_block(content_blocks_root, &to_save)?;
     }
@@ -228,10 +229,9 @@ async fn export_content_blocks(
 
 /// Same list-then-fetch pattern as content blocks. Per-field reverse-
 /// templatize: each of `subject`, `body_html`, `body_plaintext`,
-/// `preheader` is independently checked for `__BRAZESYNC__` content
-/// in the local template and, when present, the remote field is
-/// rewritten back to placeholder form before saving, so Dashboard
-/// edits are captured without lid / cb_id rotation producing drift.
+/// `preheader` is templatized for new resources (no local dir), when
+/// the corresponding local field already contains placeholders, or
+/// when the local field is absent (preheader not yet saved locally).
 async fn export_email_templates(
     client: &BrazeClient,
     email_templates_root: &Path,
@@ -274,29 +274,32 @@ async fn export_email_templates(
             None
         };
         let mut to_save = remote.clone();
-        if let Some(local) = local.as_ref() {
-            let subject_has = has_placeholders(&local.subject);
-            let body_html_has = has_placeholders(&local.body_html);
-            let body_plain_has = has_placeholders(&local.body_plaintext);
-            let preheader_has = local.preheader.as_deref().is_some_and(has_placeholders);
-            if subject_has {
-                to_save.subject =
-                    templatize_body(&remote.subject, FieldKind::EmailSubject).new_body;
-            }
-            if body_html_has {
-                to_save.body_html =
-                    templatize_body(&remote.body_html, FieldKind::EmailHtmlBody).new_body;
-            }
-            if body_plain_has {
-                to_save.body_plaintext =
-                    templatize_body(&remote.body_plaintext, FieldKind::EmailPlainBody).new_body;
-            }
-            if preheader_has {
-                to_save.preheader = remote
-                    .preheader
-                    .as_deref()
-                    .map(|p| templatize_body(p, FieldKind::EmailPreheader).new_body);
-            }
+        let subject_templ = local.as_ref().is_none_or(|l| has_placeholders(&l.subject));
+        let body_html_templ = local
+            .as_ref()
+            .is_none_or(|l| has_placeholders(&l.body_html));
+        let body_plain_templ = local
+            .as_ref()
+            .is_none_or(|l| has_placeholders(&l.body_plaintext));
+        let preheader_templ = local
+            .as_ref()
+            .is_none_or(|l| l.preheader.as_deref().is_none_or(has_placeholders));
+        if subject_templ {
+            to_save.subject = templatize_body(&remote.subject, FieldKind::EmailSubject).new_body;
+        }
+        if body_html_templ {
+            to_save.body_html =
+                templatize_body(&remote.body_html, FieldKind::EmailHtmlBody).new_body;
+        }
+        if body_plain_templ {
+            to_save.body_plaintext =
+                templatize_body(&remote.body_plaintext, FieldKind::EmailPlainBody).new_body;
+        }
+        if preheader_templ {
+            to_save.preheader = remote
+                .preheader
+                .as_deref()
+                .map(|p| templatize_body(p, FieldKind::EmailPreheader).new_body);
         }
         email_template_io::save_email_template(email_templates_root, &to_save)?;
     }
