@@ -41,9 +41,12 @@ frontmatter (name, description, tags, state) followed by the Liquid
 body. `braze-sync apply` can create new blocks and update existing
 ones, but **the Braze API has no DELETE for content blocks**, so blocks
 that exist in Braze but not in Git become *orphans* — `diff` flags
-them and `apply` does nothing about them by default. Pass
-`--archive-orphans` to rename them remotely with an
-`[ARCHIVED-YYYY-MM-DD]` prefix; the data is never silently dropped.
+them and `apply` does nothing about them. Braze also rejects renaming a
+content block after activation, so they can't be archived in place
+either; `apply --archive-orphans` lists them for manual removal in the
+Braze dashboard. The data is never silently dropped. (Email template
+orphans *can* be renamed with an `[ARCHIVED-YYYY-MM-DD]` prefix — see
+`docs/orphan-tracking.md`.)
 
 When a block body references another block via the Liquid include
 syntax `{{content_blocks.${other} | id: '...'}}`, `apply` topologically
@@ -159,12 +162,16 @@ These will be lifted across the v0.x → v1.0 milestones:
   `number` (or similar) is not auto-applied because the operation is
   data-losing on the field. Drop the field manually in Braze, then
   run `braze-sync apply` to re-add it with the new type.
-- **No DELETE for content blocks.** Braze's content blocks API does
-  not expose a DELETE endpoint, so blocks that exist in Braze but not
-  in Git become *orphans*. `diff` flags them; `apply` does nothing
-  about them unless you pass `--archive-orphans`, which renames them
-  remotely with an `[ARCHIVED-YYYY-MM-DD]` prefix instead of pretending
-  they were dropped.
+- **No DELETE for content blocks, and no archive either.** Braze's
+  content blocks API does not expose a DELETE endpoint, so blocks that
+  exist in Braze but not in Git become *orphans*. `diff` flags them;
+  `apply` does nothing about them. Braze also rejects renaming a
+  content block after activation (`"Content Block name cannot be changed
+  after activation"`), and `/content_blocks/info` exposes no state field
+  to tell draft from active, so `--archive-orphans` cannot rename them
+  the way it renames email templates. Content block orphans stay
+  report-only: `apply --archive-orphans` lists them for manual removal
+  in the Braze dashboard and exits 0 instead of aborting.
 - **Content block `state` is local-only and not observable.** The
   `state: active|draft` field in `content_blocks/<name>.liquid`
   frontmatter is a purely local authoring annotation. Braze's
@@ -179,14 +186,15 @@ These will be lifted across the v0.x → v1.0 milestones:
   The diff layer also ignores the field to prevent an "infinite
   drift" loop (Braze has no DELETE, so a persistently-Modified
   Content Block is a trap).
-- **`--archive-orphans` is a two-step read-modify-write.** The rename
-  fetches `/content_blocks/info` to preserve the body, then posts
-  `/content_blocks/update` with the archived name. If another operator
-  edits the same block in the dashboard between those two calls, the
-  update clobbers their change with the pre-rename body. Safe for the
-  single-operator GitOps workflow v0.2.0 targets; a compare-and-swap
-  header would lift it, but Braze's content_blocks API does not
-  currently document one.
+- **`--archive-orphans` is a two-step read-modify-write (email
+  templates only).** The rename fetches `/templates/email/info` to
+  preserve the body, then posts `/templates/email/update` with the
+  archived name. If another operator edits the same template in the
+  dashboard between those two calls, the update clobbers their change
+  with the pre-rename body. Safe for the single-operator GitOps
+  workflow braze-sync targets; a compare-and-swap header would lift it,
+  but Braze's API does not currently document one. (Content blocks are
+  never renamed — see above.)
 - **`--no-color` only affects tracing output.** Table and diff output
   do not currently emit ANSI colors, so the flag only suppresses
   ANSI escapes from the tracing subscriber on stderr.
