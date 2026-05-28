@@ -55,9 +55,12 @@ pub struct ApplyArgs {
     #[arg(long)]
     pub allow_destructive: bool,
 
-    /// Archive orphan Content Blocks / Email Templates by prefixing the
-    /// remote name with `[ARCHIVED-YYYY-MM-DD]`. Inert for resource
-    /// kinds that have no orphan concept (e.g. catalog schema).
+    /// Archive orphan Email Templates by prefixing the remote name with
+    /// `[ARCHIVED-YYYY-MM-DD]`. Inert for resource kinds that have no
+    /// orphan concept (e.g. catalog schema) and for Content Blocks, whose
+    /// names Braze locks after activation ("Content Block name cannot be
+    /// changed after activation") — those orphans stay report-only and are
+    /// listed for manual dashboard handling. See docs/orphan-tracking.md.
     #[arg(long)]
     pub archive_orphans: bool,
 
@@ -243,20 +246,17 @@ pub async fn run(
     let mut applied = 0;
     let mut ca_deprecate: Vec<&str> = Vec::new();
     let mut ca_reactivate: Vec<&str> = Vec::new();
+    let mut content_block_orphans: Vec<&str> = Vec::new();
     for diff in &summary.diffs {
         match diff {
             ResourceDiff::CatalogSchema(d) => {
                 applied += apply_catalog_schema(&client, d).await?;
             }
             ResourceDiff::ContentBlock(d) => {
-                applied += apply_content_block(
-                    &client,
-                    d,
-                    content_block_id_index.as_ref(),
-                    args.archive_orphans,
-                    today,
-                )
-                .await?;
+                if d.orphan {
+                    content_block_orphans.push(&d.name);
+                }
+                applied += apply_content_block(&client, d, content_block_id_index.as_ref()).await?;
             }
             ResourceDiff::EmailTemplate(d) => {
                 applied += apply_email_template(
@@ -287,6 +287,23 @@ pub async fn run(
         applied += apply_custom_attribute_batch(&client, &ca_deprecate, &ca_reactivate).await?;
     }
 
+    // Content blocks can't be archived via rename: Braze rejects renaming a
+    // content block once it has been activated, and `/content_blocks/info`
+    // exposes no state field so we can't tell draft from active ahead of
+    // time. They stay report-only; surface them so an operator who asked to
+    // archive knows to handle them manually. See docs/orphan-tracking.md.
+    if args.archive_orphans && !content_block_orphans.is_empty() {
+        eprintln!(
+            "⚠ {} content block orphan(s) left in place — Braze does not allow \
+             archiving content blocks via the API (name is locked after \
+             activation). Remove them in the Braze dashboard if no longer needed:",
+            content_block_orphans.len(),
+        );
+        for name in &content_block_orphans {
+            eprintln!("    - {name}");
+        }
+    }
+
     eprintln!("✓ Applied {applied} change(s).");
     Ok(())
 }
@@ -297,7 +314,7 @@ pub async fn run(
 ///
 /// ContentBlock diffs are deliberately not inspected here: every shape
 /// the diff layer can produce (`Added` → create, `Modified` → update,
-/// `orphan` → archive-or-noop) maps to a supported API call, so there
+/// `orphan` → report-only no-op) maps to a supported API call, so there
 /// is nothing to statically reject. If a future diff shape is added
 /// (e.g. content-type change with no in-place update), re-evaluate.
 /// Block apply when any resource that would be mutated references a tag
@@ -499,46 +516,14 @@ async fn apply_content_block(
     client: &BrazeClient,
     d: &ContentBlockDiff,
     id_index: Option<&ContentBlockIdIndex>,
-    archive_orphans: bool,
-    today: chrono::NaiveDate,
 ) -> anyhow::Result<usize> {
-    // Orphans only mutate remote state when --archive-orphans is set;
-    // otherwise the plan-print is the entire effect.
+    // Content block orphans are report-only: Braze has no DELETE endpoint
+    // and rejects renaming a content block after activation, so the
+    // rename-archival path used for email templates can't work here. The
+    // run-level summary lists them for manual handling; see the note after
+    // the apply loop and docs/orphan-tracking.md.
     if d.orphan {
-        if !archive_orphans {
-            return Ok(0);
-        }
-        let id_index = id_index.ok_or_else(|| {
-            anyhow!("internal: content_block id index missing for orphan apply path")
-        })?;
-        let id = id_index.get(&d.name).ok_or_else(|| {
-            anyhow!(
-                "internal: orphan '{}' missing from id index — list/diff drift",
-                d.name
-            )
-        })?;
-        let archived = orphan::archive_name(today, &d.name);
-        if archived == d.name {
-            return Ok(0);
-        }
-        // Update endpoint requires the full body, not a partial. Safe
-        // re: state — `get_content_block` defaults state to Active
-        // (Braze /info has no state field) and `update_content_block`
-        // omits state from the wire body, so this rename can never
-        // toggle the remote state as a side effect. If either of those
-        // invariants ever changes, the orphan path needs revisiting.
-        let mut cb = client
-            .get_content_block(id)
-            .await
-            .with_context(|| format!("fetching content block '{}' for archive rename", d.name))?;
-        cb.name = archived;
-        tracing::info!(
-            content_block = %d.name,
-            new_name = %cb.name,
-            "archiving orphan content block"
-        );
-        client.update_content_block(id, &cb).await?;
-        return Ok(1);
+        return Ok(0);
     }
 
     match &d.op {

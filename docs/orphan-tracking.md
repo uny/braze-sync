@@ -72,30 +72,46 @@ API calls for them. This is the right default: the tool cannot delete
 the resource, and silently leaving stale data behind is not an option
 either.
 
-### `--archive-orphans`: rename in place
+### `--archive-orphans`: rename in place (email templates only)
 
-Passing `--archive-orphans` renames each orphan in Braze with a
-date-stamped prefix:
+Passing `--archive-orphans` renames each **email template** orphan in
+Braze with a date-stamped prefix:
 
 ```
-legacy_promo  →  [ARCHIVED-2026-04-18] legacy_promo
+old_welcome  →  [ARCHIVED-2026-04-18] old_welcome
 ```
 
 The resource still exists in Braze — it just becomes obvious in the
 dashboard that it has been retired. This is a **two-step
 read-modify-write**:
 
-1. `GET /content_blocks/info` (or the email equivalent) to fetch the
-   current body.
-2. `POST /content_blocks/update` with the prefixed name and the body
+1. `GET /templates/email/info` to fetch the current body.
+2. `POST /templates/email/update` with the prefixed name and the body
    from step 1.
 
-If another operator edits the same resource in the Braze dashboard
+If another operator edits the same template in the Braze dashboard
 between those two calls, the update clobbers their edit with the
 pre-rename body. This race is acceptable for the single-operator
 GitOps workflow `braze-sync` targets; it would lift with a
-compare-and-swap header, which Braze's content-block API does not
-currently expose.
+compare-and-swap header, which Braze's API does not currently expose.
+
+#### Content blocks are report-only
+
+`--archive-orphans` does **not** rename content block orphans. Braze
+rejects renaming a content block once it has been activated:
+
+```
+HTTP 400: {"message":"Content Block name cannot be changed after activation."}
+```
+
+`/content_blocks/info` also exposes no state field, so braze-sync
+cannot tell a draft (renamable) block from an active (locked) one
+ahead of time. Rather than fire a write that aborts the whole apply on
+the first activated orphan, content block orphans stay report-only:
+they are listed in the run summary for manual removal in the Braze
+dashboard, and `apply` exits 0. This mirrors the underlying Braze API
+capability — email templates allow post-activation renames, content
+blocks do not.
 
 ### Deletion is never attempted
 
@@ -133,11 +149,15 @@ Other GitOps tools solve this with a separate state file that tracks
 
 Before adopting `--archive-orphans` in CI:
 
-- [ ] Confirm there's no other workflow that matches on *exact* content
-      block or email template names — archiving changes the name.
-- [ ] Confirm no campaign or canvas references the block by name. Braze
-      resolves references at send time; a renamed block will break
-      anything that still references the old name.
+- [ ] Confirm there's no other workflow that matches on *exact* email
+      template names — archiving changes the name. (Content block names
+      are never changed; those orphans are report-only.)
+- [ ] Confirm no campaign or canvas references the email template by
+      name. Braze resolves references at send time; a renamed template
+      will break anything that still references the old name.
+- [ ] Plan for content block orphans separately: braze-sync cannot
+      archive them, so they must be retired manually in the Braze
+      dashboard.
 - [ ] Decide on a recovery procedure (see "Unarchiving" above) and
       document it alongside your `braze-sync` runbook.
 
