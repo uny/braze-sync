@@ -16,7 +16,6 @@ use crate::diff::content_block::{ContentBlockDiff, ContentBlockIdIndex};
 use crate::diff::content_block_order::reorder_content_block_diffs_by_dependency;
 use crate::diff::custom_attribute::CustomAttributeOp;
 use crate::diff::email_template::{EmailTemplateDiff, EmailTemplateIdIndex};
-use crate::diff::orphan;
 use crate::diff::plan::{self, PlanFile};
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::error::Error;
@@ -54,15 +53,6 @@ pub struct ApplyArgs {
     /// the Braze side.
     #[arg(long)]
     pub allow_destructive: bool,
-
-    /// Archive orphan Email Templates by prefixing the remote name with
-    /// `[ARCHIVED-YYYY-MM-DD]`. Inert for resource kinds that have no
-    /// orphan concept (e.g. catalog schema) and for Content Blocks, whose
-    /// names Braze locks after activation ("Content Block name cannot be
-    /// changed after activation") — those orphans stay report-only and are
-    /// listed for manual dashboard handling. See docs/orphan-tracking.md.
-    #[arg(long)]
-    pub archive_orphans: bool,
 
     /// Load a plan file produced by `diff --plan-out=<path>` and refuse
     /// to apply if the freshly-computed plan does not match. Exits with
@@ -236,37 +226,20 @@ pub async fn run(
 
     check_for_unsupported_ops(&summary)?;
 
-    // One canonical archive timestamp per run, even across multiple
-    // orphans. UTC (not Local) so two operators running the same archive
-    // on the same wall-clock day from different timezones produce the
-    // same `[ARCHIVED-YYYY-MM-DD]` prefix — determinism across a team
-    // matters more than matching the operator's local calendar.
-    let today = chrono::Utc::now().date_naive();
-
     let mut applied = 0;
     let mut ca_deprecate: Vec<&str> = Vec::new();
     let mut ca_reactivate: Vec<&str> = Vec::new();
-    let mut content_block_orphans: Vec<&str> = Vec::new();
     for diff in &summary.diffs {
         match diff {
             ResourceDiff::CatalogSchema(d) => {
                 applied += apply_catalog_schema(&client, d).await?;
             }
             ResourceDiff::ContentBlock(d) => {
-                if d.orphan {
-                    content_block_orphans.push(&d.name);
-                }
                 applied += apply_content_block(&client, d, content_block_id_index.as_ref()).await?;
             }
             ResourceDiff::EmailTemplate(d) => {
-                applied += apply_email_template(
-                    &client,
-                    d,
-                    email_template_id_index.as_ref(),
-                    args.archive_orphans,
-                    today,
-                )
-                .await?;
+                applied +=
+                    apply_email_template(&client, d, email_template_id_index.as_ref()).await?;
             }
             ResourceDiff::CustomAttribute(d) => {
                 if let CustomAttributeOp::DeprecationToggled { to, .. } = &d.op {
@@ -285,23 +258,6 @@ pub async fn run(
 
     if !ca_deprecate.is_empty() || !ca_reactivate.is_empty() {
         applied += apply_custom_attribute_batch(&client, &ca_deprecate, &ca_reactivate).await?;
-    }
-
-    // Content blocks can't be archived via rename: Braze rejects renaming a
-    // content block once it has been activated, and `/content_blocks/info`
-    // exposes no state field so we can't tell draft from active ahead of
-    // time. They stay report-only; surface them so an operator who asked to
-    // archive knows to handle them manually. See docs/orphan-tracking.md.
-    if args.archive_orphans && !content_block_orphans.is_empty() {
-        eprintln!(
-            "⚠ {} content block orphan(s) left in place — Braze does not allow \
-             archiving content blocks via the API (name is locked after \
-             activation). Remove them in the Braze dashboard if no longer needed:",
-            content_block_orphans.len(),
-        );
-        for name in &content_block_orphans {
-            eprintln!("    - {name}");
-        }
     }
 
     eprintln!("✓ Applied {applied} change(s).");
@@ -428,16 +384,6 @@ fn check_plan_scope(plan: &PlanFile, environment: &str, args: &ApplyArgs) -> any
         eprintln!(
             "✗ plan drift: plan scope --name={:?} but apply --name={:?}",
             plan.scope.name, args.name,
-        );
-        return Err(Error::PlanDrift.into());
-    }
-    // Orphan ops only fire writes when --archive-orphans is set, so the
-    // plan-time and apply-time intents must agree or the frozen op set
-    // would not reflect the real write set.
-    if plan.scope.archive_orphans != args.archive_orphans {
-        eprintln!(
-            "✗ plan drift: plan scope --archive-orphans={} but apply --archive-orphans={}",
-            plan.scope.archive_orphans, args.archive_orphans,
         );
         return Err(Error::PlanDrift.into());
     }
@@ -620,38 +566,14 @@ async fn apply_email_template(
     client: &BrazeClient,
     d: &EmailTemplateDiff,
     id_index: Option<&EmailTemplateIdIndex>,
-    archive_orphans: bool,
-    today: chrono::NaiveDate,
 ) -> anyhow::Result<usize> {
+    // Email template orphans are report-only. Braze exposes no DELETE
+    // endpoint and no usage/inclusion data, so we cannot prove a template
+    // is unused before mutating it; renaming an API-referenced template
+    // breaks send-time name resolution. They surface in the diff output for
+    // manual dashboard archival instead. See docs/orphan-tracking.md.
     if d.orphan {
-        if !archive_orphans {
-            return Ok(0);
-        }
-        let id_index = id_index.ok_or_else(|| {
-            anyhow!("internal: email_template id index missing for orphan apply path")
-        })?;
-        let id = id_index.get(&d.name).ok_or_else(|| {
-            anyhow!(
-                "internal: orphan '{}' missing from id index — list/diff drift",
-                d.name
-            )
-        })?;
-        let archived = orphan::archive_name(today, &d.name);
-        if archived == d.name {
-            return Ok(0);
-        }
-        let mut et = client
-            .get_email_template(id)
-            .await
-            .with_context(|| format!("fetching email template '{}' for archive rename", d.name))?;
-        et.name = archived;
-        tracing::info!(
-            email_template = %d.name,
-            new_name = %et.name,
-            "archiving orphan email template"
-        );
-        client.update_email_template(id, &et).await?;
-        return Ok(1);
+        return Ok(0);
     }
 
     match &d.op {

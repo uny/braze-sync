@@ -33,12 +33,6 @@ pub struct PlanScope {
     pub resource: Option<ResourceKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Whether the plan was generated with the intent to archive orphans
-    /// at apply time. `Orphan` ops only actually write when `apply
-    /// --archive-orphans` is set, so the apply flag must match the plan
-    /// scope or the frozen op set would not reflect the real write set.
-    #[serde(default)]
-    pub archive_orphans: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -69,7 +63,6 @@ impl PlanFile {
         environment: impl Into<String>,
         resource: Option<ResourceKind>,
         name: Option<String>,
-        archive_orphans: bool,
     ) -> Self {
         Self {
             version: CURRENT_PLAN_VERSION,
@@ -79,7 +72,6 @@ impl PlanFile {
                 environment: environment.into(),
                 resource,
                 name,
-                archive_orphans,
             },
             ops: collect_ops(summary),
         }
@@ -226,7 +218,6 @@ mod tests {
                 environment: "dev".into(),
                 resource: None,
                 name: None,
-                archive_orphans: false,
             },
             ops: vec![
                 op(ResourceKind::ContentBlock, "a", PlanOpType::Modify),
@@ -250,7 +241,6 @@ mod tests {
                 environment: "dev".into(),
                 resource: None,
                 name: None,
-                archive_orphans: false,
             },
             ops: vec![op(ResourceKind::ContentBlock, "a", PlanOpType::Modify)],
         };
@@ -274,7 +264,6 @@ mod tests {
                 environment: "dev".into(),
                 resource: None,
                 name: None,
-                archive_orphans: false,
             },
             ops: vec![
                 op(ResourceKind::ContentBlock, "a", PlanOpType::Modify),
@@ -304,7 +293,6 @@ mod tests {
                 environment: "dev".into(),
                 resource: Some(ResourceKind::ContentBlock),
                 name: None,
-                archive_orphans: true,
             },
             ops: vec![op(ResourceKind::ContentBlock, "hero", PlanOpType::Add)],
         };

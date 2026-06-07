@@ -7,6 +7,30 @@ versions follow [semver](https://semver.org/). Per IMPLEMENTATION.md
 changes; v1.0 freezes the public surface (CLI flags, config schema,
 file formats, JSON output, exit codes) for the full v1.x line.
 
+## [Unreleased]
+
+### Removed
+
+- **`--archive-orphans` is gone** (on both `apply` and `diff`), along with
+  its plan-scope field and plan-lock comparison. After verifying both
+  affected resource kinds against the Braze API, the rename-based archival
+  was non-functional for content blocks (Braze locks the name after
+  activation) and unsafe for email templates: `POST /templates/email/update`
+  renames unconditionally, `/templates/email/info` exposes no usage data,
+  and API-triggered campaigns resolve templates by name at send time, so a
+  rename could silently break live sends. The real prune path
+  (`--allow-destructive` for catalogs, catalog fields, and custom-attribute
+  deprecation) is unaffected. Fixes #65.
+
+### Changed
+
+- **Orphan reporting is now always on.** `diff` and `apply` print a
+  read-only notice — "N Braze resource(s) not present in Git. Archive them
+  in the Braze dashboard if intended, or add them to exclude_patterns to
+  keep them." — across all resource kinds, instead of only when the removed
+  `--archive-orphans` flag was passed. Retire an orphan manually in the
+  Braze dashboard, or add it to `exclude_patterns`.
+
 ## [0.16.5] — 2026-05-28
 
 ### Fixed
