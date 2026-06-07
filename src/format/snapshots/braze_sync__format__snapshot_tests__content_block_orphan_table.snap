@@ -6,3 +6,5 @@ expression: "TableFormatter.format(&fixtures::content_block_orphan())"
    ⚠ orphaned (exists in Braze, not in Git)
 
 Summary: 1 changed, 0 in sync, 1 orphan, 0 destructive
+
+ℹ 1 Braze resource(s) not present in Git. Archive them in the Braze dashboard if intended, or add them to exclude_patterns to keep them.

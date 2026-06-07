@@ -120,8 +120,7 @@ impl BrazeClient {
         Ok(resp.content_block_id)
     }
 
-    /// Used both for body changes and for the `--archive-orphans` rename
-    /// (same id, `[ARCHIVED-...]` name).
+    /// Used for body/metadata changes to an existing content block.
     ///
     /// `state` is intentionally omitted from the request body. The
     /// diff layer excludes it from `syncable_eq` (there is no state

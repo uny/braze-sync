@@ -20,14 +20,26 @@ pub fn render(summary: &DiffSummary) -> String {
         out.push('\n');
     }
 
+    let orphans = summary.orphan_count();
     let _ = writeln!(
         out,
-        "Summary: {} changed, {} in sync, {} orphan, {} destructive",
+        "Summary: {} changed, {} in sync, {orphans} orphan, {} destructive",
         summary.changed_count(),
         summary.in_sync_count(),
-        summary.orphan_count(),
         summary.destructive_count(),
     );
+
+    // Always-on orphan report. Braze exposes no DELETE for content blocks
+    // or email templates, so braze-sync cannot prune them; surface them as
+    // a read-only signal instead of mutating remote state.
+    if orphans > 0 {
+        let _ = writeln!(
+            out,
+            "\nℹ {orphans} Braze resource(s) not present in Git. \
+             Archive them in the Braze dashboard if intended, \
+             or add them to exclude_patterns to keep them.",
+        );
+    }
 
     out
 }

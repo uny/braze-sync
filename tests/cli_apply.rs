@@ -541,15 +541,14 @@ async fn content_block_confirm_update_posts_to_update_endpoint_with_id() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn content_block_orphan_without_archive_flag_makes_no_write_calls() {
-    // Default orphan policy: report-only. The honest-orphan §11.6
-    // contract requires zero write calls when --archive-orphans is
-    // absent, even with --confirm + --allow-destructive — the only
-    // knob that turns archival on is --archive-orphans itself.
-    // (Content Block has no destructive ops, so --allow-destructive
-    // is operationally a no-op for this resource; passing it here
-    // pins that an operator who confuses the two flags can't
-    // accidentally trigger an archive rename.)
+async fn content_block_orphan_makes_no_write_calls() {
+    // Orphan policy is report-only: content block orphans never trigger
+    // a write, even with --confirm + --allow-destructive. Braze rejects
+    // renaming a content block after activation and exposes no DELETE
+    // endpoint, so there is nothing apply can safely do — the orphan is
+    // surfaced in the diff report instead. (Content Block has no
+    // destructive ops, so --allow-destructive is operationally a no-op
+    // here; passing it pins that it cannot trigger a remote mutation.)
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/content_blocks/list"))
@@ -597,15 +596,11 @@ async fn content_block_orphan_without_archive_flag_makes_no_write_calls() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn content_block_archive_orphans_is_report_only() {
-    // Content blocks cannot be archived via rename: Braze rejects
-    // renaming a content block after activation ("Content Block name
-    // cannot be changed after activation") and `/content_blocks/info`
-    // exposes no state field, so braze-sync cannot tell draft from
-    // active ahead of time. Unlike email templates, the orphan path
-    // therefore makes ZERO write calls even with --archive-orphans:
-    // no /info fetch and no /update. The orphan is reported instead.
-    // See docs/orphan-tracking.md.
+async fn content_block_orphan_is_reported() {
+    // Orphans are surfaced as an always-on, read-only report: the orphan
+    // name and the dashboard/exclude_patterns guidance appear in the diff
+    // output, while the apply path makes ZERO write calls (no /info fetch,
+    // no /update). See docs/orphan-tracking.md.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/content_blocks/list"))
@@ -634,18 +629,15 @@ async fn content_block_archive_orphans_is_report_only() {
             .unwrap()
             .env("BRAZE_API_KEY", "test-key")
             .args(["--config", config_path.to_str().unwrap()])
-            .args([
-                "apply",
-                "--resource",
-                "content_block",
-                "--confirm",
-                "--archive-orphans",
-            ])
+            .args(["apply", "--resource", "content_block", "--confirm"])
             .assert()
             .success()
             // The orphan is surfaced for manual handling rather than archived.
-            .stderr(predicate::str::contains("content block orphan"))
-            .stderr(predicate::str::contains("legacy"));
+            .stdout(predicate::str::contains("legacy"))
+            .stdout(predicate::str::contains("not present in Git"))
+            // Orphans are drift but not actionable, so apply reports no
+            // actionable work instead of a misleading "Applied N change(s)".
+            .stderr(predicate::str::contains("No actionable changes to apply"));
     })
     .await
     .unwrap();
@@ -784,7 +776,11 @@ async fn email_template_confirm_update_posts_to_update_endpoint() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn email_template_archive_orphans_renames_via_update() {
+async fn email_template_orphan_makes_no_write_calls() {
+    // Email template orphans are report-only: Braze exposes no DELETE and
+    // no usage data, and renaming an API-referenced template breaks
+    // send-time resolution, so apply makes ZERO write calls (no /info
+    // fetch, no /update). The orphan is surfaced in the diff report.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/templates/email/list"))
@@ -795,41 +791,33 @@ async fn email_template_archive_orphans_renames_via_update() {
         .await;
     Mock::given(method("GET"))
         .and(path("/templates/email/info"))
-        .and(query_param("email_template_id", "id-old"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "template_name": "old_promo",
-            "subject": "Old",
-            "body": "<p>Old</p>",
-            "plaintext_body": "Old",
-            "tags": [],
-            "message": "success"
-        })))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
         .mount(&server)
         .await;
     Mock::given(method("POST"))
-        .and(path("/templates/email/update"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
-        .expect(1)
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
         .mount(&server)
         .await;
 
     let tmp = tempfile::tempdir().unwrap();
     let config_path = write_config(tmp.path(), &server.uri());
+    // No local file for "old_promo" → orphan from braze-sync's POV.
 
     tokio::task::spawn_blocking(move || {
         Command::cargo_bin("braze-sync")
             .unwrap()
             .env("BRAZE_API_KEY", "test-key")
             .args(["--config", config_path.to_str().unwrap()])
-            .args([
-                "apply",
-                "--resource",
-                "email_template",
-                "--confirm",
-                "--archive-orphans",
-            ])
+            .args(["apply", "--resource", "email_template", "--confirm"])
             .assert()
-            .success();
+            .success()
+            .stdout(predicate::str::contains("old_promo"))
+            .stdout(predicate::str::contains("not present in Git"))
+            // Orphans are drift but not actionable, so apply reports no
+            // actionable work instead of a misleading "Applied N change(s)".
+            .stderr(predicate::str::contains("No actionable changes to apply"));
     })
     .await
     .unwrap();
