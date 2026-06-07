@@ -132,6 +132,13 @@ impl ResourceDiff {
             // Pre-flight (in cli/apply.rs) consumes Tag diffs separately to
             // block apply when a referenced tag is unregistered.
             Self::Tag(_) => false,
+            // Orphans are drift (they count as changed), but `apply` can
+            // never act on them: Braze exposes no DELETE and renaming is
+            // unsafe. Excluding them here makes an orphan-only run report
+            // "no actionable changes" rather than a misleading DRY RUN /
+            // "pass --confirm" that would apply nothing.
+            Self::ContentBlock(d) if d.orphan => false,
+            Self::EmailTemplate(d) if d.orphan => false,
             other => other.has_changes(),
         }
     }

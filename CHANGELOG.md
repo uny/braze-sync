@@ -29,7 +29,10 @@ file formats, JSON output, exit codes) for the full v1.x line.
   in the Braze dashboard if intended, or add them to exclude_patterns to
   keep them." — across all resource kinds, instead of only when the removed
   `--archive-orphans` flag was passed. Retire an orphan manually in the
-  Braze dashboard, or add it to `exclude_patterns`.
+  Braze dashboard, or add it to `exclude_patterns`. Orphans still count as
+  drift (so `diff --fail-on-drift` exits non-zero on them), but are no
+  longer treated as actionable apply work: an orphan-only `apply` reports
+  "no actionable changes" instead of a misleading "Applied 0 change(s)".
 
 ## [0.16.5] — 2026-05-28
 

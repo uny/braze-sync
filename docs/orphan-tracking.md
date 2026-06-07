@@ -44,7 +44,7 @@ individual diff entry and in the `summary.orphan` count:
 ```json
 {
   "version": 1,
-  "summary": { "changed": 0, "in_sync": 4, "destructive": 0, "orphan": 2 },
+  "summary": { "changed": 2, "in_sync": 4, "destructive": 0, "orphan": 2 },
   "diffs": [
     {
       "kind": "content_block", "op": "unchanged",
@@ -59,9 +59,11 @@ individual diff entry and in the `summary.orphan` count:
 }
 ```
 
-Orphans **do not** trigger the drift exit code by themselves — an orphan
-is a report, not a drift. Combine `--fail-on-drift` with explicit
-orphan checks in CI if you want the build to block on them.
+Orphans count as drift: an orphan means Braze holds a resource Git does
+not, so it lands in the `changed` count (not `in_sync`) and
+`--fail-on-drift` exits non-zero whenever any orphan is present. Resolve
+each one by exporting it into Git (`braze-sync export`) or adding it to
+`exclude_patterns`; once every orphan is classified the gate goes green.
 
 ## How `apply` handles orphans
 
@@ -82,8 +84,8 @@ report when orphans are present:
 
 Earlier versions had an `--archive-orphans` flag that tried to retire
 orphans by renaming them to `[ARCHIVED-YYYY-MM-DD] <name>`. It was
-removed in v0.17.0 because it was non-functional for one resource kind
-and unsafe for the other:
+removed because it was non-functional for one resource kind and unsafe
+for the other:
 
 - **Content Block** — Braze rejects renaming a content block once it
   has been activated (`HTTP 400: "Content Block name cannot be changed
@@ -139,5 +141,5 @@ When the orphan report flags resources:
 - [ ] Before retiring an email template, confirm no campaign or canvas
       references it by name. Braze resolves references at send time, so
       renaming or archiving a referenced template breaks live sends.
-- [ ] Use `--fail-on-drift` plus an orphan check in CI if you want the
-      build to block until orphans are resolved.
+- [ ] Use `--fail-on-drift` in CI to block the build until every orphan
+      is resolved — exported into Git or added to `exclude_patterns`.

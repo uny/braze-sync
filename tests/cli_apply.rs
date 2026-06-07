@@ -634,7 +634,10 @@ async fn content_block_orphan_is_reported() {
             .success()
             // The orphan is surfaced for manual handling rather than archived.
             .stdout(predicate::str::contains("legacy"))
-            .stdout(predicate::str::contains("not present in Git"));
+            .stdout(predicate::str::contains("not present in Git"))
+            // Orphans are drift but not actionable, so apply reports no
+            // actionable work instead of a misleading "Applied N change(s)".
+            .stderr(predicate::str::contains("No actionable changes to apply"));
     })
     .await
     .unwrap();
@@ -811,7 +814,10 @@ async fn email_template_orphan_makes_no_write_calls() {
             .assert()
             .success()
             .stdout(predicate::str::contains("old_promo"))
-            .stdout(predicate::str::contains("not present in Git"));
+            .stdout(predicate::str::contains("not present in Git"))
+            // Orphans are drift but not actionable, so apply reports no
+            // actionable work instead of a misleading "Applied N change(s)".
+            .stderr(predicate::str::contains("No actionable changes to apply"));
     })
     .await
     .unwrap();

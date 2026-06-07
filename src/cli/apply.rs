@@ -464,10 +464,9 @@ async fn apply_content_block(
     id_index: Option<&ContentBlockIdIndex>,
 ) -> anyhow::Result<usize> {
     // Content block orphans are report-only: Braze has no DELETE endpoint
-    // and rejects renaming a content block after activation, so the
-    // rename-archival path used for email templates can't work here. The
-    // run-level summary lists them for manual handling; see the note after
-    // the apply loop and docs/orphan-tracking.md.
+    // and rejects renaming a content block after activation, so apply
+    // cannot mutate them. They surface in the always-on orphan report in
+    // the diff output instead. See docs/orphan-tracking.md.
     if d.orphan {
         return Ok(0);
     }
