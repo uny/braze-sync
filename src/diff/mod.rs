@@ -125,6 +125,15 @@ impl ResourceDiff {
     /// materialize on first `/users/track`), so registry-only entries are
     /// expected and must not block apply.
     pub fn is_actionable(&self) -> bool {
+        // Orphans are drift (they count as changed), but `apply` can never
+        // act on them regardless of kind: Braze exposes no DELETE and
+        // renaming is unsafe. Routing through `is_orphan()` keeps the
+        // orphan-capable variant set in one place. Excluding them here makes
+        // an orphan-only run report "no actionable changes" rather than a
+        // misleading DRY RUN / "pass --confirm" that would apply nothing.
+        if self.is_orphan() {
+            return false;
+        }
         match self {
             Self::CustomAttribute(d) => d.is_actionable(),
             // Tag drift is informational from apply's perspective: Braze has
@@ -132,13 +141,6 @@ impl ResourceDiff {
             // Pre-flight (in cli/apply.rs) consumes Tag diffs separately to
             // block apply when a referenced tag is unregistered.
             Self::Tag(_) => false,
-            // Orphans are drift (they count as changed), but `apply` can
-            // never act on them: Braze exposes no DELETE and renaming is
-            // unsafe. Excluding them here makes an orphan-only run report
-            // "no actionable changes" rather than a misleading DRY RUN /
-            // "pass --confirm" that would apply nothing.
-            Self::ContentBlock(d) if d.orphan => false,
-            Self::EmailTemplate(d) if d.orphan => false,
             other => other.has_changes(),
         }
     }
