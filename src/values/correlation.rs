@@ -38,14 +38,13 @@ const MANAGED_FILTER_MASK: &str = "|<braze-managed>";
 /// filter is masked, whatever the input looks like.
 pub fn normalize_url(url: &str) -> String {
     let masked = lid_filter_re().replace_all(url, MANAGED_FILTER_MASK);
-    let masked = cb_id_filter_re().replace_all(masked.as_ref(), CB_ID_MASK_REPLACEMENT);
+    // `${1}` keeps the `{{content_blocks.${NAME}` prefix the cb_id regex
+    // had to capture; only the `| id: '…'` after it is masked.
+    let cb_replacement = format!("${{1}}{MANAGED_FILTER_MASK}");
+    let masked = cb_id_filter_re().replace_all(masked.as_ref(), cb_replacement.as_str());
     let stop = masked.find(['?', '#']).unwrap_or(masked.len());
     masked[..stop].to_string()
 }
-
-/// Keeps the `{{content_blocks.${NAME}` prefix (group 1) and masks only
-/// the `| id: '…'` filter after it.
-const CB_ID_MASK_REPLACEMENT: &str = "${1}|<braze-managed>";
 
 fn lid_filter_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
