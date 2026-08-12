@@ -219,7 +219,15 @@ fn href_iter(body: &str) -> Vec<(usize, String)> {
 /// trailing-punctuation trimming and [`normalize_url`] must be applied to
 /// both, or a URL like `https://x.com/end.` keys differently on each side
 /// and the correlation can never match.
-pub fn plaintext_url_anchors(body: &str) -> Vec<(usize, String)> {
+///
+/// Note that [`normalize_url`]'s masking is inert here: `plaintext_url_re`
+/// stops at `'` / `"`, so a quoted managed filter is never inside the
+/// match and the key ends mid-filter (`…{{x|lid`). Both sides truncate at
+/// the same byte, so they still agree — but the key therefore also drops
+/// everything after the filter, and two plaintext URLs differing only in
+/// that tail share one anchor. `resolve_lid_batch` warns when a bucket
+/// holds more than one remote value.
+pub(crate) fn plaintext_url_anchors(body: &str) -> Vec<(usize, String)> {
     plaintext_url_re()
         .find_iter(body)
         .map(|m| {

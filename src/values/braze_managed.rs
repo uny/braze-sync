@@ -508,12 +508,17 @@ fn lid_anchor_for(body: &str, offset: usize, field: FieldKind) -> Option<String>
             .and_then(|cap| cap.get(1).or(cap.get(2)))
             .map(|m| normalize_url(m.as_str()))
     } else if field.supports_plaintext_anchor() {
-        // Scan the whole body, not `body[..offset]`: when the lid filter
-        // sits inside the URL run itself the placeholder is *part of* the
-        // match, and truncating at `offset` would cut the filter in half
-        // so it no longer masks. Taking the last URL starting at or
-        // before `offset` covers both that case and the usual
-        // "URL, then lid after it" shape.
+        // The load-bearing part is `plaintext_url_anchors`: the remote
+        // side keys through the same trim + normalize, and any asymmetry
+        // there makes correlation impossible (see its doc comment).
+        //
+        // Scanning the whole body and taking the last URL starting at or
+        // before `offset` is equivalent to the `body[..offset]` prefix
+        // scan for every input reachable today — `plaintext_url_re`
+        // excludes `'` and `"`, and `placeholder::infer_type` only types a
+        // token as a lid when the byte before it is one of those, so a URL
+        // run can never span `offset`. Kept as the whole-body form because
+        // it stays correct if that regex is ever widened to admit quotes.
         plaintext_url_anchors(body)
             .into_iter()
             .take_while(|(start, _)| *start <= offset)
@@ -794,8 +799,12 @@ mod tests {
 
     #[test]
     fn plaintext_lid_inside_liquid_url_correlates() {
-        // No spaces, so the lid filter is *inside* the matched URL run
-        // and there is no literal `?` to cut at.
+        // No literal `?` to cut at. Note what actually makes this pass:
+        // `plaintext_url_re` stops at the `'`, so both sides key on
+        // `https://x.com/p{{sep}}lid={{x|lid` — masking never fires here.
+        // The fix under test is that the template side now shares
+        // `trim_trailing_punctuation` with the remote side (without it the
+        // template keeps the trailing `:` and never matches).
         let template = "Visit https://x.com/p{{sep}}lid={{x|lid:'__BRAZESYNC__'}} now";
         let remote = "Visit https://x.com/p{{sep}}lid={{x|lid:'liveeeeeeee1'}} now";
         let p = prepare_field(template, Some(remote), FieldKind::EmailPlainBody);
