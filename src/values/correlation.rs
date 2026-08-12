@@ -11,18 +11,49 @@
 use regex_lite::Regex;
 use std::sync::OnceLock;
 
+use crate::values::placeholder::TOKEN;
+
 /// Shared pattern for raw lid values so templatize and correlation cannot drift.
 pub(crate) const LID_VALUE_PATTERN: &str = "[a-z0-9][a-z0-9_]*";
 
-/// Normalize a URL for anchor comparison: keep `scheme://host/path`,
-/// drop `?query` and `#fragment`.
+/// Stand-in for a Braze-managed filter inside an anchor key. Contains no
+/// `?` / `#` so it survives the query/fragment cut below.
+const MANAGED_FILTER_MASK: &str = "|<braze-managed>";
+
+/// Normalize a URL for anchor comparison: mask Braze-managed filters,
+/// then keep `scheme://host/path` and drop `?query` / `#fragment`.
+///
+/// Both sides of a correlation run through this, so the key must never
+/// embed the very value being correlated. Cutting at the first literal
+/// `?` is not enough: when the query separator is Liquid-templated
+/// (`{{ item.url }}{{ sep }}lid={{ x | lid: '…' }}`) there is no literal
+/// `?`, so the lid filter would stay in the key — `__BRAZESYNC__` on the
+/// template side, the live value on the remote side, never equal. Masking
+/// the filter first makes both sides collapse to the same string.
 ///
 /// Returns the input unchanged if it doesn't look like a URL with a
 /// scheme — callers pass already-detected URLs, but normalizing
 /// idempotently keeps the function safe to apply in either direction.
 pub fn normalize_url(url: &str) -> String {
-    let stop = url.find(['?', '#']).unwrap_or(url.len());
-    url[..stop].to_string()
+    let masked = managed_filter_re().replace_all(url, MANAGED_FILTER_MASK);
+    let stop = masked.find(['?', '#']).unwrap_or(masked.len());
+    masked[..stop].to_string()
+}
+
+fn managed_filter_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        // `| lid: 'X'` / `| id: 'cbN'` in either their live form or their
+        // templatized `__BRAZESYNC__` form. Values are restricted to the
+        // shapes templatize round-trips, so unrelated Liquid filters that
+        // happen to be named `id` keep their place in the key.
+        let lid = format!("(?:{LID_VALUE_PATTERN}|{TOKEN})");
+        let cb = format!("(?:cb[0-9]+|{TOKEN})");
+        Regex::new(&format!(
+            r#"\|\s*(?:lid:\s*(?:"{lid}"|'{lid}')|id:\s*(?:"{cb}"|'{cb}'))"#
+        ))
+        .expect("managed filter regex is valid")
+    })
 }
 
 fn href_re() -> &'static Regex {
@@ -132,7 +163,7 @@ pub fn extract_html_lid_values(body: &str) -> Vec<LidCorrelation> {
 /// Extract `(url, lid_value)` pairs from a plaintext field. Same
 /// pairing rule as HTML but URLs come from raw `https?://…` matches.
 pub fn extract_plaintext_lid_values(body: &str) -> Vec<LidCorrelation> {
-    pair_urls_with_lids(plaintext_url_iter(body), body)
+    pair_urls_with_lids(plaintext_url_anchors(body), body)
 }
 
 /// Extract raw lid values in field appearance order without any URL
@@ -160,7 +191,14 @@ fn href_iter(body: &str) -> Vec<(usize, String)> {
         .collect()
 }
 
-fn plaintext_url_iter(body: &str) -> Vec<(usize, String)> {
+/// Scan `body` for plaintext URLs, returning `(byte offset, anchor key)`
+/// in appearance order.
+///
+/// Shared by remote-side extraction and template-side anchor lookup:
+/// trailing-punctuation trimming and [`normalize_url`] must be applied to
+/// both, or a URL like `https://x.com/end.` keys differently on each side
+/// and the correlation can never match.
+pub fn plaintext_url_anchors(body: &str) -> Vec<(usize, String)> {
     plaintext_url_re()
         .find_iter(body)
         .map(|m| {
@@ -298,6 +336,34 @@ mod tests {
         assert_eq!(
             normalize_url("https://example.com/x"),
             "https://example.com/x"
+        );
+    }
+
+    #[test]
+    fn normalize_masks_managed_filters_so_both_sides_agree() {
+        // No literal `?`, so the cut alone leaves the lid value in the
+        // key. Template and remote must still normalize identically.
+        let template = "{{ item.url }}{{ sep }}lid={{ x | lid: '__BRAZESYNC__' }}";
+        let remote = "{{ item.url }}{{ sep }}lid={{ x | lid: 'liveeeeeeee1' }}";
+        assert_eq!(normalize_url(template), normalize_url(remote));
+        assert!(!normalize_url(template).contains("__BRAZESYNC__"));
+
+        let tmpl_cb = "{{content_blocks.${base} | id: '__BRAZESYNC__'}}/go";
+        let remote_cb = "{{content_blocks.${base} | id: 'cb42'}}/go";
+        assert_eq!(normalize_url(tmpl_cb), normalize_url(remote_cb));
+    }
+
+    #[test]
+    fn normalize_leaves_unrelated_filters_intact() {
+        // Only the value shapes templatize round-trips are masked, so an
+        // unrelated `id`-named filter still distinguishes two anchors.
+        assert_eq!(
+            normalize_url("{{ a | id: 'not-a-cb-id' }}"),
+            "{{ a | id: 'not-a-cb-id' }}"
+        );
+        assert_ne!(
+            normalize_url("{{ a | upcase }}"),
+            normalize_url("{{ b | upcase }}")
         );
     }
 

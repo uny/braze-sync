@@ -16,7 +16,8 @@ use regex_lite::Regex;
 
 use crate::values::correlation::{
     extract_cb_id_values, extract_html_lid_values, extract_lid_values_unanchored,
-    extract_plaintext_lid_values, normalize_url, slug_for_lid, CbIdCorrelation, LidCorrelation,
+    extract_plaintext_lid_values, normalize_url, plaintext_url_anchors, slug_for_lid,
+    CbIdCorrelation, LidCorrelation,
 };
 use crate::values::placeholder::{
     extract_placeholders, find_suspicious_placeholders, PlaceholderType, ResolutionError, TOKEN,
@@ -507,11 +508,17 @@ fn lid_anchor_for(body: &str, offset: usize, field: FieldKind) -> Option<String>
             .and_then(|cap| cap.get(1).or(cap.get(2)))
             .map(|m| normalize_url(m.as_str()))
     } else if field.supports_plaintext_anchor() {
-        let prefix = &body[..offset];
-        plaintext_url_re()
-            .find_iter(prefix)
+        // Scan the whole body, not `body[..offset]`: when the lid filter
+        // sits inside the URL run itself the placeholder is *part of* the
+        // match, and truncating at `offset` would cut the filter in half
+        // so it no longer masks. Taking the last URL starting at or
+        // before `offset` covers both that case and the usual
+        // "URL, then lid after it" shape.
+        plaintext_url_anchors(body)
+            .into_iter()
+            .take_while(|(start, _)| *start <= offset)
             .last()
-            .map(|m| normalize_url(m.as_str()))
+            .map(|(_, url)| url)
     } else {
         None
     }
@@ -545,11 +552,6 @@ fn url_attr_re() -> &'static Regex {
         )
         .expect("url attr regex is valid")
     })
-}
-
-fn plaintext_url_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r#"https?://[^\s<>"']+"#).expect("plaintext URL regex is valid"))
 }
 
 fn element_open_tag_re() -> &'static Regex {
@@ -746,5 +748,59 @@ mod tests {
         assert_eq!(url_path_tail("https://x.com/page/?a=1#b"), "page");
         assert_eq!(url_path_tail("https://x.com/"), "");
         assert_eq!(url_path_tail("https://x.com/sale"), "sale");
+    }
+    #[test]
+    fn liquid_separator_href_lid_correlates() {
+        // The query separator comes from Liquid, so the href holds no
+        // literal `?` and the lid filter is part of the anchor key on
+        // both sides. Without masking, template (`__BRAZESYNC__`) and
+        // remote (live value) keys can never be equal and the resource
+        // is permanently drifted.
+        let template =
+            r#"<a href="{{ item.url }}{{ sep }}lid={{ x | lid: '__BRAZESYNC__' }}">go</a>"#;
+        let remote = r#"<a href="{{ item.url }}{{ sep }}lid={{ x | lid: 'liveeeeeeee1' }}">go</a>"#;
+        let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+        assert!(p.fallbacks.is_empty(), "{:?}", p.fallbacks);
+        assert!(p.body.contains("'liveeeeeeee1'"), "got: {}", p.body);
+    }
+
+    #[test]
+    fn cb_id_inside_href_does_not_break_lid_anchor() {
+        // A content_block include supplying the URL prefix carries its
+        // own Braze-managed value; it must be masked out of the anchor
+        // key too, or the lid never correlates.
+        let template = r#"<a href="{{content_blocks.${base} | id: '__BRAZESYNC__'}}{{sep}}lid={{x | lid: '__BRAZESYNC__'}}">go</a>"#;
+        let remote = r#"<a href="{{content_blocks.${base} | id: 'cb42'}}{{sep}}lid={{x | lid: 'liveeeeeeee1'}}">go</a>"#;
+        let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+        assert!(p.body.contains("'liveeeeeeee1'"), "got: {}", p.body);
+        assert!(p.body.contains("'cb42'"), "got: {}", p.body);
+    }
+
+    #[test]
+    fn plaintext_lid_anchor_trims_trailing_punctuation() {
+        // Remote-side extraction trims the sentence period; the
+        // template-side anchor must trim it identically.
+        let template = "See https://x.com/end. {{x | lid: '__BRAZESYNC__'}}";
+        let remote = "See https://x.com/end. {{x | lid: 'liveeeeeeee1'}}";
+        let p = prepare_field(template, Some(remote), FieldKind::EmailPlainBody);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+        assert!(p.body.contains("'liveeeeeeee1'"), "got: {}", p.body);
+    }
+
+    #[test]
+    fn plaintext_lid_inside_liquid_url_correlates() {
+        // No spaces, so the lid filter is *inside* the matched URL run
+        // and there is no literal `?` to cut at.
+        let template = "Visit https://x.com/p{{sep}}lid={{x|lid:'__BRAZESYNC__'}} now";
+        let remote = "Visit https://x.com/p{{sep}}lid={{x|lid:'liveeeeeeee1'}} now";
+        let p = prepare_field(template, Some(remote), FieldKind::EmailPlainBody);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+        assert!(p.body.contains("'liveeeeeeee1'"), "got: {}", p.body);
     }
 }
