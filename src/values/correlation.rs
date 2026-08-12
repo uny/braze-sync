@@ -31,28 +31,49 @@ const MANAGED_FILTER_MASK: &str = "|<braze-managed>";
 /// template side, the live value on the remote side, never equal. Masking
 /// the filter first makes both sides collapse to the same string.
 ///
-/// Returns the input unchanged if it doesn't look like a URL with a
-/// scheme — callers pass already-detected URLs, but normalizing
-/// idempotently keeps the function safe to apply in either direction.
+/// Callers pass already-detected URLs, but the rewrite is idempotent and
+/// shape-driven rather than scheme-driven, so it is safe to apply in
+/// either direction. Note that it does *not* pass non-URL text through
+/// untouched: anything after a `?` / `#` is dropped and any managed
+/// filter is masked, whatever the input looks like.
 pub fn normalize_url(url: &str) -> String {
-    let masked = managed_filter_re().replace_all(url, MANAGED_FILTER_MASK);
+    let masked = lid_filter_re().replace_all(url, MANAGED_FILTER_MASK);
+    let masked = cb_id_filter_re().replace_all(masked.as_ref(), CB_ID_MASK_REPLACEMENT);
     let stop = masked.find(['?', '#']).unwrap_or(masked.len());
     masked[..stop].to_string()
 }
 
-fn managed_filter_re() -> &'static Regex {
+/// Keeps the `{{content_blocks.${NAME}` prefix (group 1) and masks only
+/// the `| id: '…'` filter after it.
+const CB_ID_MASK_REPLACEMENT: &str = "${1}|<braze-managed>";
+
+fn lid_filter_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        // `| lid: 'X'` / `| id: 'cbN'` in either their live form or their
-        // templatized `__BRAZESYNC__` form. Values are restricted to the
-        // shapes templatize round-trips, so unrelated Liquid filters that
-        // happen to be named `id` keep their place in the key.
+        // `| lid: 'X'` in either its live form or its templatized
+        // `__BRAZESYNC__` form. `lid` is Braze's own filter, so matching it
+        // by name anywhere is safe.
         let lid = format!("(?:{LID_VALUE_PATTERN}|{TOKEN})");
+        Regex::new(&format!(r#"\|\s*lid:\s*(?:"{lid}"|'{lid}')"#))
+            .expect("lid filter regex is valid")
+    })
+}
+
+fn cb_id_filter_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        // `id` is NOT a Braze-reserved filter name — a template may define
+        // its own. Only the `| id: 'cbN'` inside a `content_blocks.${NAME}`
+        // include is Braze-managed, so anchor on that prefix (mirroring
+        // `cb_id_include_re`) and keep it in the key. Masking every
+        // `| id: 'cbN'` would collapse two anchors that differ only in an
+        // unrelated `id` filter, and `resolve_lid_batch`'s FIFO would then
+        // hand each link the other's live lid.
         let cb = format!("(?:cb[0-9]+|{TOKEN})");
         Regex::new(&format!(
-            r#"\|\s*(?:lid:\s*(?:"{lid}"|'{lid}')|id:\s*(?:"{cb}"|'{cb}'))"#
+            r#"(\{{\{{\s*content_blocks\.\$\{{\s*[^\s}}|]+\s*\}}\s*)\|\s*id:\s*(?:"{cb}"|'{cb}')"#
         ))
-        .expect("managed filter regex is valid")
+        .expect("cb_id filter regex is valid")
     })
 }
 
@@ -364,6 +385,30 @@ mod tests {
         assert_ne!(
             normalize_url("{{ a | upcase }}"),
             normalize_url("{{ b | upcase }}")
+        );
+    }
+
+    #[test]
+    fn normalize_keeps_unrelated_id_filter_with_cb_shaped_value_distinct() {
+        // `id` is not reserved: a template may define its own filter named
+        // `id` whose value happens to look like a cb_id. Masking by name +
+        // value shape alone would collapse these two anchors into one FIFO
+        // bucket, and a dashboard-side link reorder would then swap the two
+        // links' live lid values — permanently, since both stay valid.
+        assert_ne!(
+            normalize_url("https://x/{{ product | id: 'cb1' }}"),
+            normalize_url("https://x/{{ product | id: 'cb2' }}")
+        );
+        // The genuine managed form — inside a `content_blocks.${NAME}`
+        // include — must still collapse across template/remote.
+        assert_eq!(
+            normalize_url("{{content_blocks.${base} | id: '__BRAZESYNC__'}}/go"),
+            normalize_url("{{content_blocks.${base} | id: 'cb42'}}/go")
+        );
+        // ...while still distinguishing two different includes.
+        assert_ne!(
+            normalize_url("{{content_blocks.${a} | id: 'cb1'}}"),
+            normalize_url("{{content_blocks.${b} | id: 'cb2'}}")
         );
     }
 
