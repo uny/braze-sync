@@ -117,15 +117,21 @@ pub fn normalize_url(url: &str) -> String {
 ///   space inside a URL, so the pass does not carry the cost of tracking
 ///   raw spans.
 ///
-/// Quotes are not the only place unquoted whitespace is identity, which
-/// is why the drop is **neighbour-aware**: a run flanked by name bytes on
-/// both sides is kept. Braze addresses a personalization or content block
-/// whose name contains spaces as `${my attribute}` — unquoted, yet every
-/// byte of it is the name. Dropping there would key `${my attribute}` and
+/// A quoted string is not the only literal region inside a tag, so
+/// `${…}` is treated as a second one. Braze addresses a personalization
+/// or content block whose name contains spaces as `${my attribute}` —
+/// unquoted, yet every byte between the braces is the name, punctuation
+/// and all. Dropping there would key `${my attribute}` and
 /// `${myattribute}` alike, and one FIFO bucket for two links is the same
-/// corruption the quote rule exists to prevent. Whitespace that touches
-/// `{`, `}`, `|`, `:`, `,`, a quote, or the tag edge is the formatting
-/// this pass is here to remove, and is dropped.
+/// corruption the quote rule exists to prevent.
+///
+/// So the rule is regional, not per-character: whitespace inside quotes
+/// or inside `${…}` is content and is copied verbatim; whitespace
+/// anywhere else in the tag is formatting and is dropped. That keeps
+/// Liquid's own whitespace control (`{{- sep -}}` and `{{-sep-}}` key
+/// alike) without having to reason about which punctuation may appear in
+/// a name. An unterminated `${` keeps the rest of its tag verbatim, the
+/// same conservative direction as an unterminated quote.
 fn strip_liquid_tag_whitespace(url: &str) -> Cow<'_, str> {
     let bytes = url.as_bytes();
     if !bytes.windows(2).any(|w| w == b"{{") {
@@ -151,70 +157,44 @@ fn strip_liquid_tag_whitespace(url: &str) -> Cow<'_, str> {
         let interior = &bytes[i + "{{".len()..end - "}}".len()];
         out.extend_from_slice(b"{{");
         let mut quote: Option<u8> = None;
+        let mut in_name = false;
         let mut j = 0;
         while j < interior.len() {
             let byte = interior[j];
-            match quote {
-                Some(open) => {
-                    if byte == open {
-                        quote = None;
-                    }
-                    out.push(byte);
-                    j += 1;
+            if let Some(open) = quote {
+                if byte == open {
+                    quote = None;
                 }
-                None if byte == b'\'' || byte == b'"' => {
-                    quote = Some(byte);
-                    out.push(byte);
-                    j += 1;
+                out.push(byte);
+                j += 1;
+            } else if in_name {
+                // Verbatim to the closing brace, whitespace included, and
+                // not collapsed either: `${a  b}` and `${a b}` are two
+                // different names.
+                if byte == b'}' {
+                    in_name = false;
                 }
-                None if byte.is_ascii_whitespace() => {
-                    // Take the whole run at once: whether it is formatting
-                    // depends on what sits either side of it, not on the
-                    // individual byte.
-                    let run_end = interior[j..]
-                        .iter()
-                        .position(|b| !b.is_ascii_whitespace())
-                        .map(|rel| j + rel)
-                        .unwrap_or(interior.len());
-                    let inside_a_name = j > 0
-                        && run_end < interior.len()
-                        && is_name_byte(interior[j - 1])
-                        && is_name_byte(interior[run_end]);
-                    if inside_a_name {
-                        // Verbatim, not collapsed to a single space:
-                        // `${a  b}` and `${a b}` are different names.
-                        out.extend_from_slice(&interior[j..run_end]);
-                    }
-                    j = run_end;
-                }
-                None => {
-                    out.push(byte);
-                    j += 1;
-                }
+                out.push(byte);
+                j += 1;
+            } else if byte == b'\'' || byte == b'"' {
+                quote = Some(byte);
+                out.push(byte);
+                j += 1;
+            } else if interior[j..].starts_with(b"${") {
+                in_name = true;
+                out.extend_from_slice(b"${");
+                j += "${".len();
+            } else if byte.is_ascii_whitespace() {
+                j += 1;
+            } else {
+                out.push(byte);
+                j += 1;
             }
         }
         out.extend_from_slice(b"}}");
         i = end;
     }
     Cow::Owned(String::from_utf8(out).expect("only ASCII whitespace was dropped"))
-}
-
-/// A byte that can spell part of a name, so whitespace between two of
-/// them may be identity rather than layout.
-///
-/// Every non-ASCII byte counts: a `${…}` name may be written in any
-/// script, and a continuation byte must never read as a separator.
-/// Liquid's own separators (`|`, `:`, `,`, `.`, the braces, quotes) are
-/// deliberately excluded — whitespace touching one of those is the
-/// formatting this pass removes.
-///
-/// `-` is excluded with them, though a name may contain one: it is also
-/// Liquid's whitespace-control marker, and treating it as a name byte
-/// would key `{{- sep -}}` apart from `{{-sep-}}` — reinstating the very
-/// miss this pass fixes, for a far commoner spelling than a name with a
-/// space on either side of a hyphen.
-fn is_name_byte(byte: u8) -> bool {
-    !byte.is_ascii() || byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
 /// If a Liquid output tag opens at `i`, the index just past its `}}`.
@@ -832,13 +812,13 @@ mod tests {
     }
 
     #[test]
-    fn normalize_preserves_whitespace_between_name_bytes() {
-        // Quotes are not the only place unquoted whitespace is identity.
-        // Braze spells a personalization or content block whose name has
-        // spaces as `${my attribute}` — no quotes anywhere, yet every byte
-        // is the name. Dropping there merges two different links onto one
-        // anchor and `resolve_lid_batch`'s FIFO transposes their live
-        // lids, which is the failure the quote rule exists to prevent.
+    fn normalize_preserves_whitespace_inside_a_name() {
+        // Quotes are not the only literal region inside a tag. Braze
+        // spells a personalization or content block whose name has spaces
+        // as `${my attribute}` — no quotes anywhere, yet every byte is the
+        // name. Dropping there merges two different links onto one anchor
+        // and `resolve_lid_batch`'s FIFO transposes their live lids, which
+        // is the failure the quote rule exists to prevent.
         assert_ne!(
             normalize_url("https://x.com/{{custom_attribute.${first name}}}/p"),
             normalize_url("https://x.com/{{custom_attribute.${firstname}}}/p")
@@ -865,12 +845,24 @@ mod tests {
             normalize_url("https://x.com/{{ 日本 | upcase }}/p"),
             "https://x.com/{{日本|upcase}}/p"
         );
-        // `-` is a separator here, not a name byte: it is Liquid's
-        // whitespace-control marker, and respacing one of those must keep
-        // correlating.
+        // Punctuation inside a name is name too — the region is what
+        // decides, not the character class, so a name is safe whatever it
+        // is spelled with.
+        assert_ne!(
+            normalize_url("https://x.com/{{custom_attribute.${Plan (US)}}}/p"),
+            normalize_url("https://x.com/{{custom_attribute.${Plan(US)}}}/p")
+        );
+        // Outside a name the same bytes are formatting, so Liquid's
+        // whitespace control still correlates across a respacing.
         assert_eq!(
             normalize_url("https://x.com/{{- sep -}}/p"),
             normalize_url("https://x.com/{{-sep-}}/p")
+        );
+        // An unterminated `${` keeps the rest of its tag verbatim, the
+        // same conservative direction as an unterminated quote.
+        assert_eq!(
+            normalize_url("https://x.com/{{ a.${oops | upcase }}/p"),
+            "https://x.com/{{a.${oops | upcase }}/p"
         );
     }
 

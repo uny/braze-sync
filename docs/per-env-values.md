@@ -64,11 +64,11 @@ For every `apply` and `diff`:
    treated as formatting rather than identity wherever it separates the
    tag's structure, so the ordinary dashboard reformat — `{{x|lid:'…'}}`
    to `{{ x | lid: '…' }}` and back — keys the same and keeps the live
-   `lid`. Whitespace that is part of a *value* is kept, because two
-   spellings there really are two different links: inside a quoted
+   `lid`. Whitespace inside the tag's two *literal* regions is kept,
+   because two spellings there really are two different links: a quoted
    argument (`{{ sep | default: ' - ' }}` vs `{{ sep | default: '-' }}`)
-   and between the characters of a name (`${first name}` vs
-   `${firstname}`) stay distinct anchors, as they must.
+   and a `${…}` name (`${first name}` vs `${firstname}`, and likewise
+   `${Plan (US)}` vs `${Plan(US)}`) stay distinct anchors, as they must.
    Two narrower cases still key on their spacing, and a reformat there
    falls back to a generated `lid`: an *unclosed* `{{`, whose extent is
    unknown, and a tag carrying a literal `}}` inside a quoted argument,
