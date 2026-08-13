@@ -259,8 +259,10 @@ fn href_iter(body: &str) -> Vec<(usize, String)> {
 /// [`normalize_url`]'s masking is load-bearing here: `plaintext_url_re`
 /// spans a whole `{{…}}`, so a quoted managed filter *is* inside the
 /// match, and masking it is what lets the two sides agree despite the
-/// spacing `templatize` rewrites. The key keeps whatever follows the tag,
-/// so two plaintext URLs differing only in that tail stay distinct.
+/// spacing `templatize` rewrites. The key keeps the plain text that
+/// follows the tag, so two plaintext URLs differing only in that tail
+/// stay distinct — a further *tag* is cut, see
+/// [`bound_after_managed_tag`].
 ///
 /// What the mask does **not** absorb is whitespace to the left of the
 /// `|` — [`lid_filter_re`] starts matching at the pipe. Correlation
