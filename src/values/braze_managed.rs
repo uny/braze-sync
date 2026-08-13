@@ -17,7 +17,7 @@ use regex_lite::Regex;
 use crate::values::correlation::{
     extract_cb_id_values, extract_html_lid_values, extract_lid_values_unanchored,
     extract_plaintext_lid_values, normalize_url, plaintext_url_anchors, slug_for_lid,
-    CbIdCorrelation, LidCorrelation, MANAGED_FILTER_MASK,
+    CbIdCorrelation, LidCorrelation, MANAGED_CB_ID_MASK, MANAGED_LID_MASK,
 };
 use crate::values::placeholder::{
     extract_placeholders, find_suspicious_placeholders, PlaceholderType, ResolutionError, TOKEN,
@@ -267,12 +267,14 @@ fn resolve_lid_batch(
     out
 }
 
-/// Render an anchor key for a human. The key carries
-/// `MANAGED_FILTER_MASK` where the Braze-managed filter stood — a
-/// comparison-only sentinel — so printing it verbatim shows the operator
-/// a URL that appears nowhere in their template.
+/// Render an anchor key for a human. The key carries a comparison-only
+/// sentinel where the Braze-managed filter stood, so printing it verbatim
+/// shows the operator a URL that appears nowhere in their template. Each
+/// sentinel renders back as the filter it replaced — a `| id:` inside an
+/// include must not read as `| lid:`.
 fn anchor_for_display(url: &str) -> String {
-    url.replace(MANAGED_FILTER_MASK, "| lid: '…'")
+    url.replace(MANAGED_LID_MASK, "| lid: '…'")
+        .replace(MANAGED_CB_ID_MASK, "| id: '…'")
 }
 
 /// Slug fallback for a single lid placeholder. `used` is shared across
@@ -426,12 +428,14 @@ fn unique(base: String, used: &mut BTreeMap<String, usize>) -> String {
 }
 
 fn url_path_tail(url: &str) -> String {
-    // The input is an anchor *key*, so it may carry `MANAGED_FILTER_MASK`
-    // — a comparison-only sentinel. The tail feeds `slug_for_lid`, whose
-    // output is POSTed as a live Braze `lid`, so strip it first or the
-    // slug reads `…_braze_managed`. Now that the plaintext run spans a
-    // whole `{{…}}`, the mask lands inside the key on that path too.
-    let url = &url.replace(MANAGED_FILTER_MASK, "");
+    // The input is an anchor *key*, so it may carry a comparison-only
+    // sentinel. The tail feeds `slug_for_lid`, whose output is POSTed as a
+    // live Braze `lid`, so strip them first or the slug reads
+    // `…_braze_managed`. Now that the plaintext run spans a whole `{{…}}`,
+    // a mask lands inside the key on that path too.
+    let url = &url
+        .replace(MANAGED_LID_MASK, "")
+        .replace(MANAGED_CB_ID_MASK, "");
     let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     let path_start = after_scheme
         .find('/')
@@ -941,5 +945,74 @@ mod tests {
             "/alpha must keep its own lid, got: {}",
             p.body
         );
+    }
+    #[test]
+    fn plaintext_lid_survives_a_content_blocks_include_in_the_url() {
+        // `templatize` rebuilds the whole include, normalising the space
+        // before the pipe, so a compactly-written remote keys differently
+        // from its own template unless the mask absorbs that space.
+        let remote = "Go https://x.com/{{content_blocks.${cta}|id:'cb1'}}/a{{sep}}lid={{x | lid: 'aaaaaaaaaaa'}} now";
+        let t = templatize_body(remote, FieldKind::EmailPlainBody);
+        let p = prepare_field(&t.new_body, Some(remote), FieldKind::EmailPlainBody);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+        assert_eq!(
+            p.body,
+            t.new_body
+                .replace("| lid: '__BRAZESYNC__'", "| lid: 'aaaaaaaaaaa'")
+                .replace("| id: '__BRAZESYNC__'", "| id: 'cb1'"),
+            "the live lid and cb_id must land back in the tokens' places"
+        );
+    }
+
+    #[test]
+    fn plaintext_urls_differing_after_a_content_blocks_include_keep_distinct_anchors() {
+        let template = "Go https://x.com/{{content_blocks.${cta} | id: '__BRAZESYNC__'}}/alpha{{s}}lid={{x | lid: '__BRAZESYNC__'}} and \
+                        https://x.com/{{content_blocks.${cta} | id: '__BRAZESYNC__'}}/beta{{s}}lid={{x | lid: '__BRAZESYNC__'}} now";
+        let remote = "Go https://x.com/{{content_blocks.${cta} | id: 'cb1'}}/beta{{s}}lid={{x | lid: 'bbbbbbbbbbb'}} and \
+                      https://x.com/{{content_blocks.${cta} | id: 'cb1'}}/alpha{{s}}lid={{x | lid: 'aaaaaaaaaaa'}} now";
+        let p = prepare_field(template, Some(remote), FieldKind::EmailPlainBody);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+        assert!(
+            p.body.contains("/alpha{{s}}lid={{x | lid: 'aaaaaaaaaaa'}}"),
+            "got: {}",
+            p.body
+        );
+        assert!(
+            p.body.contains("/beta{{s}}lid={{x | lid: 'bbbbbbbbbbb'}}"),
+            "got: {}",
+            p.body
+        );
+    }
+
+    #[test]
+    fn lid_survives_a_filter_respaced_on_the_braze_side() {
+        // The dashboard reformatted the filter. The key must not depend on
+        // that, or the live lid is silently replaced by a fallback slug.
+        let template =
+            r#"<a href="https://x.com/p{{sep}}lid={{ x | lid: '__BRAZESYNC__' }}">go</a>"#;
+        let remote = r#"<a href="https://x.com/p{{sep}}lid={{ x|lid:'liveeeeeeee1' }}">go</a>"#;
+        let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+        assert!(p.body.contains("'liveeeeeeee1'"), "got: {}", p.body);
+    }
+    #[test]
+    fn anchor_shown_to_an_operator_names_the_filter_it_replaced() {
+        // The anchor key masks both managed filters. Rendering it back for
+        // a human must not relabel a `| id:` inside an include as `| lid:`,
+        // and no sentinel may reach the operator or the POSTed value —
+        // the key is comparison-only.
+        let template = r#"<a href="https://x.com/{{content_blocks.${cta} | id: '__BRAZESYNC__'}}/p{{sep}}lid={{x | lid: '__BRAZESYNC__'}}">go</a>"#;
+        let remote = "{{content_blocks.${cta} | id: 'cb1'}}";
+        let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        let shown = format!("{:?}{:?}", p.warnings, p.fallbacks);
+        assert!(shown.contains("| id: '…'"), "got: {shown}");
+        assert!(shown.contains("| lid: '…'"), "got: {shown}");
+        let dump = format!("{shown}{}", p.body);
+        assert!(!dump.contains("braze-managed"), "sentinel leaked: {dump}");
+        assert!(!dump.contains("braze_managed"), "sentinel leaked: {dump}");
     }
 }

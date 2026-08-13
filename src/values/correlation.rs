@@ -18,14 +18,19 @@ use crate::values::placeholder::TOKEN;
 /// Shared pattern for raw lid values so templatize and correlation cannot drift.
 pub(crate) const LID_VALUE_PATTERN: &str = "[a-z0-9][a-z0-9_]*";
 
-/// Stand-in for a Braze-managed filter inside an anchor key. Contains no
-/// `?` / `#` so it survives the query/fragment cut below.
+/// Stand-ins for a Braze-managed filter inside an anchor key. Neither
+/// contains `?` / `#`, so both survive the query/fragment cut below.
 ///
-/// Comparison-only: it exists so both sides of a correlation collapse to
+/// Comparison-only: they exist so both sides of a correlation collapse to
 /// the same string. Anything that derives an *outgoing* value from an
-/// anchor key must strip it first (see `braze_managed::url_path_tail`) —
-/// leaking it would put `braze_managed` into a live Braze identifier.
-pub(crate) const MANAGED_FILTER_MASK: &str = "|<braze-managed>";
+/// anchor key must strip them first (see `braze_managed::url_path_tail`) —
+/// leaking one would put `braze_managed` into a live Braze identifier.
+///
+/// The two filters mask to distinct sentinels only so that a key rendered
+/// back for an operator names the filter that was actually there; for
+/// comparison a single sentinel would do.
+pub(crate) const MANAGED_LID_MASK: &str = "|<braze-managed-lid>";
+pub(crate) const MANAGED_CB_ID_MASK: &str = "|<braze-managed-id>";
 
 /// Normalize a URL for anchor comparison: mask Braze-managed filters,
 /// then keep `scheme://host/path` and drop `?query` / `#fragment`.
@@ -50,11 +55,18 @@ pub(crate) const MANAGED_FILTER_MASK: &str = "|<braze-managed>";
 /// truncate the key mid-tag, collapsing every link that differs only
 /// past that tag onto one anchor.
 pub fn normalize_url(url: &str) -> String {
-    let masked = lid_filter_re().replace_all(url, MANAGED_FILTER_MASK);
-    // `${1}` keeps the `{{content_blocks.${NAME}` prefix the cb_id regex
-    // had to capture; only the `| id: '…'` after it is masked.
-    let cb_replacement = format!("${{1}}{MANAGED_FILTER_MASK}");
-    let masked = cb_id_filter_re().replace_all(masked.as_ref(), cb_replacement.as_str());
+    let masked = lid_filter_re().replace_all(url, MANAGED_LID_MASK);
+    // The include prefix has to stay in the key to keep two different
+    // `${NAME}`s apart, but it cannot be kept *verbatim*: `templatize`
+    // rebuilds the whole include canonically, so a remote spelled any
+    // other way would key differently from its own template. Re-emit the
+    // canonical form from the captured name instead.
+    let masked = cb_id_filter_re().replace_all(masked.as_ref(), |caps: &regex_lite::Captures| {
+        format!(
+            "{{{{content_blocks.${{{name}}}{MANAGED_CB_ID_MASK}",
+            name = &caps[1]
+        )
+    });
     let stop = query_or_fragment_start(masked.as_ref()).unwrap_or(masked.len());
     masked[..stop].to_string()
 }
@@ -95,8 +107,14 @@ fn lid_filter_re() -> &'static Regex {
         // `| lid: 'X'` in either its live form or its templatized
         // `__BRAZESYNC__` form. `lid` is Braze's own filter, so matching it
         // by name anywhere is safe.
+        //
+        // The surrounding `\s*` is part of the mask: whitespace on either
+        // side of the filter is formatting, not identity. `templatize`
+        // rewrites from the `|` onward and so preserves what precedes it,
+        // but a filter respaced on the Braze side would otherwise key
+        // differently from the template and silently lose the live lid.
         let lid = format!("(?:{LID_VALUE_PATTERN}|{TOKEN})");
-        Regex::new(&format!(r#"\|\s*lid:\s*(?:"{lid}"|'{lid}')"#))
+        Regex::new(&format!(r#"\s*\|\s*lid:\s*(?:"{lid}"|'{lid}')\s*"#))
             .expect("lid filter regex is valid")
     })
 }
@@ -111,9 +129,15 @@ fn cb_id_filter_re() -> &'static Regex {
         // `| id: 'cbN'` would collapse two anchors that differ only in an
         // unrelated `id` filter, and `resolve_lid_batch`'s FIFO would then
         // hand each link the other's live lid.
+        //
+        // The whole include-up-to-the-value is consumed, capturing only
+        // `${NAME}`: every byte of it is formatting that `templatize`
+        // canonicalizes, so `normalize_url` re-emits it rather than
+        // keeping it. The include's closing `}}` is left in place — it is
+        // identical on both sides.
         let cb = format!("(?:cb[0-9]+|{TOKEN})");
         Regex::new(&format!(
-            r#"(\{{\{{\s*content_blocks\.\$\{{\s*[^\s}}|]+\s*\}}\s*)\|\s*id:\s*(?:"{cb}"|'{cb}')"#
+            r#"\{{\{{\s*content_blocks\.\$\{{\s*([^\s}}|]+)\s*\}}\s*\|\s*id:\s*(?:"{cb}"|'{cb}')\s*"#
         ))
         .expect("cb_id filter regex is valid")
     })
@@ -171,19 +195,18 @@ fn plaintext_url_re() -> &'static Regex {
         //      and `…{{x | lid: 'b'}}/two` collapse to one key and
         //      `resolve_lid_batch`'s FIFO hands each link the other's lid.
         //
-        // Spanning the tag also lets `normalize_url` mask the filter, so
-        // the key stops depending on the spacing `templatize` rewrites —
-        // everything from the `|` onward. Whitespace *before* the pipe is
-        // not absorbed (see `plaintext_url_anchors`), so this is not full
-        // formatting insensitivity.
+        // Spanning the tag also lets `normalize_url` mask the filter
+        // together with the whitespace around it, so the key stops
+        // depending on how the filter is spelled at all — by `templatize`
+        // on the way in, or by a dashboard edit on the way back.
         //
-        // The alternative only fires on a *closed*, brace-free `{{…}}`: a
-        // stray `{` falls through to the character class, which admits it
-        // anyway. A tag containing braces — notably this repo's own
-        // `{{content_blocks.${NAME} | id: 'cbN'}}` — is likewise *not* one
-        // atom, so a plaintext URL built from such an include still keys
-        // the pre-fix way.
-        Regex::new(r#"https?://(?:\{\{[^{}]*\}\}|[^\s<>"'])+"#)
+        // The alternative only fires on a *closed* `{{…}}`: a stray `{`
+        // falls through to the character class, which admits it anyway.
+        // One level of nesting is admitted for `${…}`, because this repo's
+        // own include form — `{{content_blocks.${NAME} | id: 'cbN'}}` —
+        // spells a brace inside the tag; without it that tag is not an
+        // atom and a URL built from an include keys the pre-fix way.
+        Regex::new(r#"https?://(?:\{\{(?:\$\{[^{}]*\}|[^{}])*\}\}|[^\s<>"'])+"#)
             .expect("plaintext URL regex is valid")
     })
 }
@@ -360,13 +383,14 @@ fn split_on_embedded_scheme(run: &str) -> Vec<(usize, &str)> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i..].starts_with(b"{{") {
-            // Skip the whole tag rather than inspecting inside it. The
-            // first `}}` is the close for every tag `plaintext_url_re`
-            // matches as an atom, since `[^{}]*` admits no braces; a
-            // brace-bearing tag arrives here only via the character
-            // class, and lands mid-tag rather than past it. An unclosed
-            // `{{` ends the scan — splitting on a scheme inside what may
-            // be tag text is worse than not splitting.
+            // Skip the whole tag rather than inspecting inside it. Taking
+            // the first `}}` ends one byte early for a tag whose interior
+            // itself ends in `}` — `{{content_blocks.${NAME}}}` — leaving
+            // the scan on that `}`. Inert for both callers here: they look
+            // only for a scheme or a `?` / `#`, and nothing but the close
+            // follows. An unclosed `{{` ends the scan — splitting on a
+            // scheme inside what may be tag text is worse than not
+            // splitting.
             match liquid_tag_end(bytes, i) {
                 Some(end) => i = end,
                 None => break,
@@ -675,16 +699,16 @@ mod tests {
         );
         let keys: Vec<&str> = anchors.iter().map(|(_, u)| u.as_str()).collect();
         // The run covers the whole tag, so the suffix past it survives
-        // and the two links stay distinguishable. The filter itself is
-        // masked, which is what removes the dependence on the spacing
-        // `templatize` rewrites — note this is *not* symmetric across the
-        // pipe: the space before `|` survives into the first key, because
-        // `lid_filter_re` starts matching at the pipe.
+        // and the two links stay distinguishable. The filter is masked
+        // together with the whitespace around it, so the two spellings —
+        // spaced on the first link, compact on the second — reach the
+        // same key for the filter region and differ only where the links
+        // genuinely differ.
         assert_eq!(
             keys,
             vec![
-                "https://x.com/p{{sep}}lid={{x |<braze-managed>}}/alpha",
-                "https://x.com/p{{sep}}lid={{x|<braze-managed>}}/beta",
+                "https://x.com/p{{sep}}lid={{x|<braze-managed-lid>}}/alpha",
+                "https://x.com/p{{sep}}lid={{x|<braze-managed-lid>}}/beta",
             ]
         );
     }
@@ -727,13 +751,16 @@ mod tests {
             let anchors = plaintext_url_anchors(&body);
             assert_eq!(anchors.len(), 1, "{body}");
             assert_eq!(
-                anchors[0].1, "https://x.com/p{{x |<braze-managed>}}",
+                anchors[0].1, "https://x.com/p{{x|<braze-managed-lid>}}",
                 "{body}"
             );
         }
         // ...but plain characters after the tag still distinguish links.
         let anchors = plaintext_url_anchors("Go https://x.com/p{{x | lid: 'aaaaaaaaaaa'}}/alpha");
-        assert_eq!(anchors[0].1, "https://x.com/p{{x |<braze-managed>}}/alpha");
+        assert_eq!(
+            anchors[0].1,
+            "https://x.com/p{{x|<braze-managed-lid>}}/alpha"
+        );
     }
 
     #[test]
@@ -749,7 +776,7 @@ mod tests {
             keys,
             vec![
                 "https://a.example/one{{ sep }}",
-                "https://b.example/two{{y |<braze-managed>}}",
+                "https://b.example/two{{y|<braze-managed-lid>}}",
             ]
         );
         // The lid must pair with the link it sits on, not the first one.
@@ -757,7 +784,10 @@ mod tests {
             "Go https://a.example/one{{ sep }}https://b.example/two{{y | lid: 'bbbbbbbbbbb'}} end",
         );
         assert_eq!(pairs.len(), 1);
-        assert_eq!(pairs[0].url, "https://b.example/two{{y |<braze-managed>}}");
+        assert_eq!(
+            pairs[0].url,
+            "https://b.example/two{{y|<braze-managed-lid>}}"
+        );
     }
 
     #[test]
@@ -786,7 +816,7 @@ mod tests {
             keys,
             vec![
                 "https://a.example/one{{ sep | default: '?' }}",
-                "https://b.example/two{{y |<braze-managed>}}",
+                "https://b.example/two{{y|<braze-managed-lid>}}",
             ]
         );
 

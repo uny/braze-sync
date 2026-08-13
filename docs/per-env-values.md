@@ -60,10 +60,13 @@ For every `apply` and `diff`:
    string and fragment dropped, and with any `| lid:` / `| id:` filter
    inside it masked out — so a URL assembled from Liquid (e.g.
    `href="{{ item.url }}{{ sep }}lid={{ x | lid: '…' }}"`, which has no
-   literal `?`) still correlates. In plaintext the bare URL is read
-   through whole `{{…}}` tags for the same reason, so the anchor keeps
-   whatever follows the tag and links that differ only past the filter
-   stay distinct.
+   literal `?`) still correlates. The whitespace around a masked filter
+   is masked with it, so reformatting `{{x|lid:'…'}}` to
+   `{{ x | lid: '…' }}` in the Braze dashboard does not lose the link.
+   In plaintext the bare URL is read through whole `{{…}}` tags —
+   including an embedded `${NAME}` — for the same reason, so the anchor
+   keeps the plain text following the tag and links that differ only
+   past the filter stay distinct.
 3. For each `__BRAZESYNC__` in a `| id:` argument inside a
    `{{content_blocks.${NAME} ...}}` include, it looks up the live
    `cb_id` under the same `${NAME}` in the remote body.
