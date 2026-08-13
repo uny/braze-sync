@@ -272,17 +272,80 @@ fn href_iter(body: &str) -> Vec<(usize, String)> {
 pub(crate) fn plaintext_url_anchors(body: &str) -> Vec<(usize, String)> {
     plaintext_url_re()
         .find_iter(body)
-        .map(|m| {
-            let raw = m.as_str();
-            let preceded_by = if m.start() > 0 {
-                body[..m.start()].chars().last()
-            } else {
-                None
-            };
-            let trimmed = trim_trailing_punctuation(raw, preceded_by);
-            (m.start(), normalize_url(trimmed))
+        .flat_map(|m| {
+            split_on_embedded_scheme(m.as_str())
+                .into_iter()
+                .map(move |(rel, piece)| {
+                    let start = m.start() + rel;
+                    let preceded_by = if start > 0 {
+                        body[..start].chars().last()
+                    } else {
+                        None
+                    };
+                    let bounded = bound_after_managed_tag(piece);
+                    let trimmed = trim_trailing_punctuation(bounded, preceded_by);
+                    (start, normalize_url(trimmed))
+                })
+                .collect::<Vec<_>>()
         })
         .collect()
+}
+
+/// Split a run at any `https?://` that is not at its start.
+///
+/// `plaintext_url_re` stops at whitespace, but a Liquid tag is one atom
+/// of the run and may itself contain whitespace — so two links written
+/// back-to-back with only a tag between them (`…/one{{ sep }}https://b…`)
+/// would otherwise land in a single anchor, and a dashboard-side reorder
+/// would hand each the other's lid. A scheme starts a link, so it ends
+/// the previous one.
+fn split_on_embedded_scheme(run: &str) -> Vec<(usize, &str)> {
+    let mut starts: Vec<usize> = std::iter::once(0)
+        .chain(run.match_indices("http").filter_map(|(i, _)| {
+            let rest = &run[i..];
+            (i > 0 && (rest.starts_with("http://") || rest.starts_with("https://"))).then_some(i)
+        }))
+        .collect();
+    starts.dedup();
+    starts
+        .iter()
+        .enumerate()
+        .map(|(n, &s)| {
+            let end = starts.get(n + 1).copied().unwrap_or(run.len());
+            (s, &run[s..end])
+        })
+        .collect()
+}
+
+/// Stop the run at the first `{{` that follows the tag carrying the
+/// managed `lid` filter.
+///
+/// Spanning a `{{…}}` is what lets the key survive the spacing
+/// `templatize` rewrites, but it also lets the run leap the whitespace
+/// *inside* an unrelated tag and swallow ordinary copy. Once the managed
+/// filter's own tag is closed, a further tag is prose rather than URL:
+/// keeping it would make the anchor depend on text that has nothing to
+/// do with the link, so editing that copy locally would discard the live
+/// lid. Plain characters after the tag (`}}/alpha` vs `}}/beta`) are
+/// still kept — distinguishing those is the reason the run spans the tag
+/// at all.
+///
+/// The cut is structural, so template and remote land on it identically.
+/// Cost: two links differing *only* by a Liquid tag after the filter
+/// share one anchor; `resolve_lid_batch` warns when a bucket holds more
+/// than one remote value.
+fn bound_after_managed_tag(run: &str) -> &str {
+    let Some(filter) = lid_filter_re().find(run) else {
+        return run;
+    };
+    let Some(rel) = run[filter.end()..].find("}}") else {
+        return run;
+    };
+    let after_tag = filter.end() + rel + "}}".len();
+    match run[after_tag..].find("{{") {
+        Some(rel) => &run[..after_tag + rel],
+        None => run,
+    }
 }
 
 fn pair_urls_with_lids(urls: Vec<(usize, String)>, body: &str) -> Vec<LidCorrelation> {
@@ -541,6 +604,50 @@ mod tests {
             assert_eq!(anchors.len(), 1, "{body}");
             assert_eq!(anchors[0].1, want, "{body}");
         }
+    }
+
+    #[test]
+    fn plaintext_anchor_stops_at_a_tag_past_the_managed_filter() {
+        // Copy that merely *follows* the link must not enter the anchor:
+        // spanning the lid tag lets the run leap the whitespace inside a
+        // later tag, and an edit to that copy would then discard the live
+        // lid. Both spellings of the trailing tag cut at the same point.
+        for tail in [".{{ old_copy }}", ".{{old_copy}}", "{{ other }}"] {
+            let body = format!("Visit https://x.com/p{{{{x | lid: 'liveeeeeeee1'}}}}{tail}");
+            let anchors = plaintext_url_anchors(&body);
+            assert_eq!(anchors.len(), 1, "{body}");
+            assert_eq!(
+                anchors[0].1, "https://x.com/p{{x |<braze-managed>}}",
+                "{body}"
+            );
+        }
+        // ...but plain characters after the tag still distinguish links.
+        let anchors = plaintext_url_anchors("Go https://x.com/p{{x | lid: 'aaaaaaaaaaa'}}/alpha");
+        assert_eq!(anchors[0].1, "https://x.com/p{{x |<braze-managed>}}/alpha");
+    }
+
+    #[test]
+    fn plaintext_anchor_splits_at_a_second_scheme() {
+        // A tag between two links carries whitespace, so without the
+        // split the two would share one anchor and a reorder would
+        // transpose their lids.
+        let anchors = plaintext_url_anchors(
+            "Go https://a.example/one{{ sep }}https://b.example/two{{y | lid: 'bbbbbbbbbbb'}} end",
+        );
+        let keys: Vec<&str> = anchors.iter().map(|(_, u)| u.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "https://a.example/one{{ sep }}",
+                "https://b.example/two{{y |<braze-managed>}}",
+            ]
+        );
+        // The lid must pair with the link it sits on, not the first one.
+        let pairs = extract_plaintext_lid_values(
+            "Go https://a.example/one{{ sep }}https://b.example/two{{y | lid: 'bbbbbbbbbbb'}} end",
+        );
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].url, "https://b.example/two{{y |<braze-managed>}}");
     }
 
     #[test]

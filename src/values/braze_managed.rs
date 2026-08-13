@@ -851,6 +851,24 @@ mod tests {
     }
 
     #[test]
+    fn editing_copy_after_a_plaintext_link_keeps_the_live_lid() {
+        // The link is untouched; only the copy behind it changed. The
+        // anchor must not depend on that copy — if it does, apply POSTs a
+        // fallback slug over `liveeeeeeee1` and the Braze-side click
+        // history for the link is severed. Nothing reassigns it back,
+        // because the fallback is itself a valid lid.
+        let remote = "Visit https://x.com/p{{x | lid: 'liveeeeeeee1'}}.{{ old_copy }}";
+        let template = "Visit https://x.com/p{{x | lid: '__BRAZESYNC__'}}.{{ new_copy }}";
+        let p = prepare_field(template, Some(remote), FieldKind::EmailPlainBody);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.fallbacks.is_empty(), "{:?}", p.fallbacks);
+        assert_eq!(
+            p.body, "Visit https://x.com/p{{x | lid: 'liveeeeeeee1'}}.{{ new_copy }}",
+            "the live lid must survive an edit to the copy after the link"
+        );
+    }
+
+    #[test]
     fn plaintext_fallback_slug_never_leaks_the_managed_filter_mask() {
         // The anchor key now spans the whole `{{…}}`, so `normalize_url`
         // masks the filter *inside* it. That mask is a comparison-only
