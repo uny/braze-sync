@@ -72,14 +72,13 @@ fn render_header(out: &mut String, diff: &ResourceDiff) {
 fn render_body(diff: &ResourceDiff) -> String {
     let mut out = String::new();
 
+    // The per-kind renderers emit nothing for an unchanged, non-orphan
+    // diff *except* the informational hints some kinds carry (Custom
+    // Attribute type mismatch, Tag hints), so the same match serves both
+    // branches. Special-casing one kind here is what let a Tag hint be
+    // dropped — and, under `only_drift`, take its whole block with it.
     if !diff.has_changes() {
         out.push_str(NO_DRIFT_BODY);
-        // Custom Attributes may carry informational hints (e.g. type
-        // mismatch) even when unchanged.
-        if let ResourceDiff::CustomAttribute(d) = diff {
-            render_custom_attribute(&mut out, d);
-        }
-        return out;
     }
 
     match diff {

@@ -341,7 +341,18 @@ mod tests {
             panic!("expected Diff subcommand");
         };
         assert!(args.fail_on_drift);
+        assert!(!args.only_drift);
         assert_eq!(args.resource, None);
+    }
+
+    #[test]
+    fn parses_diff_with_only_drift() {
+        let cli = Cli::try_parse_from(["braze-sync", "diff", "--only-drift"]).unwrap();
+        let Command::Diff(args) = cli.command else {
+            panic!("expected Diff subcommand");
+        };
+        assert!(args.only_drift);
+        assert!(!args.fail_on_drift);
     }
 
     #[test]

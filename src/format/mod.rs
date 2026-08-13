@@ -27,8 +27,9 @@ pub enum OutputFormat {
     Json,
 }
 
-/// Format a [`DiffSummary`] for display. Implementations are stateless
-/// unit structs.
+/// Format a [`DiffSummary`] for display. Implementations are cheap
+/// `Copy` values; [`TableFormatter`] carries the table-only display
+/// knobs, [`JsonFormatter`] is a unit struct with none.
 pub trait DiffFormatter {
     fn format(&self, summary: &DiffSummary) -> String;
 }

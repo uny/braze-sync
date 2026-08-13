@@ -129,7 +129,20 @@ fn mostly_in_sync_only_drift_table() {
     );
 }
 
-/// `--only-drift` is a table-side filter; the JSON contract stays whole.
+/// The flag's most common real invocation: nothing drifted, so every
+/// block is suppressed and the output collapses to the trailer alone.
+#[test]
+fn all_in_sync_only_drift_table() {
+    insta::assert_snapshot!(
+        TableFormatter { only_drift: true }.format(&fixtures::catalog_schema_unchanged())
+    );
+}
+
+/// The fixture's JSON rendering, unaffected by `--only-drift` because
+/// `JsonFormatter` takes no knob. The guard against `only_drift` leaking
+/// into the frozen schema is the CLI test
+/// `diff_only_drift_does_not_affect_json_output`, which runs the real
+/// binary with both flags — this snapshot only pins the fixture's shape.
 #[test]
 fn mostly_in_sync_json() {
     insta::assert_snapshot!(JsonFormatter.format(&fixtures::mostly_in_sync_with_one_change()));

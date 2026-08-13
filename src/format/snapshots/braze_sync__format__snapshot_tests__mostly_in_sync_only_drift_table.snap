@@ -12,6 +12,10 @@ expression: "TableFormatter\n{ only_drift: true }.format(&fixtures::mostly_in_sy
    no drift
    ℹ type mismatch: local number vs Braze string (run export to update)
 
-Summary: 2 changed, 3 in sync, 1 orphan, 0 destructive
+✅ Tag: seasonal
+   no drift
+   ℹ registered in two environments with different casing
+
+Summary: 2 changed, 6 in sync, 1 orphan, 0 destructive
 
 ℹ 1 Braze resource(s) not present in Git. Archive them in the Braze dashboard if intended, or add them to exclude_patterns to keep them.

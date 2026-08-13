@@ -6,7 +6,7 @@ expression: "JsonFormatter.format(&fixtures::mostly_in_sync_with_one_change())"
   "version": 1,
   "summary": {
     "changed": 2,
-    "in_sync": 3,
+    "in_sync": 6,
     "destructive": 0,
     "orphan": 1
   },
@@ -35,6 +35,14 @@ expression: "JsonFormatter.format(&fixtures::mostly_in_sync_with_one_change())"
     },
     {
       "kind": "email_template",
+      "name": "receipt",
+      "op": "unchanged",
+      "subject_changed": false,
+      "metadata_changed": false,
+      "orphan": false
+    },
+    {
+      "kind": "email_template",
       "name": "legacy_welcome",
       "op": "unchanged",
       "subject_changed": false,
@@ -47,6 +55,19 @@ expression: "JsonFormatter.format(&fixtures::mostly_in_sync_with_one_change())"
       "op": "unchanged",
       "hints": [
         "type mismatch: local number vs Braze string (run export to update)"
+      ]
+    },
+    {
+      "kind": "tag",
+      "name": "transactional",
+      "op": "unchanged"
+    },
+    {
+      "kind": "tag",
+      "name": "seasonal",
+      "op": "unchanged",
+      "hints": [
+        "registered in two environments with different casing"
       ]
     }
   ]

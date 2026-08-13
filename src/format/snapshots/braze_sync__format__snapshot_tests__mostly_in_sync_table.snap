@@ -11,6 +11,9 @@ expression: "TableFormatter::default().format(&fixtures::mostly_in_sync_with_one
 📝 Content Block: promo
    ~ content changed (+5 -3)
 
+✅ Email Template: receipt
+   no drift
+
 📧 Email Template: legacy_welcome
    ⚠ orphaned (exists in Braze, not in Git)
 
@@ -18,6 +21,13 @@ expression: "TableFormatter::default().format(&fixtures::mostly_in_sync_with_one
    no drift
    ℹ type mismatch: local number vs Braze string (run export to update)
 
-Summary: 2 changed, 3 in sync, 1 orphan, 0 destructive
+✅ Tag: transactional
+   no drift
+
+✅ Tag: seasonal
+   no drift
+   ℹ registered in two environments with different casing
+
+Summary: 2 changed, 6 in sync, 1 orphan, 0 destructive
 
 ℹ 1 Braze resource(s) not present in Git. Archive them in the Braze dashboard if intended, or add them to exclude_patterns to keep them.
