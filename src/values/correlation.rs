@@ -291,22 +291,47 @@ pub(crate) fn plaintext_url_anchors(body: &str) -> Vec<(usize, String)> {
         .collect()
 }
 
-/// Split a run at any `https?://` that is not at its start.
+/// Split a run at an embedded `https?://` that starts a second link.
 ///
 /// `plaintext_url_re` stops at whitespace, but a Liquid tag is one atom
 /// of the run and may itself contain whitespace — so two links written
 /// back-to-back with only a tag between them (`…/one{{ sep }}https://b…`)
 /// would otherwise land in a single anchor, and a dashboard-side reorder
-/// would hand each the other's lid. A scheme starts a link, so it ends
-/// the previous one.
+/// would hand each the other's lid.
+///
+/// Only a scheme that would really begin a new link counts. Two places
+/// carry one that does not, and splitting at either is worse than not
+/// splitting at all:
+///
+/// - **inside the query** — `…/r?u=https://dest…` is a redirect target,
+///   an argument of the first URL. [`normalize_url`] drops the query
+///   anyway, so splitting there would move the anchor onto the shared
+///   destination and collapse every tracking link that redirects to it.
+/// - **inside a `{{…}}`** — `{{ u | default: 'https://cdn…' }}` is a
+///   filter argument, and the enclosing tag is part of the URL being
+///   assembled.
 fn split_on_embedded_scheme(run: &str) -> Vec<(usize, &str)> {
-    let mut starts: Vec<usize> = std::iter::once(0)
-        .chain(run.match_indices("http").filter_map(|(i, _)| {
-            let rest = &run[i..];
-            (i > 0 && (rest.starts_with("http://") || rest.starts_with("https://"))).then_some(i)
-        }))
-        .collect();
-    starts.dedup();
+    let bytes = run.as_bytes();
+    // A scheme past the query separator is an argument, not a link.
+    let limit = run.find(['?', '#']).unwrap_or(run.len());
+    let mut starts = vec![0usize];
+    let mut i = 0;
+    while i < limit {
+        if bytes[i..].starts_with(b"{{") {
+            // Skip the whole tag rather than inspecting inside it.
+            match bytes[i..].windows(2).position(|w| w == b"}}") {
+                Some(rel) => i += rel + "}}".len(),
+                None => break,
+            }
+            continue;
+        }
+        if i > 0 && (bytes[i..].starts_with(b"http://") || bytes[i..].starts_with(b"https://")) {
+            starts.push(i);
+            i += "http://".len();
+            continue;
+        }
+        i += 1;
+    }
     starts
         .iter()
         .enumerate()
@@ -648,6 +673,32 @@ mod tests {
         );
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].url, "https://b.example/two{{y |<braze-managed>}}");
+    }
+
+    #[test]
+    fn plaintext_anchor_keeps_a_redirect_target_inside_the_link() {
+        // A scheme in the query is the redirect target of a tracking
+        // link, not a second link. Splitting there would anchor both
+        // links on the shared destination and let a reorder transpose
+        // their lids — the very failure the split exists to prevent.
+        let body = "Go https://track.example/r?u=https://dest.example/x {{a | lid: 'aaaaaaaaaaa'}} \
+                    and https://track.example/s?u=https://dest.example/x {{b | lid: 'bbbbbbbbbbb'}}";
+        let pairs = extract_plaintext_lid_values(body);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0].url, "https://track.example/r");
+        assert_eq!(pairs[0].value, "aaaaaaaaaaa");
+        assert_eq!(pairs[1].url, "https://track.example/s");
+        assert_eq!(pairs[1].value, "bbbbbbbbbbb");
+
+        // Same for a scheme that is an argument inside a Liquid tag.
+        let anchors = plaintext_url_anchors(
+            "Go https://x.com/{{ u | default: 'https://cdn.example/i' }}/end",
+        );
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(
+            anchors[0].1,
+            "https://x.com/{{ u | default: 'https://cdn.example/i' }}/end"
+        );
     }
 
     #[test]

@@ -246,13 +246,14 @@ fn resolve_lid_batch(
             Some(p) => out.push(Some(p.value.clone())),
             None => {
                 let fallback = fallback_lid_for_url(Some(&url), &mut used, &mut seq);
+                let shown = anchor_for_display(&url);
                 warnings.push(format!(
-                    "lid: URL anchor '{url}' not found in remote body — \
+                    "lid: URL anchor '{shown}' not found in remote body — \
                      using fallback value '{fallback}' (new link; Braze will \
                      reassign on first dashboard save)"
                 ));
                 fallbacks.push(LidFallback {
-                    anchor: Some(url.clone()),
+                    anchor: Some(shown),
                     value: fallback.clone(),
                 });
                 out.push(Some(fallback));
@@ -260,6 +261,14 @@ fn resolve_lid_batch(
         }
     }
     out
+}
+
+/// Render an anchor key for a human. The key carries
+/// `MANAGED_FILTER_MASK` where the Braze-managed filter stood — a
+/// comparison-only sentinel — so printing it verbatim shows the operator
+/// a URL that appears nowhere in their template.
+fn anchor_for_display(url: &str) -> String {
+    url.replace(MANAGED_FILTER_MASK, "| lid: '…'")
 }
 
 /// Slug fallback for a single lid placeholder. `used` is shared across
@@ -883,6 +892,19 @@ mod tests {
                 "sentinel leaked into the POSTed lid: {}",
                 p.body
             );
+            // ...nor into what the operator is shown, where it would name
+            // a URL that appears nowhere in their template.
+            for shown in p
+                .warnings
+                .iter()
+                .cloned()
+                .chain(p.fallbacks.iter().filter_map(|f| f.anchor.clone()))
+            {
+                assert!(
+                    !shown.contains("braze-managed"),
+                    "sentinel leaked into operator output: {shown}"
+                );
+            }
             assert!(
                 p.body.contains("| lid: 'promo_sep_lid_x'}}"),
                 "got: {}",
