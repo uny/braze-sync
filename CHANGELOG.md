@@ -7,6 +7,22 @@ versions follow [semver](https://semver.org/). Per IMPLEMENTATION.md
 changes; v1.0 freezes the public surface (CLI flags, config schema,
 file formats, JSON output, exit codes) for the full v1.x line.
 
+## [0.18.0] — 2026-08-14
+
+### Added
+
+- **`diff --only-drift`** omits in-sync resources from the table output.
+  On a workspace of a few hundred resources the `✅ … / no drift` blocks
+  are the overwhelming majority of the output — a reported measurement
+  had 1141 of 1190 lines saying nothing — which buries the review
+  material when CI posts a `diff` into a pull request comment, and
+  pushes the comment toward GitHub's 65536-character limit. The flag
+  suppresses only blocks whose entire body is `no drift`, so an in-sync
+  resource that still carries an informational line (e.g. a Custom
+  Attribute type mismatch) stays visible; the `Summary:` trailer and the
+  always-on orphan report still account for every resource. Table output
+  only — the frozen v1 JSON schema is unaffected. Fixes #81.
+
 ## [0.17.1] — 2026-08-13
 
 ### Fixed
