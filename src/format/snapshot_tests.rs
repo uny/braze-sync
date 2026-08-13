@@ -13,7 +13,7 @@ use super::{DiffFormatter, JsonFormatter, TableFormatter};
 
 #[test]
 fn empty_table() {
-    insta::assert_snapshot!(TableFormatter.format(&fixtures::empty()));
+    insta::assert_snapshot!(TableFormatter::default().format(&fixtures::empty()));
 }
 
 #[test]
@@ -28,7 +28,7 @@ fn empty_json() {
 #[test]
 fn catalog_schema_field_diffs_table() {
     insta::assert_snapshot!(
-        TableFormatter.format(&fixtures::catalog_schema_with_mixed_field_diffs())
+        TableFormatter::default().format(&fixtures::catalog_schema_with_mixed_field_diffs())
     );
 }
 
@@ -45,7 +45,7 @@ fn catalog_schema_field_diffs_json() {
 
 #[test]
 fn catalog_schema_unchanged_table() {
-    insta::assert_snapshot!(TableFormatter.format(&fixtures::catalog_schema_unchanged()));
+    insta::assert_snapshot!(TableFormatter::default().format(&fixtures::catalog_schema_unchanged()));
 }
 
 #[test]
@@ -59,7 +59,7 @@ fn catalog_schema_unchanged_json() {
 
 #[test]
 fn content_block_added_table() {
-    insta::assert_snapshot!(TableFormatter.format(&fixtures::content_block_added()));
+    insta::assert_snapshot!(TableFormatter::default().format(&fixtures::content_block_added()));
 }
 
 #[test]
@@ -73,7 +73,9 @@ fn content_block_added_json() {
 
 #[test]
 fn content_block_body_modified_table() {
-    insta::assert_snapshot!(TableFormatter.format(&fixtures::content_block_body_modified()));
+    insta::assert_snapshot!(
+        TableFormatter::default().format(&fixtures::content_block_body_modified())
+    );
 }
 
 #[test]
@@ -87,7 +89,7 @@ fn content_block_body_modified_json() {
 
 #[test]
 fn content_block_orphan_table() {
-    insta::assert_snapshot!(TableFormatter.format(&fixtures::content_block_orphan()));
+    insta::assert_snapshot!(TableFormatter::default().format(&fixtures::content_block_orphan()));
 }
 
 #[test]
@@ -101,12 +103,36 @@ fn content_block_orphan_json() {
 
 #[test]
 fn all_kinds_mixed_table() {
-    insta::assert_snapshot!(TableFormatter.format(&fixtures::all_kinds_mixed()));
+    insta::assert_snapshot!(TableFormatter::default().format(&fixtures::all_kinds_mixed()));
 }
 
 #[test]
 fn all_kinds_mixed_json() {
     insta::assert_snapshot!(JsonFormatter.format(&fixtures::all_kinds_mixed()));
+}
+
+// =====================================================================
+// mostly in-sync summary, rendered with and without --only-drift
+// =====================================================================
+
+#[test]
+fn mostly_in_sync_table() {
+    insta::assert_snapshot!(
+        TableFormatter::default().format(&fixtures::mostly_in_sync_with_one_change())
+    );
+}
+
+#[test]
+fn mostly_in_sync_only_drift_table() {
+    insta::assert_snapshot!(
+        TableFormatter { only_drift: true }.format(&fixtures::mostly_in_sync_with_one_change())
+    );
+}
+
+/// `--only-drift` is a table-side filter; the JSON contract stays whole.
+#[test]
+fn mostly_in_sync_json() {
+    insta::assert_snapshot!(JsonFormatter.format(&fixtures::mostly_in_sync_with_one_change()));
 }
 
 // =====================================================================
@@ -116,7 +142,7 @@ fn all_kinds_mixed_json() {
 #[test]
 fn custom_attribute_unchanged_with_hint_table() {
     insta::assert_snapshot!(
-        TableFormatter.format(&fixtures::custom_attribute_unchanged_with_hint())
+        TableFormatter::default().format(&fixtures::custom_attribute_unchanged_with_hint())
     );
 }
 

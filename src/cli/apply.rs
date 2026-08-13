@@ -19,7 +19,7 @@ use crate::diff::email_template::{EmailTemplateDiff, EmailTemplateIdIndex};
 use crate::diff::plan::{self, PlanFile};
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::error::Error;
-use crate::format::OutputFormat;
+use crate::format::{OutputFormat, TableFormatter};
 use crate::resource::ResourceKind;
 use crate::values::{format_fallback_reports, FallbackReport};
 use anyhow::{anyhow, Context as _};
@@ -191,7 +191,10 @@ pub async fn run(
         "Plan (dry-run, pass --confirm to apply):"
     };
     eprintln!("{mode_label}");
-    print!("{}", format.formatter().format(&summary));
+    print!(
+        "{}",
+        format.formatter(TableFormatter::default()).format(&summary)
+    );
     let fallback_block = format_fallback_reports(&fallback_reports);
     if !fallback_block.is_empty() {
         eprint!("{fallback_block}");

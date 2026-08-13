@@ -218,6 +218,30 @@ The JSON shape is **frozen at v1.0** with an explicit `version: 1`
 field on the root. Future schema bumps will increment `version`, so
 CI consumers can branch on it.
 
+On a workspace with hundreds of resources, the table is mostly
+`no drift`. `diff --only-drift` keeps just the blocks a reviewer has to
+read — useful when CI posts the output into a pull request comment:
+
+```bash
+braze-sync diff --only-drift
+```
+
+```
+📝 Content Block: promo
+   ~ content changed (+5 -3)
+
+✅ Custom Attribute: visit_count
+   no drift
+   ℹ type mismatch: local number vs Braze string (run export to update)
+
+Summary: 1 changed, 384 in sync, 0 orphan, 0 destructive
+```
+
+Nothing is hidden that a reviewer needs: the `Summary:` trailer still
+counts every resource, and an in-sync resource that carries an
+informational line (like the type mismatch above) is kept. The flag is
+table-only — `--format json` always emits every resource.
+
 ## Verifying release artifacts
 
 Release archives from [GitHub Releases](https://github.com/uny/braze-sync/releases)

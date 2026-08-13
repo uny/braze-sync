@@ -1,6 +1,6 @@
 ---
 source: src/format/snapshot_tests.rs
-expression: "TableFormatter.format(&fixtures::custom_attribute_unchanged_with_hint())"
+expression: "TableFormatter::default().format(&fixtures::custom_attribute_unchanged_with_hint())"
 ---
 ✅ Custom Attribute: visit_count
    no drift

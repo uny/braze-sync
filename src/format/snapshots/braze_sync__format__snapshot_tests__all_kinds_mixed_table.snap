@@ -1,6 +1,6 @@
 ---
 source: src/format/snapshot_tests.rs
-expression: "TableFormatter.format(&fixtures::all_kinds_mixed())"
+expression: "TableFormatter::default().format(&fixtures::all_kinds_mixed())"
 ---
 📋 Catalog Schema: cardiology
    + field: score (number)

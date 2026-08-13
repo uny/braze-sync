@@ -138,6 +138,37 @@ jq '.summary' diff.json
 `destructive` and `orphan` are the two counts worth surfacing in PR
 comments — they are the changes the reviewer most needs to eyeball.
 
+## Posting the diff into a PR comment
+
+The table output is meant to be read by a human, but on a workspace
+with a few hundred resources almost every line is `no drift`, which
+buries the review material and eats into GitHub's 65536-character
+comment limit. Pass `--only-drift` to keep just the blocks that need
+attention:
+
+```yaml
+      - id: diff
+        run: |
+          braze-sync diff --env prod --only-drift > diff.txt
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '```\n' + fs.readFileSync('diff.txt', 'utf8') + '```',
+            });
+```
+
+`--only-drift` drops only the blocks whose entire body is `no drift`.
+An in-sync resource that still carries an informational line — a Custom
+Attribute type mismatch, for example — stays in the output, and the
+`Summary:` trailer keeps counting every resource, so the comment is
+still a complete account of the workspace. The flag does not affect
+`--format json`.
+
 ## Secrets hygiene
 
 - API keys live in CI secrets, never in `braze-sync.config.yaml`.

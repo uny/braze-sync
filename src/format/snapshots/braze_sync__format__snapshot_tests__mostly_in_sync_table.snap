@@ -1,0 +1,23 @@
+---
+source: src/format/snapshot_tests.rs
+expression: "TableFormatter::default().format(&fixtures::mostly_in_sync_with_one_change())"
+---
+✅ Catalog Schema: stable
+   no drift
+
+✅ Content Block: footer
+   no drift
+
+📝 Content Block: promo
+   ~ content changed (+5 -3)
+
+📧 Email Template: legacy_welcome
+   ⚠ orphaned (exists in Braze, not in Git)
+
+✅ Custom Attribute: visit_count
+   no drift
+   ℹ type mismatch: local number vs Braze string (run export to update)
+
+Summary: 2 changed, 3 in sync, 1 orphan, 0 destructive
+
+ℹ 1 Braze resource(s) not present in Git. Archive them in the Braze dashboard if intended, or add them to exclude_patterns to keep them.

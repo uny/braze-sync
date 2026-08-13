@@ -1,6 +1,6 @@
 ---
 source: src/format/snapshot_tests.rs
-expression: "TableFormatter.format(&fixtures::content_block_orphan())"
+expression: "TableFormatter::default().format(&fixtures::content_block_orphan())"
 ---
 📝 Content Block: legacy_promo
    ⚠ orphaned (exists in Braze, not in Git)

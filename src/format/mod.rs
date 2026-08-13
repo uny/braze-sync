@@ -34,14 +34,19 @@ pub trait DiffFormatter {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
-pub struct TableFormatter;
+pub struct TableFormatter {
+    /// Suppress in-sync resources from the output. Only blocks whose
+    /// entire body is `no drift` are dropped, so an unchanged resource
+    /// that still carries an informational line stays visible.
+    pub only_drift: bool,
+}
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct JsonFormatter;
 
 impl DiffFormatter for TableFormatter {
     fn format(&self, summary: &DiffSummary) -> String {
-        table::render(summary)
+        table::render(summary, self.only_drift)
     }
 }
 
@@ -52,10 +57,12 @@ impl DiffFormatter for JsonFormatter {
 }
 
 impl OutputFormat {
-    /// Pick the formatter implementation for this format.
-    pub fn formatter(self) -> Box<dyn DiffFormatter> {
+    /// Pick the formatter implementation for this format. `table`
+    /// carries the table-only knobs; the JSON schema is frozen and
+    /// ignores them, so `--format json` always emits every resource.
+    pub fn formatter(self, table: TableFormatter) -> Box<dyn DiffFormatter> {
         match self {
-            Self::Table => Box::new(TableFormatter),
+            Self::Table => Box::new(table),
             Self::Json => Box::new(JsonFormatter),
         }
     }

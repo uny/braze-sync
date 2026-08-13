@@ -175,6 +175,68 @@ pub fn all_kinds_mixed() -> DiffSummary {
     }
 }
 
+/// The shape `diff --only-drift` exists for: mostly in-sync resources,
+/// one real change, one orphan, and one in-sync resource that still has
+/// something to say. Only the bare `no drift` blocks may be suppressed.
+pub fn mostly_in_sync_with_one_change() -> DiffSummary {
+    let stable = Catalog {
+        name: "stable".into(),
+        description: None,
+        fields: vec![field("id", CatalogFieldType::String)],
+    };
+    let cs = diff_schema(Some(&stable), Some(&stable)).unwrap();
+
+    let cb_from = ContentBlock {
+        name: "promo".into(),
+        description: None,
+        content: "old".into(),
+        tags: vec![],
+        state: ContentBlockState::Active,
+    };
+    let cb_to = ContentBlock {
+        content: "new".into(),
+        ..cb_from.clone()
+    };
+    let cb = ContentBlockDiff {
+        name: "promo".into(),
+        op: DiffOp::Modified {
+            from: cb_from,
+            to: cb_to,
+        },
+        text_diff: Some(TextDiffSummary {
+            additions: 5,
+            deletions: 3,
+        }),
+        orphan: false,
+    };
+
+    let cb_in_sync = ContentBlockDiff {
+        name: "footer".into(),
+        op: DiffOp::Unchanged,
+        text_diff: None,
+        orphan: false,
+    };
+
+    let et_orphan = EmailTemplateDiff::orphan("legacy_welcome");
+
+    // In sync, but the hint must survive `--only-drift`.
+    let ca = CustomAttributeDiff {
+        name: "visit_count".into(),
+        op: CustomAttributeOp::Unchanged,
+        hints: vec!["type mismatch: local number vs Braze string (run export to update)".into()],
+    };
+
+    DiffSummary {
+        diffs: vec![
+            ResourceDiff::CatalogSchema(cs),
+            ResourceDiff::ContentBlock(cb_in_sync),
+            ResourceDiff::ContentBlock(cb),
+            ResourceDiff::EmailTemplate(et_orphan),
+            ResourceDiff::CustomAttribute(ca),
+        ],
+    }
+}
+
 /// Custom attribute that is Unchanged but carries a type-mismatch hint.
 /// Regression test: hints must render even when `has_changes()` is false.
 pub fn custom_attribute_unchanged_with_hint() -> DiffSummary {
