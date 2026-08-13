@@ -310,20 +310,31 @@ pub(crate) fn plaintext_url_anchors(body: &str) -> Vec<(usize, String)> {
 /// - **inside a `{{…}}`** — `{{ u | default: 'https://cdn…' }}` is a
 ///   filter argument, and the enclosing tag is part of the URL being
 ///   assembled.
+///
+/// Both exclusions are decided in one left-to-right scan, because the
+/// query separator only ends the URL when it is *outside* a tag: a `?`
+/// within `{{ sep | default: '?' }}` is part of the tag's own text, and
+/// treating it as the separator would abandon the scan before a genuine
+/// second link.
 fn split_on_embedded_scheme(run: &str) -> Vec<(usize, &str)> {
     let bytes = run.as_bytes();
-    // A scheme past the query separator is an argument, not a link.
-    let limit = run.find(['?', '#']).unwrap_or(run.len());
     let mut starts = vec![0usize];
     let mut i = 0;
-    while i < limit {
+    while i < bytes.len() {
         if bytes[i..].starts_with(b"{{") {
-            // Skip the whole tag rather than inspecting inside it.
+            // Skip the whole tag rather than inspecting inside it. The
+            // first `}}` is the close for every tag `plaintext_url_re`
+            // matches as an atom, since `[^{}]*` admits no braces; a
+            // brace-bearing tag arrives here only via the character
+            // class, and lands mid-tag rather than past it.
             match bytes[i..].windows(2).position(|w| w == b"}}") {
                 Some(rel) => i += rel + "}}".len(),
                 None => break,
             }
             continue;
+        }
+        if bytes[i] == b'?' || bytes[i] == b'#' {
+            break;
         }
         if i > 0 && (bytes[i..].starts_with(b"http://") || bytes[i..].starts_with(b"https://")) {
             starts.push(i);
@@ -689,6 +700,21 @@ mod tests {
         assert_eq!(pairs[0].value, "aaaaaaaaaaa");
         assert_eq!(pairs[1].url, "https://track.example/s");
         assert_eq!(pairs[1].value, "bbbbbbbbbbb");
+
+        // A `?` inside the separator tag is the tag's own text, not the
+        // query separator — it must not abandon the scan before the
+        // second link, or both lids land in one FIFO bucket.
+        let anchors = plaintext_url_anchors(
+            "Go https://a.example/one{{ sep | default: '?' }}https://b.example/two{{y | lid: 'bbbbbbbbbbb'}}",
+        );
+        let keys: Vec<&str> = anchors.iter().map(|(_, u)| u.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "https://a.example/one{{ sep | default: '",
+                "https://b.example/two{{y |<braze-managed>}}",
+            ]
+        );
 
         // Same for a scheme that is an argument inside a Liquid tag.
         let anchors = plaintext_url_anchors(

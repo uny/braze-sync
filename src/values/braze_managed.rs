@@ -124,7 +124,10 @@ pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> 
             Some(PlaceholderType::Lid) => {
                 let v = lid_iter.next().flatten();
                 if v.is_none() {
-                    let anchor = lid_anchor_for(&body, ph.start, field);
+                    // Display-only (see `format_failures`), so render the
+                    // mask back rather than showing a key.
+                    let anchor =
+                        lid_anchor_for(&body, ph.start, field).map(|u| anchor_for_display(&u));
                     errors.push(ResolutionError::UnresolvedLid {
                         start: ph.start,
                         anchor,
@@ -212,11 +215,12 @@ fn resolve_lid_batch(
         let tmpl_count = tmpl_per_url.get(url).copied().unwrap_or(0);
         if bucket.len() > 1 || (tmpl_count > 0 && bucket.len() != tmpl_count) {
             warnings.push(format!(
-                "URL '{url}' has {} remote lid occurrences and {tmpl_count} \
+                "URL '{shown}' has {} remote lid occurrences and {tmpl_count} \
                  template placeholders — using positional FIFO match. \
                  If links were reordered in Braze, lid values may be assigned \
                  to the wrong placeholder.",
-                bucket.len()
+                bucket.len(),
+                shown = anchor_for_display(url)
             ));
         }
     }
