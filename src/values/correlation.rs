@@ -107,11 +107,25 @@ pub fn normalize_url(url: &str) -> String {
 /// - An unterminated quote inside a tag keeps the rest of that tag
 ///   verbatim, which is the conservative direction — it preserves
 ///   distinctions rather than merging them.
+/// - A `}}` *inside* a quoted argument ends the tag early, because
+///   [`liquid_tag_end`] is not quote-aware. The bytes past it keep their
+///   spacing, so `{{ u | append: '}}' }}` still keys differently from
+///   `{{u|append:'}}'}}`. Both sides missed before this pass too, so it
+///   is an uncovered case, not a regression.
+/// - Literal `{{…}}` text inside a `{% raw %}` block is despaced like
+///   any other tag. Reaching that needs a raw block *and* a literal
+///   space inside a URL, so the pass does not carry the cost of tracking
+///   raw spans.
 ///
-/// Within `{{…}}` the tokens are separated by `|`, `:` and `,`, so bare
-/// tokens are not run together by this. Two tags that differ *only* by
-/// whitespace between bare tokens (`{{a b}}` vs `{{ab}}`) do collapse
-/// onto one key; neither is valid Liquid.
+/// Quotes are not the only place unquoted whitespace is identity, which
+/// is why the drop is **neighbour-aware**: a run flanked by name bytes on
+/// both sides is kept. Braze addresses a personalization or content block
+/// whose name contains spaces as `${my attribute}` — unquoted, yet every
+/// byte of it is the name. Dropping there would key `${my attribute}` and
+/// `${myattribute}` alike, and one FIFO bucket for two links is the same
+/// corruption the quote rule exists to prevent. Whitespace that touches
+/// `{`, `}`, `|`, `:`, `,`, a quote, or the tag edge is the formatting
+/// this pass is here to remove, and is dropped.
 fn strip_liquid_tag_whitespace(url: &str) -> Cow<'_, str> {
     let bytes = url.as_bytes();
     if !bytes.windows(2).any(|w| w == b"{{") {
@@ -137,20 +151,70 @@ fn strip_liquid_tag_whitespace(url: &str) -> Cow<'_, str> {
         let interior = &bytes[i + "{{".len()..end - "}}".len()];
         out.extend_from_slice(b"{{");
         let mut quote: Option<u8> = None;
-        for &byte in interior {
+        let mut j = 0;
+        while j < interior.len() {
+            let byte = interior[j];
             match quote {
-                Some(open) if byte == open => quote = None,
-                Some(_) => {}
-                None if byte == b'\'' || byte == b'"' => quote = Some(byte),
-                None if byte.is_ascii_whitespace() => continue,
-                None => {}
+                Some(open) => {
+                    if byte == open {
+                        quote = None;
+                    }
+                    out.push(byte);
+                    j += 1;
+                }
+                None if byte == b'\'' || byte == b'"' => {
+                    quote = Some(byte);
+                    out.push(byte);
+                    j += 1;
+                }
+                None if byte.is_ascii_whitespace() => {
+                    // Take the whole run at once: whether it is formatting
+                    // depends on what sits either side of it, not on the
+                    // individual byte.
+                    let run_end = interior[j..]
+                        .iter()
+                        .position(|b| !b.is_ascii_whitespace())
+                        .map(|rel| j + rel)
+                        .unwrap_or(interior.len());
+                    let inside_a_name = j > 0
+                        && run_end < interior.len()
+                        && is_name_byte(interior[j - 1])
+                        && is_name_byte(interior[run_end]);
+                    if inside_a_name {
+                        // Verbatim, not collapsed to a single space:
+                        // `${a  b}` and `${a b}` are different names.
+                        out.extend_from_slice(&interior[j..run_end]);
+                    }
+                    j = run_end;
+                }
+                None => {
+                    out.push(byte);
+                    j += 1;
+                }
             }
-            out.push(byte);
         }
         out.extend_from_slice(b"}}");
         i = end;
     }
     Cow::Owned(String::from_utf8(out).expect("only ASCII whitespace was dropped"))
+}
+
+/// A byte that can spell part of a name, so whitespace between two of
+/// them may be identity rather than layout.
+///
+/// Every non-ASCII byte counts: a `${…}` name may be written in any
+/// script, and a continuation byte must never read as a separator.
+/// Liquid's own separators (`|`, `:`, `,`, `.`, the braces, quotes) are
+/// deliberately excluded — whitespace touching one of those is the
+/// formatting this pass removes.
+///
+/// `-` is excluded with them, though a name may contain one: it is also
+/// Liquid's whitespace-control marker, and treating it as a name byte
+/// would key `{{- sep -}}` apart from `{{-sep-}}` — reinstating the very
+/// miss this pass fixes, for a far commoner spelling than a name with a
+/// space on either side of a hyphen.
+fn is_name_byte(byte: u8) -> bool {
+    !byte.is_ascii() || byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
 /// If a Liquid output tag opens at `i`, the index just past its `}}`.
@@ -406,11 +470,12 @@ fn href_iter(body: &str) -> Vec<(usize, String)> {
 /// [`bound_after_managed_tag`].
 ///
 /// [`lid_filter_re`] absorbs the whitespace on *both* sides of the
-/// filter, and [`strip_liquid_tag_whitespace`] absorbs the rest of it
-/// inside the tag, so the key does not depend on how the tag is spaced
-/// at all — however `templatize` writes it, however a dashboard edit
-/// rewrites it. Whitespace inside a quoted argument is the one part
-/// that stays: there it is the value, not layout.
+/// filter, and [`strip_liquid_tag_whitespace`] absorbs the structural
+/// whitespace elsewhere in the tag, so the key stops depending on how
+/// `templatize` writes the tag or how a dashboard edit rewrites it. What
+/// stays is whitespace that is part of a *value* — inside a quoted
+/// argument, or between the characters of a `${…}` name — plus the
+/// narrower cases that function's own doc lists.
 pub(crate) fn plaintext_url_anchors(body: &str) -> Vec<(usize, String)> {
     plaintext_url_re()
         .find_iter(body)
@@ -763,6 +828,49 @@ mod tests {
         assert_eq!(
             normalize_url("https://x.com/{{ sep | default: ' oops }}/a"),
             "https://x.com/{{sep|default:' oops }}/a"
+        );
+    }
+
+    #[test]
+    fn normalize_preserves_whitespace_between_name_bytes() {
+        // Quotes are not the only place unquoted whitespace is identity.
+        // Braze spells a personalization or content block whose name has
+        // spaces as `${my attribute}` — no quotes anywhere, yet every byte
+        // is the name. Dropping there merges two different links onto one
+        // anchor and `resolve_lid_batch`'s FIFO transposes their live
+        // lids, which is the failure the quote rule exists to prevent.
+        assert_ne!(
+            normalize_url("https://x.com/{{custom_attribute.${first name}}}/p"),
+            normalize_url("https://x.com/{{custom_attribute.${firstname}}}/p")
+        );
+        assert_eq!(
+            normalize_url("https://x.com/{{ custom_attribute.${first name} }}/p"),
+            "https://x.com/{{custom_attribute.${first name}}}/p"
+        );
+        // Kept verbatim, not collapsed: the width of the run is part of
+        // the name too.
+        assert_ne!(
+            normalize_url("https://x.com/{{${a  b}}}"),
+            normalize_url("https://x.com/{{${a b}}}")
+        );
+        // A name may be written in any script, so no non-ASCII byte may
+        // read as a separator.
+        assert_ne!(
+            normalize_url("https://x.com/{{${購入 日}}}"),
+            normalize_url("https://x.com/{{${購入日}}}")
+        );
+        // Whitespace touching a Liquid separator or the tag edge is still
+        // formatting, multi-byte tokens included.
+        assert_eq!(
+            normalize_url("https://x.com/{{ 日本 | upcase }}/p"),
+            "https://x.com/{{日本|upcase}}/p"
+        );
+        // `-` is a separator here, not a name byte: it is Liquid's
+        // whitespace-control marker, and respacing one of those must keep
+        // correlating.
+        assert_eq!(
+            normalize_url("https://x.com/{{- sep -}}/p"),
+            normalize_url("https://x.com/{{-sep-}}/p")
         );
     }
 

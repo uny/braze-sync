@@ -60,14 +60,20 @@ For every `apply` and `diff`:
    string and fragment dropped, and with any `| lid:` / `| id:` filter
    inside it masked out — so a URL assembled from Liquid (e.g.
    `href="{{ item.url }}{{ sep }}lid={{ x | lid: '…' }}"`, which has no
-   literal `?`) still correlates. Whitespace *anywhere* inside a
-   `{{…}}` is treated as formatting rather than identity, so any
-   dashboard reformat of the tag — `{{x|lid:'…'}}` to
-   `{{ x | lid: '…' }}` and back — keys the same and keeps the live
-   `lid`. The one exception is whitespace inside a quoted argument,
-   which is part of the value: `{{ sep | default: ' - ' }}` and
-   `{{ sep | default: '-' }}` stay two distinct anchors, as they must,
-   since they render two different links.
+   literal `?`) still correlates. Whitespace inside a closed `{{…}}` is
+   treated as formatting rather than identity wherever it separates the
+   tag's structure, so the ordinary dashboard reformat — `{{x|lid:'…'}}`
+   to `{{ x | lid: '…' }}` and back — keys the same and keeps the live
+   `lid`. Whitespace that is part of a *value* is kept, because two
+   spellings there really are two different links: inside a quoted
+   argument (`{{ sep | default: ' - ' }}` vs `{{ sep | default: '-' }}`)
+   and between the characters of a name (`${first name}` vs
+   `${firstname}`) stay distinct anchors, as they must.
+   Two narrower cases still key on their spacing, and a reformat there
+   falls back to a generated `lid`: an *unclosed* `{{`, whose extent is
+   unknown, and a tag carrying a literal `}}` inside a quoted argument,
+   which ends the tag early. Both are rare enough that widening the rule
+   was judged not worth the risk of merging two distinct links.
    In plaintext the bare URL is read through whole `{{…}}` tags —
    including an embedded `${NAME}` — for the same reason, so the anchor
    keeps the plain text following the tag and links that differ only
