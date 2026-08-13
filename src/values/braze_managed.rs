@@ -1075,23 +1075,34 @@ mod tests {
         // the spaces inside `default: '…'`, which are the value — if the
         // normalization collapsed them the two anchors would share one
         // FIFO bucket and each link would take the other's live lid.
-        let template = "https://x.com/{{sep|default:' - '}}{{a|lid:'__BRAZESYNC__'}} \
-                        https://x.com/{{sep|default:'-'}}{{b|lid:'__BRAZESYNC__'}}";
-        let remote = "https://x.com/{{ sep | default: ' - ' }}{{ a | lid: 'liveeeeeeee1' }} \
-                      https://x.com/{{ sep | default: '-' }}{{ b | lid: 'liveeeeeeee2' }}";
+        //
+        // Three details are what make this test able to *fail*. The lid
+        // tag spells the same variable on both links, so the quoted
+        // argument is genuinely the only difference (a `{{a|…}}` /
+        // `{{b|…}}` pair would key apart on the name alone, whatever the
+        // normalization did with the quotes). The remote lists the links
+        // in the opposite order, so a merged bucket hands out the wrong
+        // value rather than accidentally the right one. And `warnings` is
+        // asserted empty, since a shared bucket also trips the
+        // "N remote lid occurrences" notice.
+        let template = "https://x.com/{{sep|default:' - '}}{{x|lid:'__BRAZESYNC__'}} \
+                        https://x.com/{{sep|default:'-'}}{{x|lid:'__BRAZESYNC__'}}";
+        let remote = "https://x.com/{{ sep | default: '-' }}{{ x | lid: 'liveeeeeeee2' }} \
+                      https://x.com/{{ sep | default: ' - ' }}{{ x | lid: 'liveeeeeeee1' }}";
         let p = prepare_field(template, Some(remote), FieldKind::EmailPlainBody);
         assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
         assert!(p.fallbacks.is_empty(), "{:?}", p.fallbacks);
         // Each keeps its own lid: not transposed, not collapsed.
         assert!(
             p.body
-                .contains("{{sep|default:' - '}}{{a|lid:'liveeeeeeee1'}}"),
+                .contains("{{sep|default:' - '}}{{x|lid:'liveeeeeeee1'}}"),
             "got: {}",
             p.body
         );
         assert!(
             p.body
-                .contains("{{sep|default:'-'}}{{b|lid:'liveeeeeeee2'}}"),
+                .contains("{{sep|default:'-'}}{{x|lid:'liveeeeeeee2'}}"),
             "got: {}",
             p.body
         );
