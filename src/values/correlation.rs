@@ -5,7 +5,9 @@
 //!
 //! - HTML lid: anchor = the URL attribute of the enclosing element.
 //!   Same-URL occurrences are matched by appearance order.
-//! - Plaintext lid: anchor = the raw `https?://…` preceding the lid.
+//! - Plaintext lid: anchor = the raw `https?://…` run at or before the
+//!   lid. The run spans whole Liquid tags, so a URL built from Liquid
+//!   can enclose the lid rather than merely precede it.
 //! - cb_id: anchor = `${NAME}` in the same Liquid include.
 
 use regex_lite::Regex;
@@ -107,11 +109,33 @@ fn lid_value_re() -> &'static Regex {
 fn plaintext_url_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        // Greedy `[^\s<>"]` runs up to whitespace or a quote/angle —
+        // Greedy `[^\s<>"']` runs up to whitespace or a quote/angle —
         // good enough for Braze plaintext where URLs aren't routinely
         // wrapped in markup. Trailing punctuation is trimmed post-hoc
         // (see `trim_trailing_punctuation`).
-        Regex::new(r#"https?://[^\s<>"']+"#).expect("plaintext URL regex is valid")
+        //
+        // A Liquid output tag is one atom, so a URL assembled from Liquid
+        // keeps its whole run. Without it the run ends *inside* the tag —
+        // at the space or the `'` — and two failures follow, because
+        // whether a byte is whitespace there depends on formatting that
+        // `templatize` rewrites:
+        //
+        //   1. `templatize` canonicalizes `{{x|lid:'v'}}` to
+        //      `{{x| lid: '__BRAZESYNC__'}}`, inserting a space. The
+        //      template run then stops at that space (`…{{x|`) while the
+        //      remote run stops at the quote (`…{{x|lid`), so the keys
+        //      never match and every apply overwrites the live lid with a
+        //      fallback slug.
+        //   2. Anything past the tag is dropped, so `…{{x | lid: 'a'}}/one`
+        //      and `…{{x | lid: 'b'}}/two` collapse to one key and
+        //      `resolve_lid_batch`'s FIFO hands each link the other's lid.
+        //
+        // Spanning the tag also lets `normalize_url` mask the filter,
+        // which is what makes the key formatting-insensitive. The
+        // alternative only fires on a *closed* `{{…}}`: a stray `{`
+        // falls through to the character class, which admits it anyway.
+        Regex::new(r#"https?://(?:\{\{[^{}]*\}\}|[^\s<>"'])+"#)
+            .expect("plaintext URL regex is valid")
     })
 }
 
@@ -449,6 +473,52 @@ mod tests {
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].url, "https://example.com/x");
         assert_eq!(pairs[0].value, "lidvaluexyz1");
+    }
+
+    #[test]
+    fn plaintext_run_spans_liquid_tags_and_keys_past_them() {
+        let anchors = plaintext_url_anchors(
+            "Go https://x.com/p{{sep}}lid={{x | lid: 'aaaaaaaaaaa'}}/alpha and \
+             https://x.com/p{{sep}}lid={{x|lid:'bbbbbbbbbbb'}}/beta now",
+        );
+        let keys: Vec<&str> = anchors.iter().map(|(_, u)| u.as_str()).collect();
+        // The run covers the whole tag, so the suffix past it survives and
+        // the two links stay distinguishable; the filter itself is masked,
+        // so the compact and spaced spellings agree.
+        assert_eq!(
+            keys,
+            vec![
+                "https://x.com/p{{sep}}lid={{x |<braze-managed>}}/alpha",
+                "https://x.com/p{{sep}}lid={{x|<braze-managed>}}/beta",
+            ]
+        );
+    }
+
+    #[test]
+    fn plaintext_run_stops_at_whitespace_outside_a_liquid_tag() {
+        // The documented plaintext shape puts the lid tag *after* the URL.
+        // Spanning a `{{…}}` must not make the run jump the space into it,
+        // or the anchor stops being the URL. Same for a bare `| lid:` in
+        // prose (`plaintext_lid_trims_trailing_punctuation` covers pairing
+        // for that one) and for quoted prose around a URL.
+        for (body, want) in [
+            (
+                "Click https://example.com/promo {{x | lid: 'lidplain01a'}} now.",
+                "https://example.com/promo",
+            ),
+            (
+                "Visit (https://example.com/cta) | lid: 'lidplain01a' for the deal.",
+                "https://example.com/cta",
+            ),
+            (
+                r#"He said "visit https://x.com/a" then "bye""#,
+                "https://x.com/a",
+            ),
+        ] {
+            let anchors = plaintext_url_anchors(body);
+            assert_eq!(anchors.len(), 1, "{body}");
+            assert_eq!(anchors[0].1, want, "{body}");
+        }
     }
 
     #[test]
