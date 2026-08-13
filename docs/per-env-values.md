@@ -60,14 +60,27 @@ For every `apply` and `diff`:
    string and fragment dropped, and with any `| lid:` / `| id:` filter
    inside it masked out — so a URL assembled from Liquid (e.g.
    `href="{{ item.url }}{{ sep }}lid={{ x | lid: '…' }}"`, which has no
-   literal `?`) still correlates. The whitespace immediately around a
-   masked filter is masked with it, so respacing the filter itself —
-   `{{x|lid:'…'}}` to `{{x | lid: '…' }}` — survives a dashboard edit.
-   Whitespace *elsewhere* in the tag is not normalized, so a reformat
-   that also moves the bytes before the `|` (`{{x|…}}` to `{{ x | …}}`,
-   note the space after `{{`) still keys differently and falls back to a
-   generated `lid`. The general fix is tracked in
-   <https://github.com/uny/braze-sync/issues/77>.
+   literal `?`) still correlates. Whitespace inside a closed `{{…}}` is
+   treated as formatting rather than identity wherever it separates the
+   tag's structure, so the ordinary dashboard reformat — `{{x|lid:'…'}}`
+   to `{{ x | lid: '…' }}` and back — keys the same and keeps the live
+   `lid`. Whitespace inside the tag's two *literal* regions is kept,
+   because two spellings there really are two different links: a quoted
+   argument (`{{ sep | default: ' - ' }}` vs `{{ sep | default: '-' }}`)
+   and a `${…}` name (`${first name}` vs `${firstname}`, and likewise
+   `${Plan (US)}` vs `${Plan(US)}`) stay distinct anchors, as they must.
+   The padding *around* a name is formatting, though, so `${ plan }` and
+   `${plan}` are one anchor.
+   Two narrower cases still key on their spacing, and a reformat there
+   falls back to a generated `lid`: an *unclosed* `{{`, whose extent is
+   unknown, and a tag carrying a literal `}}` inside a quoted argument,
+   which ends the tag early. Both are rare enough that widening the rule
+   was judged not worth the risk of merging two distinct links.
+   Separately, a content block whose *name* contains a space
+   (`{{content_blocks.${Plan (US)} | id: '…'}}`) does not correlate at
+   all — no `${NAME}` pattern in braze-sync accepts one — so its `cb_id`
+   and any `lid` anchored on that URL both fall back. That predates this
+   rule and is unchanged by it.
    In plaintext the bare URL is read through whole `{{…}}` tags —
    including an embedded `${NAME}` — for the same reason, so the anchor
    keeps the plain text following the tag and links that differ only
