@@ -69,11 +69,18 @@ For every `apply` and `diff`:
    argument (`{{ sep | default: ' - ' }}` vs `{{ sep | default: '-' }}`)
    and a `${…}` name (`${first name}` vs `${firstname}`, and likewise
    `${Plan (US)}` vs `${Plan(US)}`) stay distinct anchors, as they must.
+   The padding *around* a name is formatting, though, so `${ plan }` and
+   `${plan}` are one anchor.
    Two narrower cases still key on their spacing, and a reformat there
    falls back to a generated `lid`: an *unclosed* `{{`, whose extent is
    unknown, and a tag carrying a literal `}}` inside a quoted argument,
    which ends the tag early. Both are rare enough that widening the rule
    was judged not worth the risk of merging two distinct links.
+   Separately, a content block whose *name* contains a space
+   (`{{content_blocks.${Plan (US)} | id: '…'}}`) does not correlate at
+   all — no `${NAME}` pattern in braze-sync accepts one — so its `cb_id`
+   and any `lid` anchored on that URL both fall back. That predates this
+   rule and is unchanged by it.
    In plaintext the bare URL is read through whole `{{…}}` tags —
    including an embedded `${NAME}` — for the same reason, so the anchor
    keeps the plain text following the tag and links that differ only

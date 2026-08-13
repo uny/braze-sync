@@ -126,12 +126,23 @@ pub fn normalize_url(url: &str) -> String {
 /// corruption the quote rule exists to prevent.
 ///
 /// So the rule is regional, not per-character: whitespace inside quotes
-/// or inside `${…}` is content and is copied verbatim; whitespace
-/// anywhere else in the tag is formatting and is dropped. That keeps
-/// Liquid's own whitespace control (`{{- sep -}}` and `{{-sep-}}` key
-/// alike) without having to reason about which punctuation may appear in
-/// a name. An unterminated `${` keeps the rest of its tag verbatim, the
-/// same conservative direction as an unterminated quote.
+/// or *between the bytes of* a `${…}` name is content and is copied
+/// verbatim; whitespace anywhere else in the tag is formatting and is
+/// dropped. That keeps Liquid's own whitespace control (`{{- sep -}}` and
+/// `{{-sep-}}` key alike) without having to reason about which
+/// punctuation may appear in a name.
+///
+/// The padding *around* a name is formatting like any other, so it goes:
+/// `${ plan }` is the same name as `${plan}`, and this repo's own
+/// [`cb_id_filter_re`] reads it that way too. An unterminated `${` keeps
+/// the rest of its tag verbatim, the same conservative direction as an
+/// unterminated quote.
+///
+/// A name whose *interior* holds a space is preserved here but is not
+/// otherwise supported: every `${NAME}` pattern in this crate captures
+/// `[^\s}|]+`, so a `content_blocks.${Plan (US)}` include does not mask
+/// and its `lid` anchors do not correlate — as on `main`, and unchanged
+/// by this pass.
 fn strip_liquid_tag_whitespace(url: &str) -> Cow<'_, str> {
     let bytes = url.as_bytes();
     if !bytes.windows(2).any(|w| w == b"{{") {
@@ -157,7 +168,6 @@ fn strip_liquid_tag_whitespace(url: &str) -> Cow<'_, str> {
         let interior = &bytes[i + "{{".len()..end - "}}".len()];
         out.extend_from_slice(b"{{");
         let mut quote: Option<u8> = None;
-        let mut in_name = false;
         let mut j = 0;
         while j < interior.len() {
             let byte = interior[j];
@@ -167,23 +177,27 @@ fn strip_liquid_tag_whitespace(url: &str) -> Cow<'_, str> {
                 }
                 out.push(byte);
                 j += 1;
-            } else if in_name {
-                // Verbatim to the closing brace, whitespace included, and
-                // not collapsed either: `${a  b}` and `${a b}` are two
-                // different names.
-                if byte == b'}' {
-                    in_name = false;
-                }
-                out.push(byte);
-                j += 1;
             } else if byte == b'\'' || byte == b'"' {
                 quote = Some(byte);
                 out.push(byte);
                 j += 1;
             } else if interior[j..].starts_with(b"${") {
-                in_name = true;
+                let start = j + "${".len();
+                let Some(close) = interior[start..].iter().position(|&b| b == b'}') else {
+                    // Unterminated `${`: the rest of the tag is kept
+                    // verbatim, as for an unterminated quote.
+                    out.extend_from_slice(&interior[j..]);
+                    break;
+                };
+                let name = &interior[start..start + close];
                 out.extend_from_slice(b"${");
-                j += "${".len();
+                // The padding around a name is formatting like any other —
+                // `${ plan }` is the same name as `${plan}` — but what is
+                // *between* the name's own bytes is identity, and not
+                // collapsed either: `${a  b}` and `${a b}` differ.
+                out.extend_from_slice(name.trim_ascii());
+                out.push(b'}');
+                j = start + close + 1;
             } else if byte.is_ascii_whitespace() {
                 j += 1;
             } else {
@@ -857,6 +871,13 @@ mod tests {
         assert_eq!(
             normalize_url("https://x.com/{{- sep -}}/p"),
             normalize_url("https://x.com/{{-sep-}}/p")
+        );
+        // The padding *around* a name is formatting like any other, so a
+        // respacing of it still correlates — only what sits between the
+        // name's own bytes is identity.
+        assert_eq!(
+            normalize_url("https://x.com/{{custom_attribute.${plan}|lid:'__BRAZESYNC__'}}/p"),
+            normalize_url("https://x.com/{{ custom_attribute.${ plan } | lid: 'abc123def45' }}/p")
         );
         // An unterminated `${` keeps the rest of its tag verbatim, the
         // same conservative direction as an unterminated quote.
