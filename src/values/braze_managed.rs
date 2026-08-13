@@ -17,7 +17,7 @@ use regex_lite::Regex;
 use crate::values::correlation::{
     extract_cb_id_values, extract_html_lid_values, extract_lid_values_unanchored,
     extract_plaintext_lid_values, normalize_url, plaintext_url_anchors, slug_for_lid,
-    CbIdCorrelation, LidCorrelation,
+    CbIdCorrelation, LidCorrelation, MANAGED_FILTER_MASK,
 };
 use crate::values::placeholder::{
     extract_placeholders, find_suspicious_placeholders, PlaceholderType, ResolutionError, TOKEN,
@@ -413,6 +413,12 @@ fn unique(base: String, used: &mut BTreeMap<String, usize>) -> String {
 }
 
 fn url_path_tail(url: &str) -> String {
+    // The input is an anchor *key*, so it may carry `MANAGED_FILTER_MASK`
+    // — a comparison-only sentinel. The tail feeds `slug_for_lid`, whose
+    // output is POSTed as a live Braze `lid`, so strip it first or the
+    // slug reads `…_braze_managed`. Now that the plaintext run spans a
+    // whole `{{…}}`, the mask lands inside the key on that path too.
+    let url = &url.replace(MANAGED_FILTER_MASK, "");
     let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     let path_start = after_scheme
         .find('/')
@@ -803,8 +809,12 @@ mod tests {
     fn plaintext_lid_inside_liquid_url_correlates() {
         // No literal `?` to cut at, and the run now spans the whole
         // `{{…}}`, so the key is `https://x.com/p{{sep}}lid={{x` plus the
-        // masked filter. Both spellings of the filter reach the same key —
-        // see `plaintext_lid_round_trips_whatever_the_filter_spacing`.
+        // masked filter. Masking is what makes template and remote agree
+        // here despite `templatize` respacing the filter — each spelling
+        // round-trips against its own remote, which is what
+        // `plaintext_lid_round_trips_whatever_the_filter_spacing` pins.
+        // The two spellings do *not* produce the same key as each other
+        // (the space before `|` is outside the mask).
         let template = "Visit https://x.com/p{{sep}}lid={{x|lid:'__BRAZESYNC__'}} now";
         let remote = "Visit https://x.com/p{{sep}}lid={{x|lid:'liveeeeeeee1'}} now";
         let p = prepare_field(template, Some(remote), FieldKind::EmailPlainBody);
@@ -836,6 +846,29 @@ mod tests {
                 p.body,
                 t.new_body.replace(TOKEN, "liveeeeeeee1"),
                 "the live lid must land back in the token's place"
+            );
+        }
+    }
+
+    #[test]
+    fn plaintext_fallback_slug_never_leaks_the_managed_filter_mask() {
+        // The anchor key now spans the whole `{{…}}`, so `normalize_url`
+        // masks the filter *inside* it. That mask is a comparison-only
+        // sentinel: it must not reach the slug, which is POSTed as a live
+        // Braze `lid`. Both fallback paths derive from the same key.
+        let template = "Visit https://x.com/promo{{sep}}lid={{x | lid: '__BRAZESYNC__'}} now";
+        for remote in [None, Some("Visit https://elsewhere.example/other now")] {
+            let p = prepare_field(template, remote, FieldKind::EmailPlainBody);
+            assert!(p.errors.is_empty(), "{:?}", p.errors);
+            assert!(
+                !p.body.contains("braze_managed"),
+                "sentinel leaked into the POSTed lid: {}",
+                p.body
+            );
+            assert!(
+                p.body.contains("| lid: 'promo_sep_lid_x'}}"),
+                "got: {}",
+                p.body
             );
         }
     }

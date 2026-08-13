@@ -20,7 +20,12 @@ pub(crate) const LID_VALUE_PATTERN: &str = "[a-z0-9][a-z0-9_]*";
 
 /// Stand-in for a Braze-managed filter inside an anchor key. Contains no
 /// `?` / `#` so it survives the query/fragment cut below.
-const MANAGED_FILTER_MASK: &str = "|<braze-managed>";
+///
+/// Comparison-only: it exists so both sides of a correlation collapse to
+/// the same string. Anything that derives an *outgoing* value from an
+/// anchor key must strip it first (see `braze_managed::url_path_tail`) —
+/// leaking it would put `braze_managed` into a live Braze identifier.
+pub(crate) const MANAGED_FILTER_MASK: &str = "|<braze-managed>";
 
 /// Normalize a URL for anchor comparison: mask Braze-managed filters,
 /// then keep `scheme://host/path` and drop `?query` / `#fragment`.
@@ -130,10 +135,18 @@ fn plaintext_url_re() -> &'static Regex {
         //      and `…{{x | lid: 'b'}}/two` collapse to one key and
         //      `resolve_lid_batch`'s FIFO hands each link the other's lid.
         //
-        // Spanning the tag also lets `normalize_url` mask the filter,
-        // which is what makes the key formatting-insensitive. The
-        // alternative only fires on a *closed* `{{…}}`: a stray `{`
-        // falls through to the character class, which admits it anyway.
+        // Spanning the tag also lets `normalize_url` mask the filter, so
+        // the key stops depending on the spacing `templatize` rewrites —
+        // everything from the `|` onward. Whitespace *before* the pipe is
+        // not absorbed (see `plaintext_url_anchors`), so this is not full
+        // formatting insensitivity.
+        //
+        // The alternative only fires on a *closed*, brace-free `{{…}}`: a
+        // stray `{` falls through to the character class, which admits it
+        // anyway. A tag containing braces — notably this repo's own
+        // `{{content_blocks.${NAME} | id: 'cbN'}}` — is likewise *not* one
+        // atom, so a plaintext URL built from such an include still keys
+        // the pre-fix way.
         Regex::new(r#"https?://(?:\{\{[^{}]*\}\}|[^\s<>"'])+"#)
             .expect("plaintext URL regex is valid")
     })
@@ -243,13 +256,19 @@ fn href_iter(body: &str) -> Vec<(usize, String)> {
 /// both, or a URL like `https://x.com/end.` keys differently on each side
 /// and the correlation can never match.
 ///
-/// Note that [`normalize_url`]'s masking is inert here: `plaintext_url_re`
-/// stops at `'` / `"`, so a quoted managed filter is never inside the
-/// match and the key ends mid-filter (`…{{x|lid`). Both sides truncate at
-/// the same byte, so they still agree — but the key therefore also drops
-/// everything after the filter, and two plaintext URLs differing only in
-/// that tail share one anchor. `resolve_lid_batch` warns when a bucket
-/// holds more than one remote value.
+/// [`normalize_url`]'s masking is load-bearing here: `plaintext_url_re`
+/// spans a whole `{{…}}`, so a quoted managed filter *is* inside the
+/// match, and masking it is what lets the two sides agree despite the
+/// spacing `templatize` rewrites. The key keeps whatever follows the tag,
+/// so two plaintext URLs differing only in that tail stay distinct.
+///
+/// What the mask does **not** absorb is whitespace to the left of the
+/// `|` — [`lid_filter_re`] starts matching at the pipe. Correlation
+/// survives that only because `templatize_body` rewrites from the `|`
+/// onward and leaves the bytes before it untouched, so both sides carry
+/// the same spelling. A filter respaced on the Braze side (`{{x|lid:…}}`
+/// edited to `{{ x | lid: … }}`) therefore does *not* correlate; the
+/// anchor misses and the live lid is replaced by a fallback slug.
 pub(crate) fn plaintext_url_anchors(body: &str) -> Vec<(usize, String)> {
     plaintext_url_re()
         .find_iter(body)
@@ -482,9 +501,12 @@ mod tests {
              https://x.com/p{{sep}}lid={{x|lid:'bbbbbbbbbbb'}}/beta now",
         );
         let keys: Vec<&str> = anchors.iter().map(|(_, u)| u.as_str()).collect();
-        // The run covers the whole tag, so the suffix past it survives and
-        // the two links stay distinguishable; the filter itself is masked,
-        // so the compact and spaced spellings agree.
+        // The run covers the whole tag, so the suffix past it survives
+        // and the two links stay distinguishable. The filter itself is
+        // masked, which is what removes the dependence on the spacing
+        // `templatize` rewrites — note this is *not* symmetric across the
+        // pipe: the space before `|` survives into the first key, because
+        // `lid_filter_re` starts matching at the pipe.
         assert_eq!(
             keys,
             vec![
