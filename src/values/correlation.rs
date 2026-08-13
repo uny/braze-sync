@@ -720,11 +720,15 @@ mod tests {
 
     #[test]
     fn tag_whose_interior_ends_in_a_brace_still_scans_correctly() {
-        // `plaintext_url_re` now atomizes `{{content_blocks.${NAME}}}`, so
-        // `liquid_tag_end` sees a tag whose interior itself ends in `}` and
-        // stops one byte early. The diff asserts that is inert for both
-        // scanners; pin it, because the inertness is a property of the
-        // input shape rather than of the code.
+        // For `{{content_blocks.${NAME}}}` the interior itself ends in `}`,
+        // so `liquid_tag_end` takes the first `}}` one byte early and the
+        // scan resumes on the tag's last `}`. `split_on_embedded_scheme`
+        // argues that is inert (see its comment); pin it, because the
+        // inertness is a property of the input shape, not of the code.
+        // Reached from both directions — `plaintext_url_re` atomizes the
+        // shape here, and an HTML `href` carrying it goes through
+        // `href_iter` -> `normalize_url` -> `query_or_fragment_start`
+        // regardless of the plaintext run.
         let anchors = plaintext_url_anchors("Go https://x.com/{{content_blocks.${cta}}}?u=1 end");
         assert_eq!(
             anchors.iter().map(|(_, u)| u.as_str()).collect::<Vec<_>>(),
@@ -742,6 +746,12 @@ mod tests {
                 "https://b.example/two{{y|<braze-managed-lid>}}",
             ],
             "a scheme immediately after such a tag must still split"
+        );
+
+        // The HTML path reaches the same shape without any plaintext run.
+        assert_eq!(
+            normalize_url("https://x.com/{{content_blocks.${cta}}}?u=1"),
+            "https://x.com/{{content_blocks.${cta}}}"
         );
     }
 

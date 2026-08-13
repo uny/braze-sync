@@ -66,7 +66,8 @@ For every `apply` and `diff`:
    Whitespace *elsewhere* in the tag is not normalized, so a reformat
    that also moves the bytes before the `|` (`{{x|…}}` to `{{ x | …}}`,
    note the space after `{{`) still keys differently and falls back to a
-   generated `lid`. See #77 for the general fix.
+   generated `lid`. The general fix is tracked in
+   <https://github.com/uny/braze-sync/issues/77>.
    In plaintext the bare URL is read through whole `{{…}}` tags —
    including an embedded `${NAME}` — for the same reason, so the anchor
    keeps the plain text following the tag and links that differ only
