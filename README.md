@@ -226,7 +226,7 @@ read — useful when CI posts the output into a pull request comment:
 braze-sync diff --only-drift
 ```
 
-```
+```text
 📝 Content Block: promo
    ~ content changed (+5 -3)
 
