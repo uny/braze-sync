@@ -7,6 +7,57 @@ versions follow [semver](https://semver.org/). Per IMPLEMENTATION.md
 changes; v1.0 freezes the public surface (CLI flags, config schema,
 file formats, JSON output, exit codes) for the full v1.x line.
 
+## [0.17.1] — 2026-08-13
+
+### Fixed
+
+- **`lid` anchor correlation no longer depends on how Braze formats the
+  Liquid tag.** The anchor key that pairs a `__BRAZESYNC__` placeholder
+  with its live `lid` in the remote body was a normalized string, and
+  several spellings the Braze dashboard can produce did not normalize to
+  the template's. When the key missed, the live `lid` was replaced by a
+  generated fallback slug. Four such spellings are closed:
+  - a Liquid-templated query separator, which left no literal `?` in the
+    URL and so left the `lid` value itself inside the key — never equal
+    across the two sides. Managed `| lid:` / `| id:` filters are now
+    masked out of the key. Fixes #68.
+  - in plaintext bodies, a URL run that stopped at the first quote inside
+    a Liquid tag, making the key depend on formatting `templatize`
+    rewrites. Runs now span whole `{{…}}` tags. Fixes #70.
+  - a tag containing braces of its own — this repo's own
+    `{{content_blocks.${NAME} | id: 'cbN'}}` include — which was not
+    treated as one atom, so #70's symptoms survived for any URL built
+    from an include. Fixes #73.
+  - whitespace anywhere inside a Liquid tag other than immediately around
+    the managed filter, so a dashboard reformat of `{{x|lid:'…'}}` into
+    `{{ x | lid: '…' }}` keyed differently. Intra-tag whitespace is now
+    normalized, except inside a quoted argument where it is part of the
+    value. Fixes #77.
+
+  **Operators should check links applied since v0.17.0.** While these
+  bugs were live, an `apply` could overwrite a real Braze `lid` with a
+  generated fallback slug. The run warned at the time — `lid: URL anchor
+  '…' not found in remote body — using fallback value '…'` — but the
+  slug is itself a valid `lid`, so the original value is not recoverable
+  from the local template. This release stops it happening; it cannot
+  undo an assignment already made. If those warnings appeared in a past
+  run, verify the affected links in the Braze dashboard.
+
+- **Mask sentinels no longer leak into operator output or into Braze.**
+  The comparison-only placeholders used to collapse both sides of an
+  anchor key could reach a warning shown to an operator, and could reach
+  a fallback `lid` value POSTed to Braze. Fixes #71.
+
+### Security
+
+- **Bumped `anyhow` and `quinn-proto`** for two advisories that were
+  failing the `audit` and `deny` jobs: unsoundness in `anyhow` 1.0.102's
+  `Error::downcast_mut()`, and **RUSTSEC-2026-0185** (high) — remote
+  memory exhaustion in `quinn-proto` 0.11.14 from unbounded out-of-order
+  stream reassembly, reached transitively. Both fixes were on `main` but
+  unreleased until now, so installs from crates.io and the Homebrew tap
+  carried the affected versions.
+
 ## [0.17.0] — 2026-06-07
 
 ### Removed
