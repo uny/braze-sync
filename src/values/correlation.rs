@@ -5,7 +5,9 @@
 //!
 //! - HTML lid: anchor = the URL attribute of the enclosing element.
 //!   Same-URL occurrences are matched by appearance order.
-//! - Plaintext lid: anchor = the raw `https?://…` preceding the lid.
+//! - Plaintext lid: anchor = the raw `https?://…` run at or before the
+//!   lid. The run spans whole Liquid tags, so a URL built from Liquid
+//!   can enclose the lid rather than merely precede it.
 //! - cb_id: anchor = `${NAME}` in the same Liquid include.
 
 use regex_lite::Regex;
@@ -18,7 +20,12 @@ pub(crate) const LID_VALUE_PATTERN: &str = "[a-z0-9][a-z0-9_]*";
 
 /// Stand-in for a Braze-managed filter inside an anchor key. Contains no
 /// `?` / `#` so it survives the query/fragment cut below.
-const MANAGED_FILTER_MASK: &str = "|<braze-managed>";
+///
+/// Comparison-only: it exists so both sides of a correlation collapse to
+/// the same string. Anything that derives an *outgoing* value from an
+/// anchor key must strip it first (see `braze_managed::url_path_tail`) —
+/// leaking it would put `braze_managed` into a live Braze identifier.
+pub(crate) const MANAGED_FILTER_MASK: &str = "|<braze-managed>";
 
 /// Normalize a URL for anchor comparison: mask Braze-managed filters,
 /// then keep `scheme://host/path` and drop `?query` / `#fragment`.
@@ -36,14 +43,50 @@ const MANAGED_FILTER_MASK: &str = "|<braze-managed>";
 /// either direction. Note that it does *not* pass non-URL text through
 /// untouched: anything after a `?` / `#` is dropped and any managed
 /// filter is masked, whatever the input looks like.
+///
+/// The `?` / `#` must be *outside* a Liquid tag to count. One inside is
+/// the tag's own text — `{{ sep | default: '?' }}` is the same separator
+/// as `{{sep}}`, just spelled with a fallback — and cutting there would
+/// truncate the key mid-tag, collapsing every link that differs only
+/// past that tag onto one anchor.
 pub fn normalize_url(url: &str) -> String {
     let masked = lid_filter_re().replace_all(url, MANAGED_FILTER_MASK);
     // `${1}` keeps the `{{content_blocks.${NAME}` prefix the cb_id regex
     // had to capture; only the `| id: '…'` after it is masked.
     let cb_replacement = format!("${{1}}{MANAGED_FILTER_MASK}");
     let masked = cb_id_filter_re().replace_all(masked.as_ref(), cb_replacement.as_str());
-    let stop = masked.find(['?', '#']).unwrap_or(masked.len());
+    let stop = query_or_fragment_start(masked.as_ref()).unwrap_or(masked.len());
     masked[..stop].to_string()
+}
+
+/// If a Liquid output tag opens at `i`, the index just past its `}}`.
+/// `None` when no tag opens there, and when one opens but never closes —
+/// callers decide what an unclosed tag means for them.
+fn liquid_tag_end(bytes: &[u8], i: usize) -> Option<usize> {
+    if !bytes[i..].starts_with(b"{{") {
+        return None;
+    }
+    bytes[i..]
+        .windows(2)
+        .position(|w| w == b"}}")
+        .map(|rel| i + rel + "}}".len())
+}
+
+/// First `?` / `#` that is not inside a Liquid tag.
+fn query_or_fragment_start(value: &str) -> Option<usize> {
+    let bytes = value.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if let Some(end) = liquid_tag_end(bytes, i) {
+            i = end;
+            continue;
+        }
+        if matches!(bytes[i], b'?' | b'#') {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }
 
 fn lid_filter_re() -> &'static Regex {
@@ -107,11 +150,41 @@ fn lid_value_re() -> &'static Regex {
 fn plaintext_url_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        // Greedy `[^\s<>"]` runs up to whitespace or a quote/angle —
+        // Greedy `[^\s<>"']` runs up to whitespace or a quote/angle —
         // good enough for Braze plaintext where URLs aren't routinely
         // wrapped in markup. Trailing punctuation is trimmed post-hoc
         // (see `trim_trailing_punctuation`).
-        Regex::new(r#"https?://[^\s<>"']+"#).expect("plaintext URL regex is valid")
+        //
+        // A Liquid output tag is one atom, so a URL assembled from Liquid
+        // keeps its whole run. Without it the run ends *inside* the tag —
+        // at the space or the `'` — and two failures follow, because
+        // whether a byte is whitespace there depends on formatting that
+        // `templatize` rewrites:
+        //
+        //   1. `templatize` canonicalizes `{{x|lid:'v'}}` to
+        //      `{{x| lid: '__BRAZESYNC__'}}`, inserting a space. The
+        //      template run then stops at that space (`…{{x|`) while the
+        //      remote run stops at the quote (`…{{x|lid`), so the keys
+        //      never match and every apply overwrites the live lid with a
+        //      fallback slug.
+        //   2. Anything past the tag is dropped, so `…{{x | lid: 'a'}}/one`
+        //      and `…{{x | lid: 'b'}}/two` collapse to one key and
+        //      `resolve_lid_batch`'s FIFO hands each link the other's lid.
+        //
+        // Spanning the tag also lets `normalize_url` mask the filter, so
+        // the key stops depending on the spacing `templatize` rewrites —
+        // everything from the `|` onward. Whitespace *before* the pipe is
+        // not absorbed (see `plaintext_url_anchors`), so this is not full
+        // formatting insensitivity.
+        //
+        // The alternative only fires on a *closed*, brace-free `{{…}}`: a
+        // stray `{` falls through to the character class, which admits it
+        // anyway. A tag containing braces — notably this repo's own
+        // `{{content_blocks.${NAME} | id: 'cbN'}}` — is likewise *not* one
+        // atom, so a plaintext URL built from such an include still keys
+        // the pre-fix way.
+        Regex::new(r#"https?://(?:\{\{[^{}]*\}\}|[^\s<>"'])+"#)
+            .expect("plaintext URL regex is valid")
     })
 }
 
@@ -219,27 +292,136 @@ fn href_iter(body: &str) -> Vec<(usize, String)> {
 /// both, or a URL like `https://x.com/end.` keys differently on each side
 /// and the correlation can never match.
 ///
-/// Note that [`normalize_url`]'s masking is inert here: `plaintext_url_re`
-/// stops at `'` / `"`, so a quoted managed filter is never inside the
-/// match and the key ends mid-filter (`…{{x|lid`). Both sides truncate at
-/// the same byte, so they still agree — but the key therefore also drops
-/// everything after the filter, and two plaintext URLs differing only in
-/// that tail share one anchor. `resolve_lid_batch` warns when a bucket
-/// holds more than one remote value.
+/// [`normalize_url`]'s masking is load-bearing here: `plaintext_url_re`
+/// spans a whole `{{…}}`, so a quoted managed filter *is* inside the
+/// match, and masking it is what lets the two sides agree despite the
+/// spacing `templatize` rewrites. The key keeps the plain text that
+/// follows the tag, so two plaintext URLs differing only in that tail
+/// stay distinct — a further *tag* is cut, see
+/// [`bound_after_managed_tag`].
+///
+/// What the mask does **not** absorb is whitespace to the left of the
+/// `|` — [`lid_filter_re`] starts matching at the pipe. Correlation
+/// survives that only because `templatize_body` rewrites from the `|`
+/// onward and leaves the bytes before it untouched, so both sides carry
+/// the same spelling. A filter respaced on the Braze side (`{{x|lid:…}}`
+/// edited to `{{ x | lid: … }}`) therefore does *not* correlate; the
+/// anchor misses and the live lid is replaced by a fallback slug.
 pub(crate) fn plaintext_url_anchors(body: &str) -> Vec<(usize, String)> {
     plaintext_url_re()
         .find_iter(body)
-        .map(|m| {
-            let raw = m.as_str();
-            let preceded_by = if m.start() > 0 {
-                body[..m.start()].chars().last()
-            } else {
-                None
-            };
-            let trimmed = trim_trailing_punctuation(raw, preceded_by);
-            (m.start(), normalize_url(trimmed))
+        .flat_map(|m| {
+            split_on_embedded_scheme(m.as_str())
+                .into_iter()
+                .map(move |(rel, piece)| {
+                    let start = m.start() + rel;
+                    let preceded_by = if start > 0 {
+                        body[..start].chars().last()
+                    } else {
+                        None
+                    };
+                    let bounded = bound_after_managed_tag(piece);
+                    let trimmed = trim_trailing_punctuation(bounded, preceded_by);
+                    (start, normalize_url(trimmed))
+                })
+                .collect::<Vec<_>>()
         })
         .collect()
+}
+
+/// Split a run at an embedded `https?://` that starts a second link.
+///
+/// `plaintext_url_re` stops at whitespace, but a Liquid tag is one atom
+/// of the run and may itself contain whitespace — so two links written
+/// back-to-back with only a tag between them (`…/one{{ sep }}https://b…`)
+/// would otherwise land in a single anchor, and a dashboard-side reorder
+/// would hand each the other's lid.
+///
+/// Only a scheme that would really begin a new link counts. Two places
+/// carry one that does not, and splitting at either is worse than not
+/// splitting at all:
+///
+/// - **inside the query** — `…/r?u=https://dest…` is a redirect target,
+///   an argument of the first URL. [`normalize_url`] drops the query
+///   anyway, so splitting there would move the anchor onto the shared
+///   destination and collapse every tracking link that redirects to it.
+/// - **inside a `{{…}}`** — `{{ u | default: 'https://cdn…' }}` is a
+///   filter argument, and the enclosing tag is part of the URL being
+///   assembled.
+///
+/// Both exclusions are decided in one left-to-right scan, because the
+/// query separator only ends the URL when it is *outside* a tag: a `?`
+/// within `{{ sep | default: '?' }}` is part of the tag's own text, and
+/// treating it as the separator would abandon the scan before a genuine
+/// second link.
+fn split_on_embedded_scheme(run: &str) -> Vec<(usize, &str)> {
+    let bytes = run.as_bytes();
+    let mut starts = vec![0usize];
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"{{") {
+            // Skip the whole tag rather than inspecting inside it. The
+            // first `}}` is the close for every tag `plaintext_url_re`
+            // matches as an atom, since `[^{}]*` admits no braces; a
+            // brace-bearing tag arrives here only via the character
+            // class, and lands mid-tag rather than past it. An unclosed
+            // `{{` ends the scan — splitting on a scheme inside what may
+            // be tag text is worse than not splitting.
+            match liquid_tag_end(bytes, i) {
+                Some(end) => i = end,
+                None => break,
+            }
+            continue;
+        }
+        if bytes[i] == b'?' || bytes[i] == b'#' {
+            break;
+        }
+        if i > 0 && (bytes[i..].starts_with(b"http://") || bytes[i..].starts_with(b"https://")) {
+            starts.push(i);
+            i += "http://".len();
+            continue;
+        }
+        i += 1;
+    }
+    starts
+        .iter()
+        .enumerate()
+        .map(|(n, &s)| {
+            let end = starts.get(n + 1).copied().unwrap_or(run.len());
+            (s, &run[s..end])
+        })
+        .collect()
+}
+
+/// Stop the run at the first `{{` that follows the tag carrying the
+/// managed `lid` filter.
+///
+/// Spanning a `{{…}}` is what lets the key survive the spacing
+/// `templatize` rewrites, but it also lets the run leap the whitespace
+/// *inside* an unrelated tag and swallow ordinary copy. Once the managed
+/// filter's own tag is closed, a further tag is prose rather than URL:
+/// keeping it would make the anchor depend on text that has nothing to
+/// do with the link, so editing that copy locally would discard the live
+/// lid. Plain characters after the tag (`}}/alpha` vs `}}/beta`) are
+/// still kept — distinguishing those is the reason the run spans the tag
+/// at all.
+///
+/// The cut is structural, so template and remote land on it identically.
+/// Cost: two links differing *only* by a Liquid tag after the filter
+/// share one anchor; `resolve_lid_batch` warns when a bucket holds more
+/// than one remote value.
+fn bound_after_managed_tag(run: &str) -> &str {
+    let Some(filter) = lid_filter_re().find(run) else {
+        return run;
+    };
+    let Some(rel) = run[filter.end()..].find("}}") else {
+        return run;
+    };
+    let after_tag = filter.end() + rel + "}}".len();
+    match run[after_tag..].find("{{") {
+        Some(rel) => &run[..after_tag + rel],
+        None => run,
+    }
 }
 
 fn pair_urls_with_lids(urls: Vec<(usize, String)>, body: &str) -> Vec<LidCorrelation> {
@@ -368,6 +550,40 @@ mod tests {
     }
 
     #[test]
+    fn normalize_only_cuts_at_a_separator_outside_a_liquid_tag() {
+        // `{{ sep | default: '?' }}` is the same query separator as
+        // `{{sep}}`, spelled with a fallback. Cutting at the `?` inside
+        // it would truncate the key mid-tag, so two links differing only
+        // past the tag would share one anchor and `resolve_lid_batch`'s
+        // FIFO could hand each the other's live lid.
+        assert_ne!(
+            normalize_url("https://x/{{ sep | default: '?' }}/alpha"),
+            normalize_url("https://x/{{ sep | default: '?' }}/beta")
+        );
+        assert_eq!(
+            normalize_url("https://x/{{ sep | default: '?' }}/alpha"),
+            "https://x/{{ sep | default: '?' }}/alpha"
+        );
+        // The brace-free spelling already behaved this way — the two
+        // must not disagree.
+        assert_ne!(
+            normalize_url("https://x/{{sep}}/alpha"),
+            normalize_url("https://x/{{sep}}/beta")
+        );
+        // A real separator still cuts, inside or outside a tag's reach.
+        assert_eq!(
+            normalize_url("https://x/{{sep}}/alpha?utm=1"),
+            "https://x/{{sep}}/alpha"
+        );
+        assert_eq!(normalize_url("https://x/a#frag"), "https://x/a");
+        // An unclosed tag must not swallow the rest of the key.
+        assert_eq!(
+            normalize_url("https://x/{{ oops ?utm=1"),
+            "https://x/{{ oops "
+        );
+    }
+
+    #[test]
     fn normalize_masks_managed_filters_so_both_sides_agree() {
         // No literal `?`, so the cut alone leaves the lid value in the
         // key. Template and remote must still normalize identically.
@@ -449,6 +665,140 @@ mod tests {
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].url, "https://example.com/x");
         assert_eq!(pairs[0].value, "lidvaluexyz1");
+    }
+
+    #[test]
+    fn plaintext_run_spans_liquid_tags_and_keys_past_them() {
+        let anchors = plaintext_url_anchors(
+            "Go https://x.com/p{{sep}}lid={{x | lid: 'aaaaaaaaaaa'}}/alpha and \
+             https://x.com/p{{sep}}lid={{x|lid:'bbbbbbbbbbb'}}/beta now",
+        );
+        let keys: Vec<&str> = anchors.iter().map(|(_, u)| u.as_str()).collect();
+        // The run covers the whole tag, so the suffix past it survives
+        // and the two links stay distinguishable. The filter itself is
+        // masked, which is what removes the dependence on the spacing
+        // `templatize` rewrites — note this is *not* symmetric across the
+        // pipe: the space before `|` survives into the first key, because
+        // `lid_filter_re` starts matching at the pipe.
+        assert_eq!(
+            keys,
+            vec![
+                "https://x.com/p{{sep}}lid={{x |<braze-managed>}}/alpha",
+                "https://x.com/p{{sep}}lid={{x|<braze-managed>}}/beta",
+            ]
+        );
+    }
+
+    #[test]
+    fn plaintext_run_stops_at_whitespace_outside_a_liquid_tag() {
+        // The documented plaintext shape puts the lid tag *after* the URL.
+        // Spanning a `{{…}}` must not make the run jump the space into it,
+        // or the anchor stops being the URL. Same for a bare `| lid:` in
+        // prose (`plaintext_lid_trims_trailing_punctuation` covers pairing
+        // for that one) and for quoted prose around a URL.
+        for (body, want) in [
+            (
+                "Click https://example.com/promo {{x | lid: 'lidplain01a'}} now.",
+                "https://example.com/promo",
+            ),
+            (
+                "Visit (https://example.com/cta) | lid: 'lidplain01a' for the deal.",
+                "https://example.com/cta",
+            ),
+            (
+                r#"He said "visit https://x.com/a" then "bye""#,
+                "https://x.com/a",
+            ),
+        ] {
+            let anchors = plaintext_url_anchors(body);
+            assert_eq!(anchors.len(), 1, "{body}");
+            assert_eq!(anchors[0].1, want, "{body}");
+        }
+    }
+
+    #[test]
+    fn plaintext_anchor_stops_at_a_tag_past_the_managed_filter() {
+        // Copy that merely *follows* the link must not enter the anchor:
+        // spanning the lid tag lets the run leap the whitespace inside a
+        // later tag, and an edit to that copy would then discard the live
+        // lid. Both spellings of the trailing tag cut at the same point.
+        for tail in [".{{ old_copy }}", ".{{old_copy}}", "{{ other }}"] {
+            let body = format!("Visit https://x.com/p{{{{x | lid: 'liveeeeeeee1'}}}}{tail}");
+            let anchors = plaintext_url_anchors(&body);
+            assert_eq!(anchors.len(), 1, "{body}");
+            assert_eq!(
+                anchors[0].1, "https://x.com/p{{x |<braze-managed>}}",
+                "{body}"
+            );
+        }
+        // ...but plain characters after the tag still distinguish links.
+        let anchors = plaintext_url_anchors("Go https://x.com/p{{x | lid: 'aaaaaaaaaaa'}}/alpha");
+        assert_eq!(anchors[0].1, "https://x.com/p{{x |<braze-managed>}}/alpha");
+    }
+
+    #[test]
+    fn plaintext_anchor_splits_at_a_second_scheme() {
+        // A tag between two links carries whitespace, so without the
+        // split the two would share one anchor and a reorder would
+        // transpose their lids.
+        let anchors = plaintext_url_anchors(
+            "Go https://a.example/one{{ sep }}https://b.example/two{{y | lid: 'bbbbbbbbbbb'}} end",
+        );
+        let keys: Vec<&str> = anchors.iter().map(|(_, u)| u.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "https://a.example/one{{ sep }}",
+                "https://b.example/two{{y |<braze-managed>}}",
+            ]
+        );
+        // The lid must pair with the link it sits on, not the first one.
+        let pairs = extract_plaintext_lid_values(
+            "Go https://a.example/one{{ sep }}https://b.example/two{{y | lid: 'bbbbbbbbbbb'}} end",
+        );
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].url, "https://b.example/two{{y |<braze-managed>}}");
+    }
+
+    #[test]
+    fn plaintext_anchor_keeps_a_redirect_target_inside_the_link() {
+        // A scheme in the query is the redirect target of a tracking
+        // link, not a second link. Splitting there would anchor both
+        // links on the shared destination and let a reorder transpose
+        // their lids — the very failure the split exists to prevent.
+        let body = "Go https://track.example/r?u=https://dest.example/x {{a | lid: 'aaaaaaaaaaa'}} \
+                    and https://track.example/s?u=https://dest.example/x {{b | lid: 'bbbbbbbbbbb'}}";
+        let pairs = extract_plaintext_lid_values(body);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0].url, "https://track.example/r");
+        assert_eq!(pairs[0].value, "aaaaaaaaaaa");
+        assert_eq!(pairs[1].url, "https://track.example/s");
+        assert_eq!(pairs[1].value, "bbbbbbbbbbb");
+
+        // A `?` inside the separator tag is the tag's own text, not the
+        // query separator — it must not abandon the scan before the
+        // second link, or both lids land in one FIFO bucket.
+        let anchors = plaintext_url_anchors(
+            "Go https://a.example/one{{ sep | default: '?' }}https://b.example/two{{y | lid: 'bbbbbbbbbbb'}}",
+        );
+        let keys: Vec<&str> = anchors.iter().map(|(_, u)| u.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "https://a.example/one{{ sep | default: '?' }}",
+                "https://b.example/two{{y |<braze-managed>}}",
+            ]
+        );
+
+        // Same for a scheme that is an argument inside a Liquid tag.
+        let anchors = plaintext_url_anchors(
+            "Go https://x.com/{{ u | default: 'https://cdn.example/i' }}/end",
+        );
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(
+            anchors[0].1,
+            "https://x.com/{{ u | default: 'https://cdn.example/i' }}/end"
+        );
     }
 
     #[test]

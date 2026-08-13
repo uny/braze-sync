@@ -17,7 +17,7 @@ use regex_lite::Regex;
 use crate::values::correlation::{
     extract_cb_id_values, extract_html_lid_values, extract_lid_values_unanchored,
     extract_plaintext_lid_values, normalize_url, plaintext_url_anchors, slug_for_lid,
-    CbIdCorrelation, LidCorrelation,
+    CbIdCorrelation, LidCorrelation, MANAGED_FILTER_MASK,
 };
 use crate::values::placeholder::{
     extract_placeholders, find_suspicious_placeholders, PlaceholderType, ResolutionError, TOKEN,
@@ -124,7 +124,10 @@ pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> 
             Some(PlaceholderType::Lid) => {
                 let v = lid_iter.next().flatten();
                 if v.is_none() {
-                    let anchor = lid_anchor_for(&body, ph.start, field);
+                    // Display-only (see `format_failures`), so render the
+                    // mask back rather than showing a key.
+                    let anchor =
+                        lid_anchor_for(&body, ph.start, field).map(|u| anchor_for_display(&u));
                     errors.push(ResolutionError::UnresolvedLid {
                         start: ph.start,
                         anchor,
@@ -212,11 +215,12 @@ fn resolve_lid_batch(
         let tmpl_count = tmpl_per_url.get(url).copied().unwrap_or(0);
         if bucket.len() > 1 || (tmpl_count > 0 && bucket.len() != tmpl_count) {
             warnings.push(format!(
-                "URL '{url}' has {} remote lid occurrences and {tmpl_count} \
+                "URL '{shown}' has {} remote lid occurrences and {tmpl_count} \
                  template placeholders — using positional FIFO match. \
                  If links were reordered in Braze, lid values may be assigned \
                  to the wrong placeholder.",
-                bucket.len()
+                bucket.len(),
+                shown = anchor_for_display(url)
             ));
         }
     }
@@ -246,13 +250,14 @@ fn resolve_lid_batch(
             Some(p) => out.push(Some(p.value.clone())),
             None => {
                 let fallback = fallback_lid_for_url(Some(&url), &mut used, &mut seq);
+                let shown = anchor_for_display(&url);
                 warnings.push(format!(
-                    "lid: URL anchor '{url}' not found in remote body — \
+                    "lid: URL anchor '{shown}' not found in remote body — \
                      using fallback value '{fallback}' (new link; Braze will \
                      reassign on first dashboard save)"
                 ));
                 fallbacks.push(LidFallback {
-                    anchor: Some(url.clone()),
+                    anchor: Some(shown),
                     value: fallback.clone(),
                 });
                 out.push(Some(fallback));
@@ -260,6 +265,14 @@ fn resolve_lid_batch(
         }
     }
     out
+}
+
+/// Render an anchor key for a human. The key carries
+/// `MANAGED_FILTER_MASK` where the Braze-managed filter stood — a
+/// comparison-only sentinel — so printing it verbatim shows the operator
+/// a URL that appears nowhere in their template.
+fn anchor_for_display(url: &str) -> String {
+    url.replace(MANAGED_FILTER_MASK, "| lid: '…'")
 }
 
 /// Slug fallback for a single lid placeholder. `used` is shared across
@@ -413,6 +426,12 @@ fn unique(base: String, used: &mut BTreeMap<String, usize>) -> String {
 }
 
 fn url_path_tail(url: &str) -> String {
+    // The input is an anchor *key*, so it may carry `MANAGED_FILTER_MASK`
+    // — a comparison-only sentinel. The tail feeds `slug_for_lid`, whose
+    // output is POSTed as a live Braze `lid`, so strip it first or the
+    // slug reads `…_braze_managed`. Now that the plaintext run spans a
+    // whole `{{…}}`, the mask lands inside the key on that path too.
+    let url = &url.replace(MANAGED_FILTER_MASK, "");
     let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     let path_start = after_scheme
         .find('/')
@@ -512,13 +531,14 @@ fn lid_anchor_for(body: &str, offset: usize, field: FieldKind) -> Option<String>
         // side keys through the same trim + normalize, and any asymmetry
         // there makes correlation impossible (see its doc comment).
         //
-        // Scanning the whole body and taking the last URL starting at or
-        // before `offset` is equivalent to the `body[..offset]` prefix
-        // scan for every input reachable today — `plaintext_url_re`
-        // excludes `'` and `"`, and `placeholder::infer_type` only types a
-        // token as a lid when the byte before it is one of those, so a URL
-        // run can never span `offset`. Kept as the whole-body form because
-        // it stays correct if that regex is ever widened to admit quotes.
+        // Scanning the whole body — rather than `body[..offset]` — is
+        // load-bearing: `plaintext_url_re` spans a whole `{{…}}`, so for a
+        // URL assembled from Liquid the run *contains* the placeholder.
+        // Truncating at `offset` would cut the tag in half, leaving a
+        // partial filter that no longer masks, and the key would go back
+        // to depending on where the quote happens to fall. Taking the last
+        // URL starting at or before `offset` covers both that case and the
+        // usual "URL, then lid tag after it" shape.
         plaintext_url_anchors(body)
             .into_iter()
             .take_while(|(start, _)| *start <= offset)
@@ -569,6 +589,7 @@ fn element_open_tag_re() -> &'static Regex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::values::templatize::templatize_body;
 
     #[test]
     fn no_placeholders_returns_body_verbatim() {
@@ -799,17 +820,126 @@ mod tests {
 
     #[test]
     fn plaintext_lid_inside_liquid_url_correlates() {
-        // No literal `?` to cut at. Note what actually makes this pass:
-        // `plaintext_url_re` stops at the `'`, so both sides key on
-        // `https://x.com/p{{sep}}lid={{x|lid` — masking never fires here.
-        // The fix under test is that the template side now shares
-        // `trim_trailing_punctuation` with the remote side (without it the
-        // template keeps the trailing `:` and never matches).
+        // No literal `?` to cut at, and the run now spans the whole
+        // `{{…}}`, so the key is `https://x.com/p{{sep}}lid={{x` plus the
+        // masked filter. Masking is what makes template and remote agree
+        // here despite `templatize` respacing the filter — each spelling
+        // round-trips against its own remote, which is what
+        // `plaintext_lid_round_trips_whatever_the_filter_spacing` pins.
+        // The two spellings do *not* produce the same key as each other
+        // (the space before `|` is outside the mask).
         let template = "Visit https://x.com/p{{sep}}lid={{x|lid:'__BRAZESYNC__'}} now";
         let remote = "Visit https://x.com/p{{sep}}lid={{x|lid:'liveeeeeeee1'}} now";
         let p = prepare_field(template, Some(remote), FieldKind::EmailPlainBody);
         assert!(p.errors.is_empty(), "{:?}", p.errors);
         assert!(p.warnings.is_empty(), "{:?}", p.warnings);
         assert!(p.body.contains("'liveeeeeeee1'"), "got: {}", p.body);
+    }
+
+    #[test]
+    fn plaintext_lid_round_trips_whatever_the_filter_spacing() {
+        // `templatize` canonicalizes the filter, inserting a space into
+        // the compact spelling — so the round-trip is the identity up to
+        // that rewrite, i.e. the live value must land back in the token's
+        // place. Whichever way the author wrote the filter, resolving the
+        // template against the very remote it came from has to recover
+        // `liveeeeeeee1`; otherwise every apply overwrites the live lid
+        // with a fallback slug and the resource never converges.
+        for remote in [
+            "Visit https://x.com/p{{sep}}lid={{x|lid:'liveeeeeeee1'}} now",
+            "Visit https://x.com/p{{sep}}lid={{x | lid: 'liveeeeeeee1'}} now",
+        ] {
+            let t = templatize_body(remote, FieldKind::EmailPlainBody);
+            assert_eq!(t.lid_rewrites, 1, "not templatized: {}", t.new_body);
+            let p = prepare_field(&t.new_body, Some(remote), FieldKind::EmailPlainBody);
+            assert!(p.errors.is_empty(), "{:?}", p.errors);
+            assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+            assert!(p.fallbacks.is_empty(), "{:?}", p.fallbacks);
+            assert_eq!(
+                p.body,
+                t.new_body.replace(TOKEN, "liveeeeeeee1"),
+                "the live lid must land back in the token's place"
+            );
+        }
+    }
+
+    #[test]
+    fn editing_copy_after_a_plaintext_link_keeps_the_live_lid() {
+        // The link is untouched; only the copy behind it changed. The
+        // anchor must not depend on that copy — if it does, apply POSTs a
+        // fallback slug over `liveeeeeeee1` and the Braze-side click
+        // history for the link is severed. Nothing reassigns it back,
+        // because the fallback is itself a valid lid.
+        let remote = "Visit https://x.com/p{{x | lid: 'liveeeeeeee1'}}.{{ old_copy }}";
+        let template = "Visit https://x.com/p{{x | lid: '__BRAZESYNC__'}}.{{ new_copy }}";
+        let p = prepare_field(template, Some(remote), FieldKind::EmailPlainBody);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.fallbacks.is_empty(), "{:?}", p.fallbacks);
+        assert_eq!(
+            p.body, "Visit https://x.com/p{{x | lid: 'liveeeeeeee1'}}.{{ new_copy }}",
+            "the live lid must survive an edit to the copy after the link"
+        );
+    }
+
+    #[test]
+    fn plaintext_fallback_slug_never_leaks_the_managed_filter_mask() {
+        // The anchor key now spans the whole `{{…}}`, so `normalize_url`
+        // masks the filter *inside* it. That mask is a comparison-only
+        // sentinel: it must not reach the slug, which is POSTed as a live
+        // Braze `lid`. Both fallback paths derive from the same key.
+        let template = "Visit https://x.com/promo{{sep}}lid={{x | lid: '__BRAZESYNC__'}} now";
+        for remote in [None, Some("Visit https://elsewhere.example/other now")] {
+            let p = prepare_field(template, remote, FieldKind::EmailPlainBody);
+            assert!(p.errors.is_empty(), "{:?}", p.errors);
+            assert!(
+                !p.body.contains("braze_managed"),
+                "sentinel leaked into the POSTed lid: {}",
+                p.body
+            );
+            // ...nor into what the operator is shown, where it would name
+            // a URL that appears nowhere in their template.
+            for shown in p
+                .warnings
+                .iter()
+                .cloned()
+                .chain(p.fallbacks.iter().filter_map(|f| f.anchor.clone()))
+            {
+                assert!(
+                    !shown.contains("braze-managed"),
+                    "sentinel leaked into operator output: {shown}"
+                );
+            }
+            assert!(
+                p.body.contains("| lid: 'promo_sep_lid_x'}}"),
+                "got: {}",
+                p.body
+            );
+        }
+    }
+
+    #[test]
+    fn plaintext_urls_differing_only_after_the_filter_keep_distinct_anchors() {
+        // Both links share a prefix and differ only *past* the lid filter.
+        // The remote lists them in the opposite order, so a collapsed key
+        // hands each link the other's live lid via FIFO — and because both
+        // values stay valid, Braze never self-corrects and click
+        // attribution is transposed permanently.
+        let template = "Go https://x.com/p{{sep}}lid={{x | lid: '__BRAZESYNC__'}}/beta and \
+                        https://x.com/p{{sep}}lid={{x | lid: '__BRAZESYNC__'}}/alpha now";
+        let remote = "Go https://x.com/p{{sep}}lid={{x | lid: 'aaaaaaaaaaa'}}/alpha and \
+                      https://x.com/p{{sep}}lid={{x | lid: 'bbbbbbbbbbb'}}/beta now";
+        let p = prepare_field(template, Some(remote), FieldKind::EmailPlainBody);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+        assert!(
+            p.body.contains("lid: 'bbbbbbbbbbb'}}/beta"),
+            "/beta must keep its own lid, got: {}",
+            p.body
+        );
+        assert!(
+            p.body.contains("lid: 'aaaaaaaaaaa'}}/alpha"),
+            "/alpha must keep its own lid, got: {}",
+            p.body
+        );
     }
 }
