@@ -43,14 +43,50 @@ pub(crate) const MANAGED_FILTER_MASK: &str = "|<braze-managed>";
 /// either direction. Note that it does *not* pass non-URL text through
 /// untouched: anything after a `?` / `#` is dropped and any managed
 /// filter is masked, whatever the input looks like.
+///
+/// The `?` / `#` must be *outside* a Liquid tag to count. One inside is
+/// the tag's own text — `{{ sep | default: '?' }}` is the same separator
+/// as `{{sep}}`, just spelled with a fallback — and cutting there would
+/// truncate the key mid-tag, collapsing every link that differs only
+/// past that tag onto one anchor.
 pub fn normalize_url(url: &str) -> String {
     let masked = lid_filter_re().replace_all(url, MANAGED_FILTER_MASK);
     // `${1}` keeps the `{{content_blocks.${NAME}` prefix the cb_id regex
     // had to capture; only the `| id: '…'` after it is masked.
     let cb_replacement = format!("${{1}}{MANAGED_FILTER_MASK}");
     let masked = cb_id_filter_re().replace_all(masked.as_ref(), cb_replacement.as_str());
-    let stop = masked.find(['?', '#']).unwrap_or(masked.len());
+    let stop = query_or_fragment_start(masked.as_ref()).unwrap_or(masked.len());
     masked[..stop].to_string()
+}
+
+/// If a Liquid output tag opens at `i`, the index just past its `}}`.
+/// `None` when no tag opens there, and when one opens but never closes —
+/// callers decide what an unclosed tag means for them.
+fn liquid_tag_end(bytes: &[u8], i: usize) -> Option<usize> {
+    if !bytes[i..].starts_with(b"{{") {
+        return None;
+    }
+    bytes[i..]
+        .windows(2)
+        .position(|w| w == b"}}")
+        .map(|rel| i + rel + "}}".len())
+}
+
+/// First `?` / `#` that is not inside a Liquid tag.
+fn query_or_fragment_start(value: &str) -> Option<usize> {
+    let bytes = value.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if let Some(end) = liquid_tag_end(bytes, i) {
+            i = end;
+            continue;
+        }
+        if matches!(bytes[i], b'?' | b'#') {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }
 
 fn lid_filter_re() -> &'static Regex {
@@ -328,9 +364,11 @@ fn split_on_embedded_scheme(run: &str) -> Vec<(usize, &str)> {
             // first `}}` is the close for every tag `plaintext_url_re`
             // matches as an atom, since `[^{}]*` admits no braces; a
             // brace-bearing tag arrives here only via the character
-            // class, and lands mid-tag rather than past it.
-            match bytes[i..].windows(2).position(|w| w == b"}}") {
-                Some(rel) => i += rel + "}}".len(),
+            // class, and lands mid-tag rather than past it. An unclosed
+            // `{{` ends the scan — splitting on a scheme inside what may
+            // be tag text is worse than not splitting.
+            match liquid_tag_end(bytes, i) {
+                Some(end) => i = end,
                 None => break,
             }
             continue;
@@ -508,6 +546,40 @@ mod tests {
         assert_eq!(
             normalize_url("https://example.com/x"),
             "https://example.com/x"
+        );
+    }
+
+    #[test]
+    fn normalize_only_cuts_at_a_separator_outside_a_liquid_tag() {
+        // `{{ sep | default: '?' }}` is the same query separator as
+        // `{{sep}}`, spelled with a fallback. Cutting at the `?` inside
+        // it would truncate the key mid-tag, so two links differing only
+        // past the tag would share one anchor and `resolve_lid_batch`'s
+        // FIFO could hand each the other's live lid.
+        assert_ne!(
+            normalize_url("https://x/{{ sep | default: '?' }}/alpha"),
+            normalize_url("https://x/{{ sep | default: '?' }}/beta")
+        );
+        assert_eq!(
+            normalize_url("https://x/{{ sep | default: '?' }}/alpha"),
+            "https://x/{{ sep | default: '?' }}/alpha"
+        );
+        // The brace-free spelling already behaved this way — the two
+        // must not disagree.
+        assert_ne!(
+            normalize_url("https://x/{{sep}}/alpha"),
+            normalize_url("https://x/{{sep}}/beta")
+        );
+        // A real separator still cuts, inside or outside a tag's reach.
+        assert_eq!(
+            normalize_url("https://x/{{sep}}/alpha?utm=1"),
+            "https://x/{{sep}}/alpha"
+        );
+        assert_eq!(normalize_url("https://x/a#frag"), "https://x/a");
+        // An unclosed tag must not swallow the rest of the key.
+        assert_eq!(
+            normalize_url("https://x/{{ oops ?utm=1"),
+            "https://x/{{ oops "
         );
     }
 
@@ -713,7 +785,7 @@ mod tests {
         assert_eq!(
             keys,
             vec![
-                "https://a.example/one{{ sep | default: '",
+                "https://a.example/one{{ sep | default: '?' }}",
                 "https://b.example/two{{y |<braze-managed>}}",
             ]
         );
