@@ -779,6 +779,46 @@ mod tests {
         assert_eq!(url_path_tail("https://x.com/"), "");
         assert_eq!(url_path_tail("https://x.com/sale"), "sale");
     }
+
+    #[test]
+    fn url_path_tail_strips_both_managed_sentinels_from_the_last_segment() {
+        // Both masks must be stripped, not just the lid one: the tail
+        // feeds `slug_for_lid`, whose output is POSTed as a live Braze
+        // `lid`. The include has to sit in the *final* segment or
+        // `rsplit('/')` discards it and the assertion cannot fail.
+        let cb = format!("https://x.com/{{{{content_blocks.${{base}}{MANAGED_CB_ID_MASK}}}}}");
+        assert_eq!(url_path_tail(&cb), "{{content_blocks.${base}}}");
+        assert_eq!(slug_for_lid(&url_path_tail(&cb)), "content_blocks_base");
+
+        let lid = format!("https://x.com/p{{{{x{MANAGED_LID_MASK}}}}}");
+        assert_eq!(url_path_tail(&lid), "p{{x}}");
+    }
+
+    #[test]
+    fn fallback_lid_never_carries_a_sentinel_from_an_include_only_anchor() {
+        // End-to-end companion to the above: the anchor is an include and
+        // nothing else, the remote has no matching href, so the fallback
+        // slug is derived from a key whose last segment is the masked
+        // include. `braze_managed` must not reach the POSTed value.
+        let template = r#"<a href="https://x.com/{{content_blocks.${base} | id: '__BRAZESYNC__'}}">{{x | lid: '__BRAZESYNC__'}}</a>"#;
+        let remote = "{{content_blocks.${base} | id: 'cb1'}}";
+        let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert_eq!(
+            p.fallbacks
+                .iter()
+                .map(|f| f.value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["content_blocks_base"],
+            "got: {:?}",
+            p.fallbacks
+        );
+        assert!(
+            !p.body.contains("braze_managed"),
+            "sentinel leaked: {}",
+            p.body
+        );
+    }
     #[test]
     fn liquid_separator_href_lid_correlates() {
         // The query separator comes from Liquid, so the href holds no
@@ -830,8 +870,11 @@ mod tests {
         // here despite `templatize` respacing the filter — each spelling
         // round-trips against its own remote, which is what
         // `plaintext_lid_round_trips_whatever_the_filter_spacing` pins.
-        // The two spellings do *not* produce the same key as each other
-        // (the space before `|` is outside the mask).
+        // The two spellings now *do* produce the same key as each other —
+        // the mask absorbs the whitespace on both sides of the filter (see
+        // `plaintext_run_spans_liquid_tags_and_keys_past_them`). What still
+        // separates keys is whitespace before the `|` that is not adjacent
+        // to it, e.g. the space in `{{ x`.
         let template = "Visit https://x.com/p{{sep}}lid={{x|lid:'__BRAZESYNC__'}} now";
         let remote = "Visit https://x.com/p{{sep}}lid={{x|lid:'liveeeeeeee1'}} now";
         let p = prepare_field(template, Some(remote), FieldKind::EmailPlainBody);

@@ -323,13 +323,18 @@ fn href_iter(body: &str) -> Vec<(usize, String)> {
 /// stay distinct — a further *tag* is cut, see
 /// [`bound_after_managed_tag`].
 ///
-/// What the mask does **not** absorb is whitespace to the left of the
-/// `|` — [`lid_filter_re`] starts matching at the pipe. Correlation
-/// survives that only because `templatize_body` rewrites from the `|`
-/// onward and leaves the bytes before it untouched, so both sides carry
-/// the same spelling. A filter respaced on the Braze side (`{{x|lid:…}}`
-/// edited to `{{ x | lid: … }}`) therefore does *not* correlate; the
-/// anchor misses and the live lid is replaced by a fallback slug.
+/// [`lid_filter_re`] absorbs the whitespace on *both* sides of the
+/// filter, so respacing the filter itself survives a dashboard edit.
+/// What it does **not** absorb is whitespace elsewhere in the tag —
+/// notably between `{{` and the expression. Those bytes stay verbatim in
+/// the key, and correlation survives only because `templatize_body`
+/// rewrites from the `|` onward and leaves them untouched, so both sides
+/// carry the same spelling. A reformat that moves them (`{{x|lid:…}}`
+/// edited to `{{ x | lid: … }}` — note the space after `{{`) therefore
+/// still does *not* correlate; the anchor misses and the live lid is
+/// replaced by a fallback slug. Normalizing whitespace across the whole
+/// tag would close that, but it has to be quote-aware — the space in
+/// `{{ sep | default: ' - ' }}` is identity, not formatting.
 pub(crate) fn plaintext_url_anchors(body: &str) -> Vec<(usize, String)> {
     plaintext_url_re()
         .find_iter(body)
@@ -710,6 +715,33 @@ mod tests {
                 "https://x.com/p{{sep}}lid={{x|<braze-managed-lid>}}/alpha",
                 "https://x.com/p{{sep}}lid={{x|<braze-managed-lid>}}/beta",
             ]
+        );
+    }
+
+    #[test]
+    fn tag_whose_interior_ends_in_a_brace_still_scans_correctly() {
+        // `plaintext_url_re` now atomizes `{{content_blocks.${NAME}}}`, so
+        // `liquid_tag_end` sees a tag whose interior itself ends in `}` and
+        // stops one byte early. The diff asserts that is inert for both
+        // scanners; pin it, because the inertness is a property of the
+        // input shape rather than of the code.
+        let anchors = plaintext_url_anchors("Go https://x.com/{{content_blocks.${cta}}}?u=1 end");
+        assert_eq!(
+            anchors.iter().map(|(_, u)| u.as_str()).collect::<Vec<_>>(),
+            vec!["https://x.com/{{content_blocks.${cta}}}"],
+            "the `?` after the tag must still cut the key"
+        );
+
+        let anchors = plaintext_url_anchors(
+            "Go https://a.example/{{content_blocks.${cta}}}https://b.example/two{{y | lid: 'bbbbbbbbbbb'}} end",
+        );
+        assert_eq!(
+            anchors.iter().map(|(_, u)| u.as_str()).collect::<Vec<_>>(),
+            vec![
+                "https://a.example/{{content_blocks.${cta}}}",
+                "https://b.example/two{{y|<braze-managed-lid>}}",
+            ],
+            "a scheme immediately after such a tag must still split"
         );
     }
 
