@@ -7,6 +7,7 @@ use crate::diff::catalog::diff_schema;
 use crate::diff::content_block::{diff as diff_content_block, ContentBlockDiff};
 use crate::diff::custom_attribute::{CustomAttributeDiff, CustomAttributeOp};
 use crate::diff::email_template::EmailTemplateDiff;
+use crate::diff::tag::{TagDiff, TagOp};
 use crate::diff::TextDiffSummary;
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::resource::{Catalog, CatalogField, CatalogFieldType, ContentBlock, ContentBlockState};
@@ -171,6 +172,100 @@ pub fn all_kinds_mixed() -> DiffSummary {
             ResourceDiff::ContentBlock(cb),
             ResourceDiff::EmailTemplate(et),
             ResourceDiff::CustomAttribute(ca),
+        ],
+    }
+}
+
+/// The shape `diff --only-drift` exists for: mostly in-sync resources,
+/// one real change, one orphan, and one in-sync resource that still has
+/// something to say. Only the bare `no drift` blocks may be suppressed.
+pub fn mostly_in_sync_with_one_change() -> DiffSummary {
+    let stable = Catalog {
+        name: "stable".into(),
+        description: None,
+        fields: vec![field("id", CatalogFieldType::String)],
+    };
+    let cs = diff_schema(Some(&stable), Some(&stable)).unwrap();
+
+    let cb_from = ContentBlock {
+        name: "promo".into(),
+        description: None,
+        content: "old".into(),
+        tags: vec![],
+        state: ContentBlockState::Active,
+    };
+    let cb_to = ContentBlock {
+        content: "new".into(),
+        ..cb_from.clone()
+    };
+    let cb = ContentBlockDiff {
+        name: "promo".into(),
+        op: DiffOp::Modified {
+            from: cb_from,
+            to: cb_to,
+        },
+        text_diff: Some(TextDiffSummary {
+            additions: 5,
+            deletions: 3,
+        }),
+        orphan: false,
+    };
+
+    let cb_in_sync = ContentBlockDiff {
+        name: "footer".into(),
+        op: DiffOp::Unchanged,
+        text_diff: None,
+        orphan: false,
+    };
+
+    let et_orphan = EmailTemplateDiff::orphan("legacy_welcome");
+
+    // In sync and silent: the suppressible shape for this kind. Present
+    // so the `NO_DRIFT_BODY` exact-match contract is pinned for email
+    // templates too, not just catalogs and content blocks.
+    let et_in_sync = EmailTemplateDiff {
+        name: "receipt".into(),
+        op: DiffOp::Unchanged,
+        subject_changed: false,
+        body_html_diff: None,
+        body_plaintext_diff: None,
+        metadata_changed: false,
+        orphan: false,
+    };
+
+    // In sync, but the hint must survive `--only-drift`.
+    let ca = CustomAttributeDiff {
+        name: "visit_count".into(),
+        op: CustomAttributeOp::Unchanged,
+        hints: vec!["type mismatch: local number vs Braze string (run export to update)".into()],
+    };
+
+    let tag_in_sync = TagDiff {
+        name: "transactional".into(),
+        op: TagOp::Unchanged,
+        hints: vec![],
+    };
+
+    // `tag::diff` cannot produce this today, but `TagDiff` permits it and
+    // the flag's contract is "an in-sync resource that still says
+    // something stays visible" — pin it for every kind that has hints,
+    // so the next producer of tag hints cannot silently lose the block.
+    let tag_with_hint = TagDiff {
+        name: "seasonal".into(),
+        op: TagOp::Unchanged,
+        hints: vec!["registered in two environments with different casing".into()],
+    };
+
+    DiffSummary {
+        diffs: vec![
+            ResourceDiff::CatalogSchema(cs),
+            ResourceDiff::ContentBlock(cb_in_sync),
+            ResourceDiff::ContentBlock(cb),
+            ResourceDiff::EmailTemplate(et_in_sync),
+            ResourceDiff::EmailTemplate(et_orphan),
+            ResourceDiff::CustomAttribute(ca),
+            ResourceDiff::Tag(tag_in_sync),
+            ResourceDiff::Tag(tag_with_hint),
         ],
     }
 }

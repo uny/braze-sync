@@ -19,7 +19,7 @@ use crate::diff::plan::PlanFile;
 use crate::diff::tag::diff as diff_tags;
 use crate::diff::{DiffSummary, ResourceDiff};
 use crate::error::Error;
-use crate::format::OutputFormat;
+use crate::format::{OutputFormat, TableFormatter};
 use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io, tag_io};
 use crate::resource::{Catalog, ContentBlock, EmailTemplate, ResourceKind};
 use crate::values::{
@@ -49,6 +49,14 @@ pub struct DiffArgs {
     /// Exit with code 2 if any drift is detected. Intended for CI gates.
     #[arg(long)]
     pub fail_on_drift: bool,
+
+    /// Omit in-sync resources from the table output, keeping only the
+    /// blocks a reviewer has to read. In-sync resources that still carry
+    /// an informational line (e.g. a Custom Attribute type mismatch) are
+    /// kept, and the `Summary:` trailer still counts every resource.
+    /// No effect on `--format json`.
+    #[arg(long)]
+    pub only_drift: bool,
 
     /// Write a plan file (JSON) to this path. The file freezes the set of
     /// actionable ops so a later `apply --plan=<path>` can refuse to run
@@ -139,7 +147,11 @@ pub async fn run(
         }
     }
 
-    let formatted = format.formatter().format(&summary);
+    let formatted = format
+        .formatter(TableFormatter {
+            only_drift: args.only_drift,
+        })
+        .format(&summary);
     print!("{formatted}");
     let fallback_block = format_fallback_reports(&fallback_reports);
     if !fallback_block.is_empty() {

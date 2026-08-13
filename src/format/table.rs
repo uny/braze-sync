@@ -12,11 +12,23 @@ use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::resource::{CatalogField, ResourceKind};
 use std::fmt::Write as _;
 
-pub fn render(summary: &DiffSummary) -> String {
+/// The entire body of an in-sync resource that carries no extra
+/// information. `only_drift` suppresses exactly the blocks whose body
+/// equals this — an unchanged resource that still rendered an
+/// informational line (e.g. a Custom Attribute type mismatch) has a
+/// longer body and stays visible.
+const NO_DRIFT_BODY: &str = "   no drift\n";
+
+pub fn render(summary: &DiffSummary, only_drift: bool) -> String {
     let mut out = String::new();
 
     for diff in &summary.diffs {
-        render_one(&mut out, diff);
+        let body = render_body(diff);
+        if only_drift && body == NO_DRIFT_BODY {
+            continue;
+        }
+        render_header(&mut out, diff);
+        out.push_str(&body);
         out.push('\n');
     }
 
@@ -44,33 +56,39 @@ pub fn render(summary: &DiffSummary) -> String {
     out
 }
 
-fn render_one(out: &mut String, diff: &ResourceDiff) {
-    let unchanged = !diff.has_changes();
-    let icon = if unchanged {
-        "✅"
-    } else {
+fn render_header(out: &mut String, diff: &ResourceDiff) {
+    let icon = if diff.has_changes() {
         kind_icon(diff.kind())
+    } else {
+        "✅"
     };
     let label = kind_label(diff.kind());
     let _ = writeln!(out, "{icon} {label}: {}", diff.name());
+}
 
-    if unchanged {
-        out.push_str("   no drift\n");
-        // Custom Attributes may carry informational hints (e.g. type
-        // mismatch) even when unchanged.
-        if let ResourceDiff::CustomAttribute(d) = diff {
-            render_custom_attribute(out, d);
-        }
-        return;
+/// Render the indented lines under a resource header. Built separately
+/// from the header so `only_drift` can decide whether the block is worth
+/// printing at all by inspecting what the body actually says.
+fn render_body(diff: &ResourceDiff) -> String {
+    let mut out = String::new();
+
+    // The per-kind renderers emit nothing for an unchanged, non-orphan
+    // diff *except* the informational hints some kinds carry (Custom
+    // Attribute type mismatch, Tag hints), so the same match serves both
+    // branches. Special-casing one kind here is what let a Tag hint be
+    // dropped — and, under `only_drift`, take its whole block with it.
+    if !diff.has_changes() {
+        out.push_str(NO_DRIFT_BODY);
     }
 
     match diff {
-        ResourceDiff::CatalogSchema(d) => render_catalog_schema(out, d),
-        ResourceDiff::ContentBlock(d) => render_content_block(out, d),
-        ResourceDiff::EmailTemplate(d) => render_email_template(out, d),
-        ResourceDiff::CustomAttribute(d) => render_custom_attribute(out, d),
-        ResourceDiff::Tag(d) => render_tag(out, d),
+        ResourceDiff::CatalogSchema(d) => render_catalog_schema(&mut out, d),
+        ResourceDiff::ContentBlock(d) => render_content_block(&mut out, d),
+        ResourceDiff::EmailTemplate(d) => render_email_template(&mut out, d),
+        ResourceDiff::CustomAttribute(d) => render_custom_attribute(&mut out, d),
+        ResourceDiff::Tag(d) => render_tag(&mut out, d),
     }
+    out
 }
 
 fn kind_icon(kind: ResourceKind) -> &'static str {

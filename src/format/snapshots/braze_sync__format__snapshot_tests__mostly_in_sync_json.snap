@@ -1,0 +1,74 @@
+---
+source: src/format/snapshot_tests.rs
+expression: "JsonFormatter.format(&fixtures::mostly_in_sync_with_one_change())"
+---
+{
+  "version": 1,
+  "summary": {
+    "changed": 2,
+    "in_sync": 6,
+    "destructive": 0,
+    "orphan": 1
+  },
+  "diffs": [
+    {
+      "kind": "catalog_schema",
+      "name": "stable",
+      "op": "unchanged",
+      "field_diffs": []
+    },
+    {
+      "kind": "content_block",
+      "name": "footer",
+      "op": "unchanged",
+      "orphan": false
+    },
+    {
+      "kind": "content_block",
+      "name": "promo",
+      "op": "modified",
+      "orphan": false,
+      "text_diff": {
+        "additions": 5,
+        "deletions": 3
+      }
+    },
+    {
+      "kind": "email_template",
+      "name": "receipt",
+      "op": "unchanged",
+      "subject_changed": false,
+      "metadata_changed": false,
+      "orphan": false
+    },
+    {
+      "kind": "email_template",
+      "name": "legacy_welcome",
+      "op": "unchanged",
+      "subject_changed": false,
+      "metadata_changed": false,
+      "orphan": true
+    },
+    {
+      "kind": "custom_attribute",
+      "name": "visit_count",
+      "op": "unchanged",
+      "hints": [
+        "type mismatch: local number vs Braze string (run export to update)"
+      ]
+    },
+    {
+      "kind": "tag",
+      "name": "transactional",
+      "op": "unchanged"
+    },
+    {
+      "kind": "tag",
+      "name": "seasonal",
+      "op": "unchanged",
+      "hints": [
+        "registered in two environments with different casing"
+      ]
+    }
+  ]
+}

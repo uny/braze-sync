@@ -860,3 +860,161 @@ async fn email_template_diff_no_drift_when_placeholders_resolve_to_remote() {
         "expected no drift after values resolution, got:\n{stdout}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diff_only_drift_suppresses_in_sync_resources() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/catalogs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "catalogs": [
+                {"name": "stable", "fields": [{"name": "id", "type": "string"}]},
+                {"name": "drift", "fields": [{"name": "id", "type": "string"}]}
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_schema(tmp.path(), "stable", &[("id", "string")]);
+    write_local_schema(
+        tmp.path(),
+        "drift",
+        &[("id", "string"), ("extra", "number")],
+    );
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["diff", "--resource", "catalog_schema", "--only-drift"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(!stdout.contains("no drift"), "stdout: {stdout}");
+    assert!(
+        !stdout.contains("Catalog Schema: stable"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("Catalog Schema: drift"), "stdout: {stdout}");
+    assert!(stdout.contains("+ field: extra"), "stdout: {stdout}");
+    // The trailer still accounts for the suppressed resource.
+    assert!(
+        stdout.contains("Summary: 1 changed, 1 in sync"),
+        "stdout: {stdout}"
+    );
+}
+
+/// An in-sync resource that still carries an informational line is NOT
+/// suppressed — only blocks whose whole body is `no drift` are.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diff_only_drift_keeps_in_sync_resource_with_hint() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/custom_attributes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "attributes": [
+                {"name": "stable", "data_type": "string", "status": "Active"},
+                {"name": "stale_type", "data_type": "string", "status": "Active"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  \
+         - name: stable\n    type: string\n  \
+         - name: stale_type\n    type: number\n",
+    );
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["diff", "--resource", "custom_attribute", "--only-drift"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        !stdout.contains("Custom Attribute: stable"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("Custom Attribute: stale_type"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("ℹ type mismatch"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("Summary: 0 changed, 2 in sync"),
+        "stdout: {stdout}"
+    );
+}
+
+/// `--only-drift` is a table-side filter; the frozen JSON schema keeps
+/// every resource so machine consumers see an unchanged contract.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diff_only_drift_does_not_affect_json_output() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/catalogs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "catalogs": [
+                {"name": "stable", "fields": [{"name": "id", "type": "string"}]}
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_schema(tmp.path(), "stable", &[("id", "string")]);
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args([
+                "diff",
+                "--resource",
+                "catalog_schema",
+                "--only-drift",
+                "--format",
+                "json",
+            ])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed["diffs"].as_array().unwrap().len(), 1);
+    assert_eq!(parsed["summary"]["in_sync"], 1);
+}

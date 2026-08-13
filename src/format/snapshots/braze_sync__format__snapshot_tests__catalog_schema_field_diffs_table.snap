@@ -1,6 +1,6 @@
 ---
 source: src/format/snapshot_tests.rs
-expression: "TableFormatter.format(&fixtures::catalog_schema_with_mixed_field_diffs())"
+expression: "TableFormatter::default().format(&fixtures::catalog_schema_with_mixed_field_diffs())"
 ---
 📋 Catalog Schema: cardiology
    ~ field: is_active (string → boolean)

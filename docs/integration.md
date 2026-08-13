@@ -138,6 +138,65 @@ jq '.summary' diff.json
 `destructive` and `orphan` are the two counts worth surfacing in PR
 comments — they are the changes the reviewer most needs to eyeball.
 
+## Posting the diff into a PR comment
+
+The table output is meant to be read by a human, but on a workspace
+with a few hundred resources almost every line is `no drift`, which
+buries the review material and eats into GitHub's 65536-character
+comment limit. Pass `--only-drift` to keep just the blocks that need
+attention:
+
+```yaml
+  # A second job in the drift-check workflow above.
+  comment:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # createComment needs this
+    steps:
+      - uses: actions/checkout@v4
+      - uses: uny/setup-braze-sync@v1
+      - run: braze-sync diff --env prod --only-drift > diff.txt
+        env:
+          BRAZE_PROD_API_KEY: ${{ secrets.BRAZE_PROD_API_KEY }}
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let out = fs.readFileSync('diff.txt', 'utf8');
+            // A comment body over 65536 chars is rejected outright, so a
+            // workspace that drifts badly enough would post nothing at
+            // all. Clip instead, and say so.
+            const LIMIT = 65000;
+            if (out.length > LIMIT) {
+              out = out.slice(0, LIMIT) +
+                '\n… truncated — see the full diff in the step log\n';
+            }
+            // Resource names come from Braze and may contain backticks,
+            // so pick a fence longer than any run in the output rather
+            // than hard-coding three.
+            const runs = out.match(/`+/g) || [];
+            const fence = '`'.repeat(Math.max(3, ...runs.map((r) => r.length + 1)));
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `${fence}text\n${out}${fence}`,
+            });
+```
+
+`--only-drift` drops only the blocks whose entire body is `no drift`.
+An in-sync resource that still carries an informational line — a Custom
+Attribute type mismatch, for example — stays in the output, and the
+`Summary:` trailer keeps counting every resource, so no drifting
+resource is missing from the comment. The flag does not affect
+`--format json`.
+
+One caveat on the redirect rather than the flag: `> diff.txt` captures
+stdout only, and `diff` writes its fallback-`lid` notices and other
+warnings to **stderr**. Append `2>&1` if the comment should carry those
+too; otherwise they stay in the step log.
+
 ## Secrets hygiene
 
 - API keys live in CI secrets, never in `braze-sync.config.yaml`.

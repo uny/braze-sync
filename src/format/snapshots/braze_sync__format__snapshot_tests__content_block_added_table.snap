@@ -1,6 +1,6 @@
 ---
 source: src/format/snapshot_tests.rs
-expression: "TableFormatter.format(&fixtures::content_block_added())"
+expression: "TableFormatter::default().format(&fixtures::content_block_added())"
 ---
 📝 Content Block: fresh_promo
    + new content block

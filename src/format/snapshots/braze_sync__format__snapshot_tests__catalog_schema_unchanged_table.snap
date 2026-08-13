@@ -1,6 +1,6 @@
 ---
 source: src/format/snapshot_tests.rs
-expression: "TableFormatter.format(&fixtures::catalog_schema_unchanged())"
+expression: "TableFormatter::default().format(&fixtures::catalog_schema_unchanged())"
 ---
 ✅ Catalog Schema: stable
    no drift
