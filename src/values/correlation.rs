@@ -11,6 +11,7 @@
 //! - cb_id: anchor = `${NAME}` in the same Liquid include.
 
 use regex_lite::Regex;
+use std::borrow::Cow;
 use std::sync::OnceLock;
 
 use crate::values::placeholder::TOKEN;
@@ -55,7 +56,12 @@ pub(crate) const MANAGED_CB_ID_MASK: &str = "|<braze-managed-id>";
 /// truncate the key mid-tag, collapsing every link that differs only
 /// past that tag onto one anchor.
 pub fn normalize_url(url: &str) -> String {
-    let masked = lid_filter_re().replace_all(url, MANAGED_LID_MASK);
+    // Before masking: the masks are what let both sides agree on how the
+    // filter is spelled, and this is the same argument applied to the
+    // rest of the tag. Running it first also means the mask patterns see
+    // an already-despaced tag, so their own `\s*` simply matches empty.
+    let despaced = strip_liquid_tag_whitespace(url);
+    let masked = lid_filter_re().replace_all(&despaced, MANAGED_LID_MASK);
     // The include prefix has to stay in the key to keep two different
     // `${NAME}`s apart, but it cannot be kept *verbatim*: `templatize`
     // rebuilds the whole include canonically, so a remote spelled any
@@ -69,6 +75,82 @@ pub fn normalize_url(url: &str) -> String {
     });
     let stop = query_or_fragment_start(masked.as_ref()).unwrap_or(masked.len());
     masked[..stop].to_string()
+}
+
+/// Drop whitespace that sits inside a closed `{{…}}` and outside a
+/// quoted string.
+///
+/// Whitespace inside an output tag is formatting, not identity: a
+/// dashboard reformat may respace any position in the tag, and every
+/// respelling denotes the same link. Keeping those bytes in the key made
+/// the anchor miss and the live `lid` be replaced by a generated slug
+/// (#77). `cb_id` already tolerated this across its whole include, so
+/// this is what aligns `lid` with it rather than a new liberty.
+///
+/// **Quote-aware** is the whole difficulty. The spaces in
+/// `{{ sep | default: ' - ' }}` are the value, not layout, so collapsing
+/// them would key that tag the same as `{{ sep | default: '-' }}` — two
+/// genuinely different links sharing one anchor, which is worse than the
+/// bug being fixed, because `resolve_lid_batch`'s FIFO would then hand
+/// each link the other's live lid. Text between quotes is therefore
+/// copied verbatim. Liquid has no string escapes, so a quote of the
+/// opening kind always closes the run.
+///
+/// Scope is deliberately narrow:
+///
+/// - Only `{{…}}`. A `{%…%}` tag has statement syntax where a space can
+///   separate two bare tokens (`{% if a contains b %}`), so removing
+///   whitespace there could change meaning.
+/// - Only *closed* tags. An unclosed `{{` is left verbatim, matching
+///   [`liquid_tag_end`]'s policy: its extent is unknown, and despacing
+///   to end-of-input could reach text that is not tag interior at all.
+/// - An unterminated quote inside a tag keeps the rest of that tag
+///   verbatim, which is the conservative direction — it preserves
+///   distinctions rather than merging them.
+///
+/// Within `{{…}}` the tokens are separated by `|`, `:` and `,`, so bare
+/// tokens are not run together by this. Two tags that differ *only* by
+/// whitespace between bare tokens (`{{a b}}` vs `{{ab}}`) do collapse
+/// onto one key; neither is valid Liquid.
+fn strip_liquid_tag_whitespace(url: &str) -> Cow<'_, str> {
+    let bytes = url.as_bytes();
+    if !bytes.windows(2).any(|w| w == b"{{") {
+        return Cow::Borrowed(url);
+    }
+    // Byte-oriented, but UTF-8 safe: only ASCII whitespace is dropped,
+    // and no byte of a multi-byte sequence is ASCII.
+    let mut out: Vec<u8> = Vec::with_capacity(url.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let Some(end) = liquid_tag_end(bytes, i) else {
+            // Not a tag opening here, or one that never closes. In the
+            // latter case nothing further can close either, so the
+            // remainder is copied as-is.
+            if bytes[i..].starts_with(b"{{") {
+                out.extend_from_slice(&bytes[i..]);
+                break;
+            }
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        };
+        let interior = &bytes[i + "{{".len()..end - "}}".len()];
+        out.extend_from_slice(b"{{");
+        let mut quote: Option<u8> = None;
+        for &byte in interior {
+            match quote {
+                Some(open) if byte == open => quote = None,
+                Some(_) => {}
+                None if byte == b'\'' || byte == b'"' => quote = Some(byte),
+                None if byte.is_ascii_whitespace() => continue,
+                None => {}
+            }
+            out.push(byte);
+        }
+        out.extend_from_slice(b"}}");
+        i = end;
+    }
+    Cow::Owned(String::from_utf8(out).expect("only ASCII whitespace was dropped"))
 }
 
 /// If a Liquid output tag opens at `i`, the index just past its `}}`.
@@ -324,17 +406,11 @@ fn href_iter(body: &str) -> Vec<(usize, String)> {
 /// [`bound_after_managed_tag`].
 ///
 /// [`lid_filter_re`] absorbs the whitespace on *both* sides of the
-/// filter, so respacing the filter itself survives a dashboard edit.
-/// What it does **not** absorb is whitespace elsewhere in the tag —
-/// notably between `{{` and the expression. Those bytes stay verbatim in
-/// the key, and correlation survives only because `templatize_body`
-/// rewrites from the `|` onward and leaves them untouched, so both sides
-/// carry the same spelling. A reformat that moves them (`{{x|lid:…}}`
-/// edited to `{{ x | lid: … }}` — note the space after `{{`) therefore
-/// still does *not* correlate; the anchor misses and the live lid is
-/// replaced by a fallback slug. Normalizing whitespace across the whole
-/// tag would close that, but it has to be quote-aware — the space in
-/// `{{ sep | default: ' - ' }}` is identity, not formatting.
+/// filter, and [`strip_liquid_tag_whitespace`] absorbs the rest of it
+/// inside the tag, so the key does not depend on how the tag is spaced
+/// at all — however `templatize` writes it, however a dashboard edit
+/// rewrites it. Whitespace inside a quoted argument is the one part
+/// that stays: there it is the value, not layout.
 pub(crate) fn plaintext_url_anchors(body: &str) -> Vec<(usize, String)> {
     plaintext_url_re()
         .find_iter(body)
@@ -591,7 +667,7 @@ mod tests {
         );
         assert_eq!(
             normalize_url("https://x/{{ sep | default: '?' }}/alpha"),
-            "https://x/{{ sep | default: '?' }}/alpha"
+            "https://x/{{sep|default:'?'}}/alpha"
         );
         // The brace-free spelling already behaved this way — the two
         // must not disagree.
@@ -627,12 +703,100 @@ mod tests {
     }
 
     #[test]
+    fn normalize_ignores_whitespace_anywhere_inside_a_liquid_tag() {
+        // The masks cover the whitespace hugging the managed filter, but a
+        // dashboard reformat moves bytes elsewhere in the tag too. Every
+        // one of these spellings denotes the same link, so all must key
+        // alike (#77) — otherwise the anchor misses and the live lid is
+        // replaced by a generated slug.
+        let canonical = normalize_url("https://x.com/p{{sep}}lid={{x|lid:'__BRAZESYNC__'}}");
+        for respaced in [
+            // space after `{{`
+            "https://x.com/p{{ sep}}lid={{ x|lid:'liveeeeeeee1'}}",
+            // space before `}}`
+            "https://x.com/p{{sep }}lid={{x|lid:'liveeeeeeee1' }}",
+            // the issue's reproduction: both, plus around the filter
+            "https://x.com/p{{ sep }}lid={{ x | lid: 'liveeeeeeee1' }}",
+            // newlines and tabs count as formatting too
+            "https://x.com/p{{\n\tsep\n}}lid={{ x\t| lid: 'liveeeeeeee1' }}",
+        ] {
+            assert_eq!(normalize_url(respaced), canonical, "respaced: {respaced}");
+        }
+
+        // Between two *unmanaged* filters, which no mask reaches.
+        assert_eq!(
+            normalize_url("https://x.com/{{ a | append: 'b' | upcase }}"),
+            normalize_url("https://x.com/{{a|append:'b'|upcase}}")
+        );
+
+        // This is what `cb_id` already tolerated across its whole
+        // include; the point of the pass is that `lid` now matches it.
+        assert_eq!(
+            normalize_url("{{content_blocks.${base} | id: 'cb42'}}/go"),
+            normalize_url("{{content_blocks.${base}|id:'cb42'}}/go")
+        );
+    }
+
+    #[test]
+    fn normalize_preserves_whitespace_inside_a_quoted_argument() {
+        // The negative half of the pass, and the more dangerous one: the
+        // spaces in `' - '` are the value, not layout. Collapsing them
+        // would key two genuinely different links alike, and
+        // `resolve_lid_batch`'s FIFO would hand each the other's live lid
+        // — strictly worse than the miss #77 fixes.
+        assert_ne!(
+            normalize_url("https://x.com/{{ sep | default: ' - ' }}/a"),
+            normalize_url("https://x.com/{{ sep | default: '-' }}/a")
+        );
+        assert_eq!(
+            normalize_url("https://x.com/{{ sep | default: ' - ' }}/a"),
+            "https://x.com/{{sep|default:' - '}}/a"
+        );
+        // Double quotes delimit just the same, and a quote of the other
+        // kind inside is ordinary text.
+        assert_eq!(
+            normalize_url(r#"https://x.com/{{ sep | default: " it's here " }}"#),
+            r#"https://x.com/{{sep|default:" it's here "}}"#
+        );
+        // An unterminated quote keeps the rest of the tag verbatim —
+        // preserving a distinction is the safe direction.
+        assert_eq!(
+            normalize_url("https://x.com/{{ sep | default: ' oops }}/a"),
+            "https://x.com/{{sep|default:' oops }}/a"
+        );
+    }
+
+    #[test]
+    fn normalize_leaves_whitespace_outside_a_closed_output_tag_alone() {
+        // Only `{{…}}` is despaced. A `{%…%}` tag has statement syntax
+        // where a space separates bare tokens, and text outside any tag
+        // is the URL itself.
+        assert_eq!(
+            normalize_url("https://x.com/{% if a contains b %}/p"),
+            "https://x.com/{% if a contains b %}/p"
+        );
+        // An unclosed `{{` has unknown extent, so its whitespace is
+        // copied verbatim — same policy as `liquid_tag_end`'s other
+        // callers. (Filter masking is independent of this and still
+        // applies to an unclosed tag, so keep one out of the way here.)
+        assert_eq!(
+            normalize_url("https://x.com/{{ oops | upcase"),
+            "https://x.com/{{ oops | upcase"
+        );
+        // Multi-byte text in a tag survives the byte-level scan.
+        assert_eq!(
+            normalize_url("https://x.com/{{ sep | default: 'あ い' }}/日本"),
+            "https://x.com/{{sep|default:'あ い'}}/日本"
+        );
+    }
+
+    #[test]
     fn normalize_leaves_unrelated_filters_intact() {
         // Only the value shapes templatize round-trips are masked, so an
         // unrelated `id`-named filter still distinguishes two anchors.
         assert_eq!(
             normalize_url("{{ a | id: 'not-a-cb-id' }}"),
-            "{{ a | id: 'not-a-cb-id' }}"
+            "{{a|id:'not-a-cb-id'}}"
         );
         assert_ne!(
             normalize_url("{{ a | upcase }}"),
@@ -817,7 +981,7 @@ mod tests {
         assert_eq!(
             keys,
             vec![
-                "https://a.example/one{{ sep }}",
+                "https://a.example/one{{sep}}",
                 "https://b.example/two{{y|<braze-managed-lid>}}",
             ]
         );
@@ -857,7 +1021,7 @@ mod tests {
         assert_eq!(
             keys,
             vec![
-                "https://a.example/one{{ sep | default: '?' }}",
+                "https://a.example/one{{sep|default:'?'}}",
                 "https://b.example/two{{y|<braze-managed-lid>}}",
             ]
         );
@@ -869,7 +1033,7 @@ mod tests {
         assert_eq!(anchors.len(), 1);
         assert_eq!(
             anchors[0].1,
-            "https://x.com/{{ u | default: 'https://cdn.example/i' }}/end"
+            "https://x.com/{{u|default:'https://cdn.example/i'}}/end"
         );
     }
 

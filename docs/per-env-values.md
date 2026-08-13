@@ -60,14 +60,14 @@ For every `apply` and `diff`:
    string and fragment dropped, and with any `| lid:` / `| id:` filter
    inside it masked out — so a URL assembled from Liquid (e.g.
    `href="{{ item.url }}{{ sep }}lid={{ x | lid: '…' }}"`, which has no
-   literal `?`) still correlates. The whitespace immediately around a
-   masked filter is masked with it, so respacing the filter itself —
-   `{{x|lid:'…'}}` to `{{x | lid: '…' }}` — survives a dashboard edit.
-   Whitespace *elsewhere* in the tag is not normalized, so a reformat
-   that also moves the bytes before the `|` (`{{x|…}}` to `{{ x | …}}`,
-   note the space after `{{`) still keys differently and falls back to a
-   generated `lid`. The general fix is tracked in
-   <https://github.com/uny/braze-sync/issues/77>.
+   literal `?`) still correlates. Whitespace *anywhere* inside a
+   `{{…}}` is treated as formatting rather than identity, so any
+   dashboard reformat of the tag — `{{x|lid:'…'}}` to
+   `{{ x | lid: '…' }}` and back — keys the same and keeps the live
+   `lid`. The one exception is whitespace inside a quoted argument,
+   which is part of the value: `{{ sep | default: ' - ' }}` and
+   `{{ sep | default: '-' }}` stay two distinct anchors, as they must,
+   since they render two different links.
    In plaintext the bare URL is read through whole `{{…}}` tags —
    including an embedded `${NAME}` — for the same reason, so the anchor
    keeps the plain text following the tag and links that differ only

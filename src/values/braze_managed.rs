@@ -1042,6 +1042,62 @@ mod tests {
         assert!(p.body.contains("'liveeeeeeee1'"), "got: {}", p.body);
     }
     #[test]
+    fn lid_survives_a_tag_respaced_away_from_the_filter() {
+        // #77's reproduction: the dashboard moved bytes the filter masks
+        // do not reach — the space after `{{`, and the one before `}}`.
+        // Both spellings are the same link, on the HTML and the plaintext
+        // path alike, so the live lid must come through rather than the
+        // `p_sep_lid_x` fallback slug.
+        let cases = [
+            (
+                r#"<a href="https://x.com/p{{sep}}lid={{x|lid:'__BRAZESYNC__'}}">go</a>"#,
+                r#"<a href="https://x.com/p{{ sep }}lid={{ x | lid: 'liveeeeeeee1' }}">go</a>"#,
+                FieldKind::ContentBlock,
+            ),
+            (
+                "Go https://x.com/p{{sep}}lid={{x|lid:'__BRAZESYNC__'}} now",
+                "Go https://x.com/p{{ sep }}lid={{ x | lid: 'liveeeeeeee1' }} now",
+                FieldKind::EmailPlainBody,
+            ),
+        ];
+        for (template, remote, field) in cases {
+            let p = prepare_field(template, Some(remote), field);
+            assert!(p.errors.is_empty(), "{:?}", p.errors);
+            assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+            assert!(p.fallbacks.is_empty(), "{:?}", p.fallbacks);
+            assert!(p.body.contains("'liveeeeeeee1'"), "got: {}", p.body);
+        }
+    }
+
+    #[test]
+    fn respacing_does_not_merge_links_differing_inside_a_quoted_argument() {
+        // The other side of the same pass. These two links differ only by
+        // the spaces inside `default: '…'`, which are the value — if the
+        // normalization collapsed them the two anchors would share one
+        // FIFO bucket and each link would take the other's live lid.
+        let template = "https://x.com/{{sep|default:' - '}}{{a|lid:'__BRAZESYNC__'}} \
+                        https://x.com/{{sep|default:'-'}}{{b|lid:'__BRAZESYNC__'}}";
+        let remote = "https://x.com/{{ sep | default: ' - ' }}{{ a | lid: 'liveeeeeeee1' }} \
+                      https://x.com/{{ sep | default: '-' }}{{ b | lid: 'liveeeeeeee2' }}";
+        let p = prepare_field(template, Some(remote), FieldKind::EmailPlainBody);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.fallbacks.is_empty(), "{:?}", p.fallbacks);
+        // Each keeps its own lid: not transposed, not collapsed.
+        assert!(
+            p.body
+                .contains("{{sep|default:' - '}}{{a|lid:'liveeeeeeee1'}}"),
+            "got: {}",
+            p.body
+        );
+        assert!(
+            p.body
+                .contains("{{sep|default:'-'}}{{b|lid:'liveeeeeeee2'}}"),
+            "got: {}",
+            p.body
+        );
+    }
+
+    #[test]
     fn anchor_shown_to_an_operator_names_the_filter_it_replaced() {
         // The anchor key masks both managed filters. Rendering it back for
         // a human must not relabel a `| id:` inside an include as `| lid:`,
