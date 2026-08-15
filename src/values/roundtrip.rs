@@ -55,6 +55,19 @@ fn cb_ids(body: &str) -> Vec<String> {
         .collect()
 }
 
+/// Count `| lid:` filter occurrences, whatever value spelling follows.
+///
+/// Deliberately blind to the value: that is what lets it catch a lid
+/// `templatize` failed to recognize, which is the one thing a count taken
+/// from the correlation regexes cannot do. Anchoring on the preceding
+/// pipe keeps prose (`<p>lid: see below</p>`) out of the count, and
+/// tolerating whitespace keeps a raw `{{x|lid:'…'}}` in it.
+fn lid_filters(body: &str) -> usize {
+    body.match_indices("lid:")
+        .filter(|(i, _)| body[..*i].trim_end().ends_with('|'))
+        .count()
+}
+
 fn sorted(mut v: Vec<String>) -> Vec<String> {
     v.sort();
     v
@@ -88,10 +101,10 @@ fn assert_survives_reformat(authored: &str, remote: &str, field: FieldKind) {
     // `templatize`'s own detector are the same pattern, so comparing their
     // counts holds for *any* input — including one whose lid spelling
     // neither side recognizes, which is exactly the row that would slip.
-    // `lid` is Braze-reserved, so counting the bare filter name is
+    // `lid` is Braze-reserved, so counting the filter by name alone is
     // independent of both patterns and does catch it.
     assert_eq!(
-        t.new_body.matches("lid:").count(),
+        lid_filters(&t.new_body),
         t.new_body.matches("lid: '__BRAZESYNC__'").count(),
         "templatize left a raw lid filter behind — its detector does not \
          recognize that spelling, so the row tests nothing for that link: {authored}"
@@ -467,4 +480,26 @@ fn lid_in_a_non_anchor_element_body_has_no_template_side_anchor() {
         "must not POST a slug: {:?}",
         p.fallbacks
     );
+}
+
+#[test]
+fn the_vacuity_guard_is_not_itself_vacuous() {
+    // The guard this replaced compared two counts taken from the same
+    // regex, so it held for every input. A guard nobody tests is how that
+    // goes unnoticed, so this pins both directions.
+
+    // Prose that merely contains `lid:` is not a filter and must not fire.
+    let prose =
+        r#"<p>lid: see below</p><a href="https://x.com/s">{{x | lid: '__BRAZESYNC__'}}</a>"#;
+    assert_eq!(lid_filters(prose), 1);
+
+    // A raw filter whose value spelling `templatize` does not recognize is
+    // left behind, and the guard must see it — `lids()` cannot, because it
+    // does not recognize that spelling either.
+    let body = r#"<a href="https://x.com/a">{{x | lid: 'liveaaaaaaaa1'}}</a>
+                  <a href="https://x.com/b">{{y|lid:'Live-2'}}</a>"#;
+    let t = templatize_body(body, FieldKind::EmailHtmlBody);
+    assert_eq!(lids(body).len(), 1, "the correlation regex misses it too");
+    assert_eq!(lid_filters(&t.new_body), 2, "got: {}", t.new_body);
+    assert_eq!(t.new_body.matches("lid: '__BRAZESYNC__'").count(), 1);
 }
