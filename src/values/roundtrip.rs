@@ -14,19 +14,28 @@
 //! anchor loses one link's lid, whereas a merged anchor hands each link
 //! the other's live lid through `resolve_lid_batch`'s FIFO.
 //!
-//! Scope: this covers the *comparison* layer end to end, including the
-//! `templatize` → `prepare_field` seam, which the per-file unit tests do
-//! not — they hand-write the templatized body, so a case that fails to
-//! templatize at all still looks like it passes. That trap is real: an
-//! include whose `${NAME}` contains whitespace is skipped by *both*
-//! sides' name patterns, which reads as a correlation hole and is not one
-//! (#85, pinned by `whitespace_named_include_is_not_managed_today`).
+//! Scope: this covers the *comparison* layer end to end, driving the
+//! `templatize` → `prepare_field` seam rather than hand-writing the
+//! templatized body. Most per-file unit tests do hand-write it, so a case
+//! that fails to templatize at all reads green there — but not all of
+//! them: `braze_managed`'s `plaintext_lid_round_trips_whatever_the_filter_spacing`
+//! and `plaintext_lid_survives_a_content_blocks_include_in_the_url` drive
+//! the same seam, and assert full-body equality against
+//! `t.new_body.replace(TOKEN, …)`, which is *stricter* than the multiset
+//! recovery asserted here. This table is breadth over those two, not a
+//! replacement for them.
 //!
-//! The table also turned up #84, an asymmetry in which elements each side
-//! accepts as an anchor. Both are pinned here rather than fixed: they are
-//! boundaries of the current design, not members of the normalization
-//! family, and a test that states a boundary is what stops it being
-//! rediscovered as a bug.
+//! The table also turned up two boundaries, pinned here rather than fixed
+//! because each changes correlation semantics and wants its own
+//! regression cases — a test that states a boundary is what stops it
+//! being rediscovered as a bug:
+//!
+//! - #84, an asymmetry in which elements each side accepts as an anchor.
+//!   Fails safe (fatal `UnresolvedLid`).
+//! - #85, an include whose `${NAME}` contains whitespace, skipped by
+//!   *both* sides' name patterns. Does **not** fail safe: see
+//!   `whitespace_named_include_is_not_managed_today`, which pins the
+//!   destructive case rather than the benign one.
 
 use crate::values::braze_managed::prepare_field;
 use crate::values::correlation::{extract_cb_id_values, extract_lid_values_unanchored};
@@ -67,21 +76,34 @@ fn assert_survives_reformat(authored: &str, remote: &str, field: FieldKind) {
     let t = templatize_body(authored, field);
 
     // Guard before the real assertions: a case that templatizes nothing
-    // would satisfy everything below vacuously. Both counts are checked
-    // because a body can carry lids and cb_ids independently.
+    // would satisfy everything below vacuously.
     assert!(
         t.new_body.contains(TOKEN),
         "case templatized nothing, so it cannot test correlation: {authored}"
     );
+
+    // `contains(TOKEN)` only rules out templatizing *nothing*; a row that
+    // templatizes one of two links would still ride through. Closing that
+    // needs a check the correlation regexes cannot supply: `lids()` and
+    // `templatize`'s own detector are the same pattern, so comparing their
+    // counts holds for *any* input — including one whose lid spelling
+    // neither side recognizes, which is exactly the row that would slip.
+    // `lid` is Braze-reserved, so counting the bare filter name is
+    // independent of both patterns and does catch it.
     assert_eq!(
-        t.lid_rewrites,
-        lids(authored).len(),
-        "templatize skipped a live lid in: {authored}"
+        t.new_body.matches("lid:").count(),
+        t.new_body.matches("lid: '__BRAZESYNC__'").count(),
+        "templatize left a raw lid filter behind — its detector does not \
+         recognize that spelling, so the row tests nothing for that link: {authored}"
     );
+    // The same argument does not extend to `id:`: it is not reserved, so a
+    // template may carry its own. Here the counts are a drift check between
+    // `templatize::cb_id_match_re` and `correlation::cb_id_include_re`,
+    // which are duplicated patterns that must stay in step.
     assert_eq!(
         t.cb_id_rewrites,
         cb_ids(authored).len(),
-        "templatize skipped a live cb_id in: {authored}"
+        "the two cb_id patterns have drifted apart in: {authored}"
     );
 
     let p = prepare_field(&t.new_body, Some(remote), field);
@@ -110,10 +132,15 @@ fn assert_survives_reformat(authored: &str, remote: &str, field: FieldKind) {
 
 /// The other half: each live value must land on the link it belongs to.
 ///
-/// [`assert_survives_reformat`] cannot see a transposition — two anchors
-/// merged into one bucket still consume every remote value, so nothing is
-/// lost and no fallback fires. `expected` names fragments that must appear
-/// verbatim in the resolved body, which pins value-to-link placement.
+/// [`assert_survives_reformat`] catches a *merge* only incidentally: two
+/// anchors collapsed into one bucket lose no value and fire no fallback,
+/// but `resolve_lid_batch` does warn on a bucket holding more than one
+/// remote occurrence, and that assertion is already made above. What it
+/// cannot see is a transposition that preserves bucket sizes — template
+/// keys `k1, k2` against remote keys `k2, k1`, where every bucket holds
+/// exactly one value and no warning fires. `expected` names fragments that
+/// must appear verbatim in the resolved body, which pins value-to-link
+/// placement independently of either signal.
 ///
 /// These cases put the two links in *opposite* order on the remote side,
 /// so a merged bucket hands out the wrong value rather than accidentally
@@ -175,9 +202,12 @@ fn identity_round_trip_across_shapes() {
             "Go https://x.com/{{content_blocks.${cta} | id: 'cb1'}}/p{{sep}}lid={{x | lid: 'liveaaaaaaaa1'}} now",
             FieldKind::EmailPlainBody,
         ),
-        // Two plaintext links with only a tag between them.
+        // Two plaintext links with only a tag between them and no
+        // whitespace at all, so the single `plaintext_url_re` run has to be
+        // cut by `split_on_embedded_scheme`. Written with a space, the run
+        // would end at the space instead and this row would pin nothing.
         (
-            "https://x.com/one{{x | lid: 'liveaaaaaaaa1'}} https://x.com/two{{y | lid: 'liveaaaaaaaa2'}}",
+            "https://x.com/one{{x | lid: 'liveaaaaaaaa1'}}https://x.com/two{{y | lid: 'liveaaaaaaaa2'}}",
             FieldKind::EmailPlainBody,
         ),
         // No anchor exists; resolution is positional.
@@ -341,31 +371,52 @@ fn respelling_never_merges_two_distinct_links() {
 
 #[test]
 fn whitespace_named_include_is_not_managed_today() {
-    // Known gap (#85), pinned so it stays visible rather than being
-    // rediscovered as a correlation bug — which is how it reads from
-    // `correlation.rs`
-    // alone, whose doc says such an include "does not mask and its lid
-    // anchors do not correlate".
+    // Known gap (#85). `templatize` captures the include name with the
+    // same `[^\s}|]+` as `correlation`, so an include whose `${NAME}` holds
+    // whitespace is never templatized: the raw `cbN` stays in the committed
+    // body and is never re-fetched.
     //
-    // The second half does not follow. `templatize` captures the name with
-    // the same `[^\s}|]+`, so an include whose `${NAME}` holds whitespace
-    // is never templatized at all: both sides keep the literal `cbN`, the
-    // keys agree, and the lid resolves normally. What is actually lost is
-    // cb_id *management* — the raw `cb1` stays in the committed body and
-    // is never re-fetched from the remote.
-    let authored = r#"<a href="https://x.com/p">{{x | lid: 'liveaaaaaaaa1'}}</a>
-                      {{content_blocks.${Plan (US)} | id: 'cb1'}}"#;
+    // Losing `cb_id` management is the benign half, and on its own it reads
+    // like the whole story — while the remote still spells `cb1`, both keys
+    // carry the same literal bytes and the lid resolves fine:
+    let authored = r#"<a href="https://x.com/{{content_blocks.${Plan (US)} | id: 'cb1'}}/p">{{x | lid: 'liveaaaaaaaa1'}}</a>"#;
     let t = templatize_body(authored, FieldKind::ContentBlock);
     assert_eq!(t.lid_rewrites, 1);
     assert_eq!(t.cb_id_rewrites, 0, "the gap: the include is left raw");
     assert!(t.new_body.contains("| id: 'cb1'"), "got: {}", t.new_body);
 
-    // The lid still round-trips, so this is not a member of the
-    // #68/#70/#73/#77 family.
     let p = prepare_field(&t.new_body, Some(authored), FieldKind::ContentBlock);
     assert!(p.errors.is_empty(), "{:?}", p.errors);
     assert!(p.fallbacks.is_empty(), "{:?}", p.fallbacks);
     assert_eq!(lids(&p.body), vec!["liveaaaaaaaa1".to_string()]);
+
+    // But it is not the whole story, and `correlation.rs`'s doc — "does not
+    // mask and its lid anchors do not correlate" — is right to warn. The
+    // unmasked `cbN` is *inside the anchor key*, so the moment Braze
+    // reassigns the content block the two keys diverge, the anchor misses,
+    // and the live lid is overwritten by a slug with `errors` empty — which
+    // `integration.rs` reports as a Notice while applying it. That makes
+    // #85 a destructive-write gap, not merely a management one, so it is
+    // pinned here as the failure it is rather than as accepted behaviour.
+    let remote_reassigned = authored.replace("| id: 'cb1'", "| id: 'cb7'");
+    let p = prepare_field(
+        &t.new_body,
+        Some(&remote_reassigned),
+        FieldKind::ContentBlock,
+    );
+    assert!(p.errors.is_empty(), "still silent: {:?}", p.errors);
+    assert_eq!(
+        p.fallbacks.len(),
+        1,
+        "the live lid is replaced by a fallback slug: {:?}",
+        p.fallbacks
+    );
+    assert_eq!(
+        lids(&p.body),
+        vec!["p".to_string()],
+        "slug from the URL path tail, POSTed over 'liveaaaaaaaa1': {}",
+        p.body
+    );
 }
 
 #[test]
