@@ -7,6 +7,8 @@ pub mod braze_managed;
 pub mod correlation;
 pub mod integration;
 pub mod placeholder;
+#[cfg(test)]
+mod roundtrip;
 pub mod templatize;
 
 pub use braze_managed::{prepare_field, LidFallback, PreparedTemplate};
