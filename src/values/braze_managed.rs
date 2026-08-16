@@ -275,7 +275,7 @@ fn fallback_lid_for_url(
 ) -> String {
     let base = match url {
         Some(u) => {
-            let tail = url_path_tail(&u.fallback_source());
+            let tail = url_path_tail(u);
             let slug = slug_for_lid(&tail);
             if slug.is_empty() {
                 *seq += 1;
@@ -416,11 +416,13 @@ fn unique(base: String, used: &mut BTreeMap<String, usize>) -> String {
     }
 }
 
-/// `url` must already be sentinel-free — callers pass
-/// `Anchor::fallback_source()`, never a raw anchor key, or the slug reads
+/// Strips sentinels itself via [`Anchor::fallback_source`] — taking the
+/// key as `Anchor` rather than `&str` means a future call site cannot
+/// pass a raw, un-stripped anchor by mistake and have the slug read
 /// `…_braze_managed`.
-fn url_path_tail(url: &str) -> String {
-    let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+fn url_path_tail(anchor: &Anchor) -> String {
+    let url = anchor.fallback_source();
+    let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(&url);
     let path_start = after_scheme
         .find('/')
         .map(|i| i + 1)
@@ -774,11 +776,20 @@ mod tests {
 
     #[test]
     fn url_path_tail_strips_query_and_fragment() {
-        assert_eq!(url_path_tail("https://x.com/page/?utm=1"), "page");
-        assert_eq!(url_path_tail("https://x.com/page/#section"), "page");
-        assert_eq!(url_path_tail("https://x.com/page/?a=1#b"), "page");
-        assert_eq!(url_path_tail("https://x.com/"), "");
-        assert_eq!(url_path_tail("https://x.com/sale"), "sale");
+        assert_eq!(
+            url_path_tail(&normalize_url("https://x.com/page/?utm=1")),
+            "page"
+        );
+        assert_eq!(
+            url_path_tail(&normalize_url("https://x.com/page/#section")),
+            "page"
+        );
+        assert_eq!(
+            url_path_tail(&normalize_url("https://x.com/page/?a=1#b")),
+            "page"
+        );
+        assert_eq!(url_path_tail(&normalize_url("https://x.com/")), "");
+        assert_eq!(url_path_tail(&normalize_url("https://x.com/sale")), "sale");
     }
 
     #[test]

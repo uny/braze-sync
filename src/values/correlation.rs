@@ -30,8 +30,8 @@ pub(crate) const LID_VALUE_PATTERN: &str = "[a-z0-9][a-z0-9_]*";
 /// The two filters mask to distinct sentinels only so that a key rendered
 /// back for an operator names the filter that was actually there; for
 /// comparison a single sentinel would do.
-pub(crate) const MANAGED_LID_MASK: &str = "|<braze-managed-lid>";
-pub(crate) const MANAGED_CB_ID_MASK: &str = "|<braze-managed-id>";
+const MANAGED_LID_MASK: &str = "|<braze-managed-lid>";
+const MANAGED_CB_ID_MASK: &str = "|<braze-managed-id>";
 
 /// A normalized correlation anchor key, as produced by [`normalize_url`].
 ///
@@ -41,8 +41,10 @@ pub(crate) const MANAGED_CB_ID_MASK: &str = "|<braze-managed-id>";
 /// [`Anchor::fallback_source`] are the only sanctioned ways to read an
 /// `Anchor` as something other than a match key, and each interprets the
 /// sentinel exactly once, here, rather than leaving every call site to
-/// redo the same `.replace()`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// redo the same `.replace()`. `Debug` is hand-written, not derived, so
+/// that an assertion failure or a stray `{:?}` renders the same
+/// sentinel-free form as `display()` instead of the raw masked string.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Anchor(String);
 
 impl Anchor {
@@ -62,9 +64,9 @@ impl Anchor {
     }
 }
 
-impl PartialEq<str> for Anchor {
-    fn eq(&self, other: &str) -> bool {
-        self.0 == other
+impl std::fmt::Debug for Anchor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Anchor").field(&self.display()).finish()
     }
 }
 
@@ -793,6 +795,22 @@ mod tests {
 
         let lid = Anchor(format!("https://x.com/p{{{{x{MANAGED_LID_MASK}}}}}"));
         assert_eq!(lid.display(), "https://x.com/p{{x| lid: '…'}}");
+    }
+
+    #[test]
+    fn anchor_debug_never_leaks_the_raw_sentinel() {
+        // `Debug` is hand-written, not derived: a stray `{:?}` (an
+        // assertion-failure message, a future `dbg!`) must render the
+        // same sentinel-free form as `display()`, not `self.0` verbatim —
+        // or the internal marker text reaches a developer/operator by a
+        // path `display()`/`fallback_source()` were built to close off.
+        let lid = Anchor(format!("https://x.com/p{{{{x{MANAGED_LID_MASK}}}}}"));
+        let debugged = format!("{lid:?}");
+        assert!(
+            !debugged.contains("braze-managed"),
+            "sentinel leaked via Debug: {debugged}"
+        );
+        assert_eq!(debugged, r#"Anchor("https://x.com/p{{x| lid: '…'}}")"#);
     }
 
     #[test]
