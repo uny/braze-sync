@@ -290,6 +290,7 @@ fn exit_code_for(err: &anyhow::Error) -> i32 {
                 Error::DriftDetected { .. } => return 2,
                 Error::Config(_) | Error::MissingEnv(_) => return 3,
                 Error::RateLimitExhausted { .. } => return 5,
+                Error::FallbackGated { .. } => return 8,
                 Error::Io(_)
                 | Error::YamlParse { .. }
                 | Error::CsvParse { .. }
@@ -448,6 +449,12 @@ mod tests {
     fn exit_code_for_destructive_blocked() {
         let err = anyhow::Error::new(Error::DestructiveBlocked);
         assert_eq!(exit_code_for(&err), 6);
+    }
+
+    #[test]
+    fn exit_code_for_fallback_gated() {
+        let err = anyhow::Error::new(Error::FallbackGated { count: 1 });
+        assert_eq!(exit_code_for(&err), 8);
     }
 
     #[test]

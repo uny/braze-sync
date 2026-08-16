@@ -21,7 +21,7 @@ use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::error::Error;
 use crate::format::{OutputFormat, TableFormatter};
 use crate::resource::ResourceKind;
-use crate::values::{format_fallback_reports, FallbackReport};
+use crate::values::{format_fallback_reports, gated_fallback_count, FallbackReport};
 use anyhow::{anyhow, Context as _};
 use clap::Args;
 use std::path::{Path, PathBuf};
@@ -53,6 +53,13 @@ pub struct ApplyArgs {
     /// the Braze side.
     #[arg(long)]
     pub allow_destructive: bool,
+
+    /// Permit applying when the fallback gate fired: some field had an
+    /// unmatched template placeholder and an unconsumed remote lid
+    /// value at the same time (see the Notice block). Required in
+    /// addition to `--confirm`.
+    #[arg(long)]
+    pub allow_fallback: bool,
 
     /// Load a plan file produced by `diff --plan-out=<path>` and refuse
     /// to apply if the freshly-computed plan does not match. Exits with
@@ -225,6 +232,11 @@ pub async fn run(
 
     if summary.destructive_count() > 0 && !args.allow_destructive {
         return Err(Error::DestructiveBlocked.into());
+    }
+
+    let gated_count = gated_fallback_count(&fallback_reports);
+    if gated_count > 0 && !args.allow_fallback {
+        return Err(Error::FallbackGated { count: gated_count }.into());
     }
 
     check_for_unsupported_ops(&summary)?;

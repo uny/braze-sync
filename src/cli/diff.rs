@@ -23,8 +23,8 @@ use crate::format::{OutputFormat, TableFormatter};
 use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io, tag_io};
 use crate::resource::{Catalog, ContentBlock, EmailTemplate, ResourceKind};
 use crate::values::{
-    format_failures, format_fallback_reports, resolve_content_block_with_remote,
-    resolve_email_template_with_remote, FallbackReport,
+    format_failures, format_fallback_reports, gated_fallback_count,
+    resolve_content_block_with_remote, resolve_email_template_with_remote, FallbackReport,
 };
 use anyhow::Context as _;
 use clap::Args;
@@ -172,6 +172,11 @@ pub async fn run(
             plan.ops.len(),
             path.display()
         );
+    }
+
+    let gated_count = gated_fallback_count(&fallback_reports);
+    if gated_count > 0 {
+        return Err(Error::FallbackGated { count: gated_count }.into());
     }
 
     if args.fail_on_drift && summary.changed_count() > 0 {

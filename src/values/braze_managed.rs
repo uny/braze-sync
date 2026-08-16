@@ -42,6 +42,13 @@ pub struct PreparedTemplate {
     /// the expected path and would be noise. Populated only when a
     /// remote body was provided but came up short.
     pub fallbacks: Vec<LidFallback>,
+    /// `true` when, after all exact matching for this field completed,
+    /// unmatched template placeholders (`fallbacks` non-empty) *and*
+    /// unconsumed remote lid values coexisted. This is the suspicious
+    /// case #79's "Gate the fallback" targets — an ordinary new link
+    /// also leaves `fallbacks` non-empty with nothing on the remote
+    /// side to consume, and must not gate. See `resolve_lid_batch`.
+    pub fallback_gated: bool,
 }
 
 /// A single drift-fallback assignment. `anchor` is the URL anchor when
@@ -72,6 +79,7 @@ pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> 
             errors,
             warnings: Vec::new(),
             fallbacks: Vec::new(),
+            fallback_gated: false,
         };
     }
 
@@ -95,7 +103,7 @@ pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> 
         .map(|(i, _)| i)
         .collect();
 
-    let lid_values: Vec<Option<String>> = match remote {
+    let (lid_values, unconsumed_remote_lid): (Vec<Option<String>>, usize) = match remote {
         Some(remote_body) => resolve_lid_batch(
             &body,
             &placeholders,
@@ -105,8 +113,12 @@ pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> 
             &mut warnings,
             &mut fallbacks,
         ),
-        None => fallback_lid_batch(&body, &placeholders, &lid_indices, field),
+        None => (
+            fallback_lid_batch(&body, &placeholders, &lid_indices, field),
+            0,
+        ),
     };
+    let fallback_gated = !fallbacks.is_empty() && unconsumed_remote_lid > 0;
 
     // cb_id resolution map (offset → value or None).
     let cb_id_resolved: BTreeMap<usize, Option<String>> = match remote {
@@ -161,11 +173,15 @@ pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> 
         errors,
         warnings,
         fallbacks,
+        fallback_gated,
     }
 }
 
 /// Resolve lid placeholders against `remote`. Returns one entry per
-/// lid placeholder in template-appearance order.
+/// lid placeholder in template-appearance order, plus the count of
+/// remote lid values left in the URL buckets after matching — the
+/// other half of the fallback gate's condition (see
+/// `PreparedTemplate::fallback_gated`).
 fn resolve_lid_batch(
     body: &str,
     placeholders: &[crate::values::placeholder::Placeholder],
@@ -174,9 +190,9 @@ fn resolve_lid_batch(
     field: FieldKind,
     warnings: &mut Vec<String>,
     fallbacks: &mut Vec<LidFallback>,
-) -> Vec<Option<String>> {
+) -> (Vec<Option<String>>, usize) {
     if lid_indices.is_empty() {
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     if !field.supports_html_anchor() && !field.supports_plaintext_anchor() {
         return resolve_lid_positional(
@@ -263,7 +279,8 @@ fn resolve_lid_batch(
             }
         }
     }
-    out
+    let unconsumed_remote_lid = by_url.values().map(|b| b.len()).sum();
+    (out, unconsumed_remote_lid)
 }
 
 /// Slug fallback for a single lid placeholder. `used` is shared across
@@ -300,7 +317,7 @@ fn resolve_lid_positional(
     field: FieldKind,
     warnings: &mut Vec<String>,
     fallbacks: &mut Vec<LidFallback>,
-) -> Vec<Option<String>> {
+) -> (Vec<Option<String>>, usize) {
     let remote_values = extract_lid_values_unanchored(remote);
     let field_label = match field {
         FieldKind::EmailSubject => "subject",
@@ -338,7 +355,14 @@ fn resolve_lid_positional(
             }
         }
     }
-    out
+    // Whatever `iter` did not yield during the loop above is the remote
+    // leftover: the loop calls `next()` exactly `lid_indices.len()` times,
+    // so if `remote_values` was longer, the remainder is still sitting in
+    // `iter`. Computed rather than asserted, so a future change to the
+    // matching logic above (e.g. skipping already-used values) can't
+    // silently desync this count from what was actually left unconsumed.
+    let unconsumed_remote_lid = iter.count();
+    (out, unconsumed_remote_lid)
 }
 
 /// Pair cb_id placeholders with remote `${NAME} | id: 'cbN'` matches by
@@ -670,6 +694,54 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.contains("not found in remote body")));
+        // The remote body carries no lid values at all, so there is
+        // nothing left unconsumed — an ordinary new link must not gate.
+        assert!(!p.fallback_gated);
+    }
+
+    #[test]
+    fn fallback_gates_when_placeholder_miss_and_remote_leftover_coexist() {
+        // The template's link no longer matches anything in the remote
+        // body (URL changed), *and* the remote carries an entirely
+        // different link the template no longer references. Both an
+        // unmatched placeholder and an unconsumed remote value survive
+        // past exact matching — the case #79's gate exists to flag.
+        let template = r#"<a href="https://x.com/new-page">{{x | lid: '__BRAZESYNC__'}}</a>"#;
+        let remote = r#"<a href="https://x.com/old-page">{{x | lid: 'liveeeeeeee1'}}</a>"#;
+        let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert_eq!(p.fallbacks.len(), 1, "{:?}", p.fallbacks);
+        assert!(
+            p.fallback_gated,
+            "expected the gate to fire: unmatched placeholder + unconsumed remote value"
+        );
+    }
+
+    #[test]
+    fn extra_remote_link_alone_does_not_gate() {
+        // Every template placeholder resolves against its own link; the
+        // remote simply carries one extra link the template no longer
+        // references (e.g. a link was removed from the template). No
+        // placeholder is unmatched, so the gate must not fire even
+        // though a remote value is left unconsumed.
+        let template = r#"<a href="https://x.com/a">{{x | lid: '__BRAZESYNC__'}}</a>"#;
+        let remote = r#"<a href="https://x.com/a">{{x | lid: 'liveeeeeeee1'}}</a>
+<a href="https://x.com/b">{{x | lid: 'liveeeeeeee2'}}</a>"#;
+        let p = prepare_field(template, Some(remote), FieldKind::ContentBlock);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.fallbacks.is_empty(), "{:?}", p.fallbacks);
+        assert!(!p.fallback_gated);
+    }
+
+    #[test]
+    fn new_resource_never_gates() {
+        // `remote = None` is the new-resource path — every lid is a
+        // documented fallback, not a suspicious one, and there is no
+        // remote body to leave anything unconsumed in.
+        let template = r#"<a href="https://x.com/spring-sale">{{x | lid: '__BRAZESYNC__'}}</a>"#;
+        let p = prepare_field(template, None, FieldKind::ContentBlock);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(!p.fallback_gated);
     }
 
     #[test]
@@ -693,6 +765,36 @@ mod tests {
         assert!(p.errors.is_empty(), "{:?}", p.errors);
         assert!(p.body.contains("'firstval123'"));
         assert!(p.body.contains("'lid_1'"), "got: {}", p.body);
+        // Positional FIFO can't leave both sides non-empty at once — the
+        // template has strictly more placeholders than the remote has
+        // values, so nothing remote is left unconsumed.
+        assert!(!p.fallback_gated);
+    }
+
+    #[test]
+    fn subject_with_more_remote_lids_than_template_does_not_gate() {
+        // The mirror case: remote has more lid values than the template has
+        // placeholders. `resolve_lid_positional` drops the extra value (with
+        // a warning) rather than recording a fallback, so `fallbacks` stays
+        // empty and the gate's `!fallbacks.is_empty()` half never fires here
+        // — independent of whatever `resolve_lid_positional` computes for
+        // its now-real (no longer hardcoded) unconsumed-remote count, which
+        // isn't observable through `prepare_field`'s public surface. This
+        // pins the *outward* behavior (no gate, a warning); it does not and
+        // cannot pin the internal count computation directly, since the two
+        // are structurally independent on this path.
+        let template = "{{x | lid: '__BRAZESYNC__'}} A";
+        let remote = "{{x | lid: 'firstval123'}} A {{y | lid: 'secondval2b'}}";
+        let p = prepare_field(template, Some(remote), FieldKind::EmailSubject);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.body.contains("'firstval123'"));
+        assert!(p.fallbacks.is_empty(), "{:?}", p.fallbacks);
+        assert!(!p.fallback_gated);
+        assert!(
+            p.warnings.iter().any(|w| w.contains("will be dropped")),
+            "got: {:?}",
+            p.warnings
+        );
     }
 
     #[test]

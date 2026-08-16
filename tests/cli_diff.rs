@@ -798,6 +798,112 @@ async fn content_block_diff_no_drift_when_placeholders_resolve_to_remote() {
     );
 }
 
+// =====================================================================
+// Fallback gate (#79 Step3, #93)
+// =====================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diff_fallback_gate_exits_eight() {
+    // The template's link URL changed (no longer matches the remote
+    // anchor) while the remote still carries its own, now-unreferenced
+    // link. Both an unmatched template placeholder and an unconsumed
+    // remote lid value survive exact matching — the gate must fire and
+    // `diff` must exit non-zero without needing `--fail-on-drift`.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [{"content_block_id": "id-promo", "name": "promo"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .and(query_param("content_block_id", "id-promo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "promo",
+            "content": "<a href=\"https://example.com/old-page\">{{x | lid: 'liveeeeeeee1'}}</a>\n",
+            "tags": []
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_content_block(
+        tmp.path(),
+        "promo",
+        "<a href=\"https://example.com/new-page\">{{x | lid: '__BRAZESYNC__'}}</a>\n",
+    );
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["diff", "--resource", "content_block"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(8),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("GATED"), "stderr: {stderr}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diff_ordinary_new_link_fallback_does_not_gate() {
+    // A genuinely new link (remote has no lid values at all) must not
+    // trip the gate — this is the expected fallback path, not the
+    // suspicious one.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [{"content_block_id": "id-promo", "name": "promo"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .and(query_param("content_block_id", "id-promo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "promo",
+            "content": "<p>no anchor</p>\n",
+            "tags": []
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_content_block(
+        tmp.path(),
+        "promo",
+        "<a href=\"https://example.com/new-page\">{{x | lid: '__BRAZESYNC__'}}</a>\n",
+    );
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["diff", "--resource", "content_block"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn email_template_diff_no_drift_when_placeholders_resolve_to_remote() {
     // Parity with the content_block no-drift test: confirm the

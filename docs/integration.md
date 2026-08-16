@@ -60,6 +60,7 @@ Exit-code contract:
 | `4` | API key is invalid | Fail & page the operator |
 | `5` | Rate limit retries exhausted | Retry the job |
 | `6` | Destructive change blocked (see `apply --allow-destructive`) | Fail the build / block merge |
+| `8` | Fallback gate: unmatched placeholder + unconsumed remote lid value (see `apply --allow-fallback`). Unlike code `2`, this fires unconditionally — plain `diff` has no opt-in flag for it | Fail the build / block merge |
 
 ## Apply on merge
 
@@ -117,6 +118,13 @@ on:
       - if: ${{ !inputs.allow_destructive }}
         run: braze-sync apply --env prod --confirm
 ```
+
+The fallback gate (exit `8`) works the same way: it fires when a
+template placeholder had no matching remote value *and* the remote
+body left a lid value unconsumed — a shape that can indicate a link
+merge/reorder rather than a plain new link. Review the flagged
+resource(s) in the `diff`/`apply` output before re-running with
+`--allow-fallback`; there is no auto-retry path for this one.
 
 ## Consuming `--format json`
 

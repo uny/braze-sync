@@ -50,4 +50,11 @@ pub enum Error {
 
     #[error("Rate limit exhausted after {retries} retries")]
     RateLimitExhausted { retries: u32 },
+
+    #[error(
+        "Fallback gate: {count} lid value(s) resolved with unmatched placeholder(s) and \
+         unconsumed remote value(s) both present (see Notice above) — `apply` requires \
+         --allow-fallback to proceed"
+    )]
+    FallbackGated { count: usize },
 }

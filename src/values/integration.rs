@@ -16,6 +16,10 @@ pub struct FallbackReport {
     pub resource_name: String,
     pub field: Option<&'static str>,
     pub fallbacks: Vec<LidFallback>,
+    /// See [`crate::values::braze_managed::PreparedTemplate::fallback_gated`].
+    /// `diff` exits non-zero and `apply` requires `--allow-fallback` when
+    /// any report in a run has this set.
+    pub gated: bool,
 }
 
 /// One resource's worth of placeholder failures, ready to be folded
@@ -64,6 +68,7 @@ pub fn resolve_content_block_with_remote(
             resource_name: cb.name.clone(),
             field: None,
             fallbacks: prep.fallbacks,
+            gated: prep.fallback_gated,
         }]
     };
     Ok(reports)
@@ -103,6 +108,7 @@ pub fn resolve_email_template_with_remote(
                             resource_name: et.name.clone(),
                             field: Some($field_name),
                             fallbacks: prep.fallbacks,
+                            gated: prep.fallback_gated,
                         });
                     }
                     Some(prep.body)
@@ -160,6 +166,18 @@ pub fn resolve_email_template_with_remote(
     Ok(reports)
 }
 
+/// Count of fallback values across `reports` whose report is gated (see
+/// [`FallbackReport::gated`]). Shared by `format_fallback_reports` and the
+/// `diff` / `apply` CLI gate checks so the "how many are gated" definition
+/// has one source.
+pub fn gated_fallback_count(reports: &[FallbackReport]) -> usize {
+    reports
+        .iter()
+        .filter(|r| r.gated)
+        .map(|r| r.fallbacks.len())
+        .sum()
+}
+
 /// Human-readable summary block for collected drift fallbacks.
 /// Empty input → empty string (so callers can append unconditionally).
 pub fn format_fallback_reports(reports: &[FallbackReport]) -> String {
@@ -167,6 +185,7 @@ pub fn format_fallback_reports(reports: &[FallbackReport]) -> String {
         return String::new();
     }
     let total: usize = reports.iter().map(|r| r.fallbacks.len()).sum();
+    let gated_total = gated_fallback_count(reports);
     let mut out = String::new();
     out.push_str(&format!(
         "\nNotice: {total} link(s) resolved with fallback lid values \
@@ -178,6 +197,13 @@ pub fn format_fallback_reports(reports: &[FallbackReport]) -> String {
             None => format!("  {} '{}'", r.resource_kind, r.resource_name),
         };
         out.push_str(&scope);
+        if r.gated {
+            out.push_str(
+                " ⚠ GATED — unmatched placeholder(s) and unconsumed remote lid \
+                 value(s) both present; may indicate a link merge/reorder, not a \
+                 plain new link",
+            );
+        }
         out.push('\n');
         for fb in &r.fallbacks {
             match &fb.anchor {
@@ -188,6 +214,13 @@ pub fn format_fallback_reports(reports: &[FallbackReport]) -> String {
                 )),
             }
         }
+    }
+    if gated_total > 0 {
+        out.push_str(&format!(
+            "\n{gated_total} of the above are gated (see ⚠ above): `diff` exits \
+             non-zero; `apply` requires `--allow-fallback` in addition to \
+             `--confirm`.\n"
+        ));
     }
     out
 }
@@ -366,6 +399,86 @@ mod tests {
             Some("https://x.com/cta")
         );
         assert_eq!(reports[0].fallbacks[0].value, "cta");
+    }
+
+    #[test]
+    fn missing_remote_anchor_report_is_not_gated() {
+        let mut block = cb(
+            "promo",
+            r#"<a href="https://x.com/cta">{{x | lid: '__BRAZESYNC__'}}</a>"#,
+        );
+        let remote = cb("promo", "<p>no anchor here</p>");
+        let reports = resolve_content_block_with_remote(&mut block, Some(&remote)).unwrap();
+        assert_eq!(reports.len(), 1);
+        assert!(!reports[0].gated);
+    }
+
+    #[test]
+    fn placeholder_miss_and_remote_leftover_report_is_gated() {
+        let mut block = cb(
+            "promo",
+            r#"<a href="https://x.com/new-page">{{x | lid: '__BRAZESYNC__'}}</a>"#,
+        );
+        let remote = cb(
+            "promo",
+            r#"<a href="https://x.com/old-page">{{x | lid: 'liveeeeeeee1'}}</a>"#,
+        );
+        let reports = resolve_content_block_with_remote(&mut block, Some(&remote)).unwrap();
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].gated);
+    }
+
+    #[test]
+    fn email_template_placeholder_miss_and_remote_leftover_report_is_gated() {
+        // Same suspicious shape as the content_block case above, but through
+        // the per-field `resolve_field!` macro path — that path independently
+        // sets `gated: prep.fallback_gated` per field and had no coverage.
+        let mut t = et("welcome");
+        t.body_html = r#"<a href="https://x.com/new-page">{{x | lid: '__BRAZESYNC__'}}</a>"#.into();
+        let mut remote = et("welcome");
+        remote.body_html =
+            r#"<a href="https://x.com/old-page">{{x | lid: 'liveeeeeeee1'}}</a>"#.into();
+        let reports = resolve_email_template_with_remote(&mut t, Some(&remote)).unwrap();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].field, Some("body_html"));
+        assert!(reports[0].gated);
+    }
+
+    #[test]
+    fn format_fallback_reports_marks_gated_entries() {
+        let reports = vec![FallbackReport {
+            resource_kind: "content_block",
+            resource_name: "promo".into(),
+            field: None,
+            fallbacks: vec![LidFallback {
+                anchor: Some("https://x.com/new-page".into()),
+                value: "new_page".into(),
+            }],
+            gated: true,
+        }];
+        let out = format_fallback_reports(&reports);
+        assert!(out.contains("GATED"), "got: {out}");
+        assert!(
+            out.contains("--allow-fallback"),
+            "expected the apply hint, got: {out}"
+        );
+    }
+
+    #[test]
+    fn format_fallback_reports_omits_gate_hint_when_nothing_gated() {
+        let reports = vec![FallbackReport {
+            resource_kind: "content_block",
+            resource_name: "promo".into(),
+            field: None,
+            fallbacks: vec![LidFallback {
+                anchor: Some("https://x.com/cta".into()),
+                value: "cta".into(),
+            }],
+            gated: false,
+        }];
+        let out = format_fallback_reports(&reports);
+        assert!(!out.contains("GATED"), "got: {out}");
+        assert!(!out.contains("--allow-fallback"), "got: {out}");
     }
 
     #[test]
