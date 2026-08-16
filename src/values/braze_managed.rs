@@ -195,11 +195,7 @@ fn resolve_lid_batch(
         return (Vec::new(), 0);
     }
     if !field.supports_html_anchor() && !field.supports_plaintext_anchor() {
-        // Positional FIFO can't structurally leave both an unmatched
-        // placeholder and an unconsumed remote value at once — whichever
-        // side is longer accounts for the entire imbalance — so there is
-        // nothing to feed into the gate here.
-        let out = resolve_lid_positional(
+        return resolve_lid_positional(
             placeholders,
             lid_indices,
             remote,
@@ -207,7 +203,6 @@ fn resolve_lid_batch(
             warnings,
             fallbacks,
         );
-        return (out, 0);
     }
 
     let remote_pairs: Vec<LidCorrelation> = if field.supports_html_anchor() {
@@ -322,7 +317,7 @@ fn resolve_lid_positional(
     field: FieldKind,
     warnings: &mut Vec<String>,
     fallbacks: &mut Vec<LidFallback>,
-) -> Vec<Option<String>> {
+) -> (Vec<Option<String>>, usize) {
     let remote_values = extract_lid_values_unanchored(remote);
     let field_label = match field {
         FieldKind::EmailSubject => "subject",
@@ -360,7 +355,14 @@ fn resolve_lid_positional(
             }
         }
     }
-    out
+    // Whatever `iter` did not yield during the loop above is the remote
+    // leftover: the loop calls `next()` exactly `lid_indices.len()` times,
+    // so if `remote_values` was longer, the remainder is still sitting in
+    // `iter`. Computed rather than asserted, so a future change to the
+    // matching logic above (e.g. skipping already-used values) can't
+    // silently desync this count from what was actually left unconsumed.
+    let unconsumed_remote_lid = iter.count();
+    (out, unconsumed_remote_lid)
 }
 
 /// Pair cb_id placeholders with remote `${NAME} | id: 'cbN'` matches by
@@ -772,11 +774,15 @@ mod tests {
     #[test]
     fn subject_with_more_remote_lids_than_template_does_not_gate() {
         // The mirror case: remote has more lid values than the template has
-        // placeholders. The extra remote value is simply dropped (with a
-        // warning), never recorded as a fallback, so the gate's other half
-        // (`!fallbacks.is_empty()`) is never satisfied either — pins the
-        // positional path's hardcoded 0-unconsumed-count for this direction
-        // too, not just the template-longer-than-remote one above.
+        // placeholders. `resolve_lid_positional` drops the extra value (with
+        // a warning) rather than recording a fallback, so `fallbacks` stays
+        // empty and the gate's `!fallbacks.is_empty()` half never fires here
+        // — independent of whatever `resolve_lid_positional` computes for
+        // its now-real (no longer hardcoded) unconsumed-remote count, which
+        // isn't observable through `prepare_field`'s public surface. This
+        // pins the *outward* behavior (no gate, a warning); it does not and
+        // cannot pin the internal count computation directly, since the two
+        // are structurally independent on this path.
         let template = "{{x | lid: '__BRAZESYNC__'}} A";
         let remote = "{{x | lid: 'firstval123'}} A {{y | lid: 'secondval2b'}}";
         let p = prepare_field(template, Some(remote), FieldKind::EmailSubject);
@@ -784,6 +790,11 @@ mod tests {
         assert!(p.body.contains("'firstval123'"));
         assert!(p.fallbacks.is_empty(), "{:?}", p.fallbacks);
         assert!(!p.fallback_gated);
+        assert!(
+            p.warnings.iter().any(|w| w.contains("will be dropped")),
+            "got: {:?}",
+            p.warnings
+        );
     }
 
     #[test]
