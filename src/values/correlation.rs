@@ -24,14 +24,57 @@ pub(crate) const LID_VALUE_PATTERN: &str = "[a-z0-9][a-z0-9_]*";
 ///
 /// Comparison-only: they exist so both sides of a correlation collapse to
 /// the same string. Anything that derives an *outgoing* value from an
-/// anchor key must strip them first (see `braze_managed::url_path_tail`) —
+/// anchor key must strip them first (see [`Anchor::fallback_source`]) —
 /// leaking one would put `braze_managed` into a live Braze identifier.
 ///
 /// The two filters mask to distinct sentinels only so that a key rendered
 /// back for an operator names the filter that was actually there; for
 /// comparison a single sentinel would do.
-pub(crate) const MANAGED_LID_MASK: &str = "|<braze-managed-lid>";
-pub(crate) const MANAGED_CB_ID_MASK: &str = "|<braze-managed-id>";
+const MANAGED_LID_MASK: &str = "|<braze-managed-lid>";
+const MANAGED_CB_ID_MASK: &str = "|<braze-managed-id>";
+
+/// A normalized correlation anchor key, as produced by [`normalize_url`].
+///
+/// May carry a comparison-only sentinel (`MANAGED_LID_MASK` /
+/// `MANAGED_CB_ID_MASK`). The sentinel must never reach an operator or a
+/// POSTed value verbatim — [`Anchor::display`] and
+/// [`Anchor::fallback_source`] are the only sanctioned ways to read an
+/// `Anchor` as something other than a match key, and each interprets the
+/// sentinel exactly once, here, rather than leaving every call site to
+/// redo the same `.replace()`. `Debug` is hand-written, not derived, so
+/// that an assertion failure or a stray `{:?}` renders the same
+/// sentinel-free form as `display()` instead of the raw masked string.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Anchor(String);
+
+impl Anchor {
+    /// Render for a human: each sentinel names the filter it replaced.
+    pub(crate) fn display(&self) -> String {
+        self.0
+            .replace(MANAGED_LID_MASK, "| lid: '…'")
+            .replace(MANAGED_CB_ID_MASK, "| id: '…'")
+    }
+
+    /// Strip sentinels so the key can seed a POSTed value (e.g. a
+    /// fallback lid slug). Never lets a sentinel reach live data.
+    pub(crate) fn fallback_source(&self) -> String {
+        self.0
+            .replace(MANAGED_LID_MASK, "")
+            .replace(MANAGED_CB_ID_MASK, "")
+    }
+}
+
+impl std::fmt::Debug for Anchor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Anchor").field(&self.display()).finish()
+    }
+}
+
+impl PartialEq<&str> for Anchor {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
 
 /// Normalize a URL for anchor comparison: mask Braze-managed filters,
 /// then keep `scheme://host/path` and drop `?query` / `#fragment`.
@@ -55,7 +98,7 @@ pub(crate) const MANAGED_CB_ID_MASK: &str = "|<braze-managed-id>";
 /// as `{{sep}}`, just spelled with a fallback — and cutting there would
 /// truncate the key mid-tag, collapsing every link that differs only
 /// past that tag onto one anchor.
-pub fn normalize_url(url: &str) -> String {
+pub fn normalize_url(url: &str) -> Anchor {
     // Before masking: the masks are what let both sides agree on how the
     // filter is spelled, and this is the same argument applied to the
     // rest of the tag. Running it first also means the mask patterns see
@@ -74,7 +117,7 @@ pub fn normalize_url(url: &str) -> String {
         )
     });
     let stop = query_or_fragment_start(masked.as_ref()).unwrap_or(masked.len());
-    masked[..stop].to_string()
+    Anchor(masked[..stop].to_string())
 }
 
 /// Drop whitespace that sits inside a closed `{{…}}` and outside a
@@ -428,7 +471,7 @@ fn trim_trailing_punctuation(url: &str, preceded_by: Option<char>) -> &str {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LidCorrelation {
     /// Normalized URL anchor.
-    pub url: String,
+    pub url: Anchor,
     /// The lid value extracted from `| lid: '…'`.
     pub value: String,
     /// Byte offset where the `<a href>` (HTML) or raw URL (plaintext)
@@ -459,7 +502,7 @@ pub fn extract_lid_values_unanchored(body: &str) -> Vec<String> {
         .collect()
 }
 
-fn href_iter(body: &str) -> Vec<(usize, String)> {
+fn href_iter(body: &str) -> Vec<(usize, Anchor)> {
     href_re()
         .captures_iter(body)
         .filter_map(|cap| {
@@ -497,7 +540,7 @@ fn href_iter(body: &str) -> Vec<(usize, String)> {
 /// stays is whitespace that is part of a *value* — inside a quoted
 /// argument, or between the characters of a `${…}` name — plus the
 /// narrower cases that function's own doc lists.
-pub(crate) fn plaintext_url_anchors(body: &str) -> Vec<(usize, String)> {
+pub(crate) fn plaintext_url_anchors(body: &str) -> Vec<(usize, Anchor)> {
     plaintext_url_re()
         .find_iter(body)
         .flat_map(|m| {
@@ -615,7 +658,7 @@ fn bound_after_managed_tag(run: &str) -> &str {
     }
 }
 
-fn pair_urls_with_lids(urls: Vec<(usize, String)>, body: &str) -> Vec<LidCorrelation> {
+fn pair_urls_with_lids(urls: Vec<(usize, Anchor)>, body: &str) -> Vec<LidCorrelation> {
     let lids: Vec<(usize, String)> = lid_value_re()
         .captures_iter(body)
         .filter_map(|cap| {
@@ -725,6 +768,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn anchor_fallback_source_strips_both_managed_sentinels() {
+        // Both masks must be stripped, not just the lid one: the source
+        // feeds `slug_for_lid` (via `braze_managed::url_path_tail`),
+        // whose output is POSTed as a live Braze `lid`.
+        let cb = Anchor(format!(
+            "https://x.com/{{{{content_blocks.${{base}}{MANAGED_CB_ID_MASK}}}}}"
+        ));
+        assert_eq!(
+            cb.fallback_source(),
+            "https://x.com/{{content_blocks.${base}}}"
+        );
+
+        let lid = Anchor(format!("https://x.com/p{{{{x{MANAGED_LID_MASK}}}}}"));
+        assert_eq!(lid.fallback_source(), "https://x.com/p{{x}}");
+    }
+
+    #[test]
+    fn anchor_display_names_the_filter_each_sentinel_replaced() {
+        // A `| id:` inside an include must not read as `| lid:` — each
+        // sentinel renders back as the filter it actually stood for.
+        let cb = Anchor(format!(
+            "{{{{content_blocks.${{base}}{MANAGED_CB_ID_MASK}}}}}"
+        ));
+        assert_eq!(cb.display(), "{{content_blocks.${base}| id: '…'}}");
+
+        let lid = Anchor(format!("https://x.com/p{{{{x{MANAGED_LID_MASK}}}}}"));
+        assert_eq!(lid.display(), "https://x.com/p{{x| lid: '…'}}");
+    }
+
+    #[test]
+    fn anchor_debug_never_leaks_the_raw_sentinel() {
+        // `Debug` is hand-written, not derived: a stray `{:?}` (an
+        // assertion-failure message, a future `dbg!`) must render the
+        // same sentinel-free form as `display()`, not `self.0` verbatim —
+        // or the internal marker text reaches a developer/operator by a
+        // path `display()`/`fallback_source()` were built to close off.
+        let lid = Anchor(format!("https://x.com/p{{{{x{MANAGED_LID_MASK}}}}}"));
+        let debugged = format!("{lid:?}");
+        assert!(
+            !debugged.contains("braze-managed"),
+            "sentinel leaked via Debug: {debugged}"
+        );
+        assert_eq!(debugged, r#"Anchor("https://x.com/p{{x| lid: '…'}}")"#);
+    }
+
+    #[test]
     fn normalize_strips_query_and_fragment() {
         assert_eq!(
             normalize_url("https://example.com/x?utm=1"),
@@ -781,7 +870,7 @@ mod tests {
         let template = "{{ item.url }}{{ sep }}lid={{ x | lid: '__BRAZESYNC__' }}";
         let remote = "{{ item.url }}{{ sep }}lid={{ x | lid: 'liveeeeeeee1' }}";
         assert_eq!(normalize_url(template), normalize_url(remote));
-        assert!(!normalize_url(template).contains("__BRAZESYNC__"));
+        assert!(!normalize_url(template).0.contains("__BRAZESYNC__"));
 
         let tmpl_cb = "{{content_blocks.${base} | id: '__BRAZESYNC__'}}/go";
         let remote_cb = "{{content_blocks.${base} | id: 'cb42'}}/go";
@@ -1044,7 +1133,7 @@ mod tests {
             "Go https://x.com/p{{sep}}lid={{x | lid: 'aaaaaaaaaaa'}}/alpha and \
              https://x.com/p{{sep}}lid={{x|lid:'bbbbbbbbbbb'}}/beta now",
         );
-        let keys: Vec<&str> = anchors.iter().map(|(_, u)| u.as_str()).collect();
+        let keys: Vec<&str> = anchors.iter().map(|(_, u)| u.0.as_str()).collect();
         // The run covers the whole tag, so the suffix past it survives
         // and the two links stay distinguishable. The filter is masked
         // together with the whitespace around it, so the two spellings —
@@ -1073,7 +1162,10 @@ mod tests {
         // regardless of the plaintext run.
         let anchors = plaintext_url_anchors("Go https://x.com/{{content_blocks.${cta}}}?u=1 end");
         assert_eq!(
-            anchors.iter().map(|(_, u)| u.as_str()).collect::<Vec<_>>(),
+            anchors
+                .iter()
+                .map(|(_, u)| u.0.as_str())
+                .collect::<Vec<_>>(),
             vec!["https://x.com/{{content_blocks.${cta}}}"],
             "the `?` after the tag must still cut the key"
         );
@@ -1082,7 +1174,10 @@ mod tests {
             "Go https://a.example/{{content_blocks.${cta}}}https://b.example/two{{y | lid: 'bbbbbbbbbbb'}} end",
         );
         assert_eq!(
-            anchors.iter().map(|(_, u)| u.as_str()).collect::<Vec<_>>(),
+            anchors
+                .iter()
+                .map(|(_, u)| u.0.as_str())
+                .collect::<Vec<_>>(),
             vec![
                 "https://a.example/{{content_blocks.${cta}}}",
                 "https://b.example/two{{y|<braze-managed-lid>}}",
@@ -1155,7 +1250,7 @@ mod tests {
         let anchors = plaintext_url_anchors(
             "Go https://a.example/one{{ sep }}https://b.example/two{{y | lid: 'bbbbbbbbbbb'}} end",
         );
-        let keys: Vec<&str> = anchors.iter().map(|(_, u)| u.as_str()).collect();
+        let keys: Vec<&str> = anchors.iter().map(|(_, u)| u.0.as_str()).collect();
         assert_eq!(
             keys,
             vec![
@@ -1195,7 +1290,7 @@ mod tests {
         let anchors = plaintext_url_anchors(
             "Go https://a.example/one{{ sep | default: '?' }}https://b.example/two{{y | lid: 'bbbbbbbbbbb'}}",
         );
-        let keys: Vec<&str> = anchors.iter().map(|(_, u)| u.as_str()).collect();
+        let keys: Vec<&str> = anchors.iter().map(|(_, u)| u.0.as_str()).collect();
         assert_eq!(
             keys,
             vec![
