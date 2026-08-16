@@ -76,8 +76,15 @@ pub fn templatize_body(body: &str, field: FieldKind) -> TemplatizedField {
     for m in cb_id_match_re().captures_iter(body) {
         let whole = m.get(0).expect("group 0 always present");
         let name = m.get(1).expect("name capture present").as_str();
-        let trimmed = name.trim_ascii();
-        let has_internal_whitespace = trimmed.bytes().any(|b| b.is_ascii_whitespace());
+        // `trim_matches`/`is_cb_id_whitespace` here, not `str::trim_ascii` /
+        // `u8::is_ascii_whitespace` — the latter excludes U+000B (vertical
+        // tab), while the narrow `[^\s}|]+` regexes this name is later
+        // checked against (`braze_managed::cb_id_template_re` et al.) use
+        // regex `\s`, which includes it. A name differing only in a `\v`
+        // must agree on both sides, or a name this pass treats as clean
+        // can still fail to resolve at apply time via those regexes.
+        let trimmed = name.trim_matches(is_cb_id_whitespace);
+        let has_internal_whitespace = trimmed.chars().any(is_cb_id_whitespace);
         if trimmed.is_empty() || has_internal_whitespace {
             // Braze content block names cannot be empty or contain
             // whitespace, so this include can never denote a real content
@@ -91,8 +98,12 @@ pub fn templatize_body(body: &str, field: FieldKind) -> TemplatizedField {
             } else {
                 "contains whitespace"
             };
+            // Escaped for display: the capture is now broad enough to
+            // admit control bytes (e.g. a stray newline), and this string
+            // is later written verbatim to the terminal by the CLI.
+            let shown = escape_for_warning(trimmed);
             warnings.push(format!(
-                "cb_id include at byte {}: content block name `{trimmed}` {problem}, \
+                "cb_id include at byte {}: content block name `{shown}` {problem}, \
                  which Braze does not allow — leaving this include untemplated; \
                  fix the name or the reference",
                 whole.start()
@@ -123,6 +134,30 @@ pub fn templatize_body(body: &str, field: FieldKind) -> TemplatizedField {
 struct DetectionSpan {
     range: std::ops::Range<usize>,
     replacement: String,
+}
+
+/// Whitespace per regex_lite's ASCII `\s` class (`[\t\n\v\f\r ]`) — not
+/// `char::is_ascii_whitespace`, which excludes U+000B vertical tab. This
+/// is the definition the narrow `[^\s}|]+` cb_id regexes use, so a name's
+/// validity here must agree with what those regexes will later match.
+fn is_cb_id_whitespace(c: char) -> bool {
+    matches!(c, ' ' | '\t'..='\r')
+}
+
+/// Escape control bytes for safe interpolation into a warning string that
+/// the CLI writes verbatim to the terminal. The name capture is broad
+/// enough to admit a stray newline or escape byte; this keeps one from
+/// injecting a line into the operator's summary output.
+fn escape_for_warning(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_control() {
+                format!("\\u{{{:x}}}", c as u32)
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 
 fn lid_match_re() -> &'static Regex {
@@ -210,6 +245,25 @@ mod tests {
     }
 
     #[test]
+    fn cb_id_include_with_vertical_tab_in_name_is_left_untemplated_with_warning() {
+        // regex_lite's `\s` (used by the still-narrow `[^\s}|]+` regexes
+        // in braze_managed.rs) includes U+000B vertical tab, but Rust's
+        // `is_ascii_whitespace`/`trim_ascii` do not. A name that is
+        // "clean" only by the latter definition would be managed here
+        // with no warning, then permanently fail to resolve at apply
+        // time via those still-narrow regexes.
+        let body = "{{content_blocks.${Plan\u{000B}US} | id: 'cb1'}}";
+        let r = templatize_body(body, FieldKind::ContentBlock);
+        assert_eq!(r.cb_id_rewrites, 0, "must not silently manage it");
+        assert_eq!(r.new_body, body, "left untouched");
+        assert!(
+            r.warnings.iter().any(|w| w.contains("whitespace")),
+            "got: {:?}",
+            r.warnings
+        );
+    }
+
+    #[test]
     fn cb_id_include_with_blank_name_is_left_untemplated_with_warning() {
         let body = "{{content_blocks.${   } | id: 'cb1'}}";
         let r = templatize_body(body, FieldKind::ContentBlock);
@@ -218,6 +272,26 @@ mod tests {
         assert!(
             r.warnings.iter().any(|w| w.contains("is empty")),
             "got: {:?}",
+            r.warnings
+        );
+    }
+
+    #[test]
+    fn cb_id_warning_escapes_control_bytes_in_the_name() {
+        // The name capture is broad enough to admit a raw newline; the
+        // warning is later written verbatim to the terminal by the CLI
+        // (`eprintln!`), so a literal `\n` here must not inject a line.
+        let body = "{{content_blocks.${evil\nfake: all clear} | id: 'cb1'}}";
+        let r = templatize_body(body, FieldKind::ContentBlock);
+        assert_eq!(r.cb_id_rewrites, 0);
+        assert!(
+            r.warnings.iter().all(|w| !w.contains('\n')),
+            "a literal newline must not reach the warning text: {:?}",
+            r.warnings
+        );
+        assert!(
+            r.warnings.iter().any(|w| w.contains("\\u{a}")),
+            "the newline must be visibly escaped: {:?}",
             r.warnings
         );
     }
