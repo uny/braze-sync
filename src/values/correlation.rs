@@ -119,11 +119,15 @@ pub fn normalize_url(url: &str) -> String {
 ///
 /// A quoted string is not the only literal region inside a tag, so
 /// `${…}` is treated as a second one. Braze addresses a personalization
-/// or content block whose name contains spaces as `${my attribute}` —
-/// unquoted, yet every byte between the braces is the name, punctuation
-/// and all. Dropping there would key `${my attribute}` and
-/// `${myattribute}` alike, and one FIFO bucket for two links is the same
-/// corruption the quote rule exists to prevent.
+/// attribute whose name contains spaces as `${my attribute}` — unquoted,
+/// yet every byte between the braces is the name, punctuation and all.
+/// (A *content block*'s own name cannot itself contain whitespace — Braze
+/// restricts it to alphanumerics, `-`, and `_` — but `${…}` is despaced
+/// the same regardless of what precedes it, since this pass has no way to
+/// know which entity a given `${…}` addresses.) Dropping the space here
+/// would key `${my attribute}` and `${myattribute}` alike, and one FIFO
+/// bucket for two links is the same corruption the quote rule exists to
+/// prevent.
 ///
 /// So the rule is regional, not per-character: whitespace inside quotes
 /// or *between the bytes of* a `${…}` name is content and is copied
@@ -138,11 +142,13 @@ pub fn normalize_url(url: &str) -> String {
 /// the rest of its tag verbatim, the same conservative direction as an
 /// unterminated quote.
 ///
-/// A name whose *interior* holds a space is preserved here but is not
-/// otherwise supported: every `${NAME}` pattern in this crate captures
-/// `[^\s}|]+`, so a `content_blocks.${Plan (US)}` include does not mask
-/// and its `lid` anchors do not correlate — as on `main`, and unchanged
-/// by this pass.
+/// A name whose *interior* holds a space is preserved here, and — since
+/// #85 — [`cb_id_filter_re`] captures it too, so a `content_blocks.${Plan
+/// (US)}` include now masks like any other and no longer costs a nearby
+/// `lid` its anchor. `templatize::cb_id_match_re` still declines to
+/// manage such an include (a real content block can never be named with
+/// whitespace), so its `cbN` stays raw and unmanaged going forward — but
+/// masking no longer depends on that being fixed.
 fn strip_liquid_tag_whitespace(url: &str) -> Cow<'_, str> {
     let bytes = url.as_bytes();
     if !bytes.windows(2).any(|w| w == b"{{") {
@@ -275,9 +281,20 @@ fn cb_id_filter_re() -> &'static Regex {
         // canonicalizes, so `normalize_url` re-emits it rather than
         // keeping it. The include's closing `}}` is left in place — it is
         // identical on both sides.
+        //
+        // The name is captured broadly (`[^}}|]*`, not `[^\s}}|]+`) so a
+        // whitespace-holding `${NAME}` still masks (#85). Braze forbids
+        // whitespace in a real content block name, so such an include can
+        // never correlate against a live `cbN` — but the raw `cbN` must
+        // still be masked out of the key, or a *different*, well-formed
+        // anchor sharing the same tag (typically a `lid`) inherits its
+        // instability once Braze renumbers it. Padding around the name is
+        // already gone by the time this runs — `normalize_url` calls
+        // `strip_liquid_tag_whitespace` first — so no further trimming is
+        // needed here.
         let cb = format!("(?:cb[0-9]+|{TOKEN})");
         Regex::new(&format!(
-            r#"\{{\{{\s*content_blocks\.\$\{{\s*([^\s}}|]+)\s*\}}\s*\|\s*id:\s*(?:"{cb}"|'{cb}')\s*"#
+            r#"\{{\{{\s*content_blocks\.\$\{{([^}}|]*)\}}\s*\|\s*id:\s*(?:"{cb}"|'{cb}')\s*"#
         ))
         .expect("cb_id filter regex is valid")
     })
@@ -359,6 +376,16 @@ fn cb_id_include_re() -> &'static Regex {
         // Matches existing dependency-graph regex in
         // src/diff/content_block_order.rs but tightened to require
         // `| id: '…'` form (we need the cbN value, not just NAME).
+        //
+        // Deliberately kept at `[^\s}|]+`, unlike `cb_id_filter_re` (#85):
+        // this feeds `extract_cb_id_values`, which pairs a *managed*
+        // `__BRAZESYNC__` placeholder's NAME (from `cb_id_name_at`, also
+        // still `[^\s}|]+`) with the remote's live `cbN`. `templatize`
+        // never manages an include whose name holds whitespace, so no
+        // placeholder ever needs this pattern to see one — widening it
+        // would only let `extract_cb_id_values` count an include
+        // `cb_id_match_re` skipped, breaking the invariant (asserted in
+        // `roundtrip.rs`) that the two counts stay in lockstep.
         Regex::new(
             r#"\{\{\s*content_blocks\.\$\{\s*([^\s}|]+)\s*\}\s*\|\s*id:\s*(?:"(cb[0-9]+)"|'(cb[0-9]+)')\s*\}\}"#,
         )
@@ -946,6 +973,36 @@ mod tests {
         assert_ne!(
             normalize_url("{{content_blocks.${a} | id: 'cb1'}}"),
             normalize_url("{{content_blocks.${b} | id: 'cb2'}}")
+        );
+    }
+
+    #[test]
+    fn cb_id_filter_masks_a_name_containing_whitespace() {
+        // #85: a real content block can never be named with whitespace,
+        // but the raw `cbN` must still be masked out of the key so a
+        // *different*, well-formed anchor sharing the same tag does not
+        // inherit the instability once Braze renumbers it.
+        assert_eq!(
+            normalize_url("{{content_blocks.${Plan (US)} | id: 'cb1'}}"),
+            normalize_url("{{content_blocks.${Plan (US)} | id: 'cb7'}}")
+        );
+        // Padding around the name is still formatting...
+        assert_eq!(
+            normalize_url("{{content_blocks.${ Plan (US) } | id: 'cb1'}}"),
+            normalize_url("{{content_blocks.${Plan (US)} | id: 'cb1'}}")
+        );
+        // ...but whitespace *inside* the name is not: "a b" and "ab" stay
+        // distinct anchors, or two links collapse onto one FIFO bucket.
+        assert_ne!(
+            normalize_url("{{content_blocks.${a b} | id: 'cb1'}}"),
+            normalize_url("{{content_blocks.${ab} | id: 'cb1'}}")
+        );
+        // A blank name (all padding, nothing left after trim) still masks
+        // rather than falling through unmatched — the capture group is
+        // `*`, not `+`, precisely so an empty `${}` cannot reopen this gap.
+        assert_eq!(
+            normalize_url("{{content_blocks.${   } | id: 'cb1'}}"),
+            normalize_url("{{content_blocks.${} | id: 'cb7'}}")
         );
     }
 

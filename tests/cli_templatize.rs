@@ -9,6 +9,7 @@ mod common;
 
 use assert_cmd::Command;
 use common::write_local_content_block;
+use predicates::prelude::*;
 use std::fs;
 
 /// Write a config that declares two envs so the skeleton path is exercised.
@@ -249,5 +250,37 @@ fn templatize_does_not_overwrite_existing_skeleton() {
     assert!(
         dev.contains("existinglid1"),
         "existing dev value must be preserved, got:\n{dev}"
+    );
+}
+
+#[test]
+fn templatize_warns_on_whitespace_named_cb_id_even_with_nothing_else_to_rewrite() {
+    // #85: a content block whose *only* content is an invalid (whitespace-
+    // named) cb_id include has zero rewrites, so it must not fall through
+    // the "nothing to do" skip before its warning is collected — that was
+    // the bug: the warning existed in `templatize_body`'s return value but
+    // never reached the operator because the CLI's per-resource loop
+    // `continue`d past the warning-collection step whenever rewrites == 0.
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_multi_env_config(tmp.path());
+    write_local_content_block(
+        tmp.path(),
+        "promo",
+        "{{content_blocks.${Plan (US)} | id: 'cb1'}}",
+    );
+
+    Command::cargo_bin("braze-sync")
+        .unwrap()
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["templatize"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("contains whitespace"));
+
+    // Left untouched — the include is not manageable, so nothing rewrites.
+    let body = fs::read_to_string(tmp.path().join("content_blocks").join("promo.liquid")).unwrap();
+    assert!(
+        body.contains("| id: 'cb1'"),
+        "unmanageable include must be left raw, got:\n{body}"
     );
 }
