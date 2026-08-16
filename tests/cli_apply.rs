@@ -540,6 +540,159 @@ async fn content_block_confirm_update_posts_to_update_endpoint_with_id() {
     .unwrap();
 }
 
+// =====================================================================
+// Fallback gate (#79 Step3, #93)
+// =====================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn confirm_with_fallback_gate_without_allow_fallback_exits_8() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [{"content_block_id": "id-promo", "name": "promo"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .and(query_param("content_block_id", "id-promo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "promo",
+            "content": "<a href=\"https://example.com/old-page\">{{x | lid: 'liveeeeeeee1'}}</a>\n",
+            "tags": []
+        })))
+        .mount(&server)
+        .await;
+    // Gate guard MUST fire before the update call.
+    Mock::given(method("POST"))
+        .and(path("/content_blocks/update"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_content_block(
+        tmp.path(),
+        "promo",
+        "<a href=\"https://example.com/new-page\">{{x | lid: '__BRAZESYNC__'}}</a>\n",
+    );
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "content_block", "--confirm"])
+            .assert()
+            .failure()
+            .code(8);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn confirm_with_allow_fallback_calls_update_and_exits_zero() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [{"content_block_id": "id-promo", "name": "promo"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .and(query_param("content_block_id", "id-promo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "promo",
+            "content": "<a href=\"https://example.com/old-page\">{{x | lid: 'liveeeeeeee1'}}</a>\n",
+            "tags": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/content_blocks/update"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_content_block(
+        tmp.path(),
+        "promo",
+        "<a href=\"https://example.com/new-page\">{{x | lid: '__BRAZESYNC__'}}</a>\n",
+    );
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args([
+                "apply",
+                "--resource",
+                "content_block",
+                "--confirm",
+                "--allow-fallback",
+            ])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dry_run_with_fallback_gate_does_not_require_allow_fallback() {
+    // The gate only blocks an actual apply — dry-run preview must still
+    // show the plan and exit 0 without needing --allow-fallback, same as
+    // the destructive guard's dry-run behavior.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [{"content_block_id": "id-promo", "name": "promo"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/info"))
+        .and(query_param("content_block_id", "id-promo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "promo",
+            "content": "<a href=\"https://example.com/old-page\">{{x | lid: 'liveeeeeeee1'}}</a>\n",
+            "tags": []
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_content_block(
+        tmp.path(),
+        "promo",
+        "<a href=\"https://example.com/new-page\">{{x | lid: '__BRAZESYNC__'}}</a>\n",
+    );
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "content_block"])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn content_block_orphan_makes_no_write_calls() {
     // Orphan policy is report-only: content block orphans never trigger

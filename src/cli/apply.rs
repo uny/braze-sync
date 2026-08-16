@@ -54,6 +54,13 @@ pub struct ApplyArgs {
     #[arg(long)]
     pub allow_destructive: bool,
 
+    /// Permit applying when the fallback gate fired: some field had an
+    /// unmatched template placeholder and an unconsumed remote lid
+    /// value at the same time (see the Notice block). Required in
+    /// addition to `--confirm`.
+    #[arg(long)]
+    pub allow_fallback: bool,
+
     /// Load a plan file produced by `diff --plan-out=<path>` and refuse
     /// to apply if the freshly-computed plan does not match. Exits with
     /// code 7 on mismatch.
@@ -225,6 +232,18 @@ pub async fn run(
 
     if summary.destructive_count() > 0 && !args.allow_destructive {
         return Err(Error::DestructiveBlocked.into());
+    }
+
+    let gated_fallback_count: usize = fallback_reports
+        .iter()
+        .filter(|r| r.gated)
+        .map(|r| r.fallbacks.len())
+        .sum();
+    if gated_fallback_count > 0 && !args.allow_fallback {
+        return Err(Error::FallbackGated {
+            count: gated_fallback_count,
+        }
+        .into());
     }
 
     check_for_unsupported_ops(&summary)?;

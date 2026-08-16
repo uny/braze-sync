@@ -174,6 +174,18 @@ pub async fn run(
         );
     }
 
+    let gated_fallback_count: usize = fallback_reports
+        .iter()
+        .filter(|r| r.gated)
+        .map(|r| r.fallbacks.len())
+        .sum();
+    if gated_fallback_count > 0 {
+        return Err(Error::FallbackGated {
+            count: gated_fallback_count,
+        }
+        .into());
+    }
+
     if args.fail_on_drift && summary.changed_count() > 0 {
         return Err(Error::DriftDetected {
             count: summary.changed_count(),
