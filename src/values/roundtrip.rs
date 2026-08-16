@@ -459,6 +459,45 @@ fn whitespace_named_include_no_longer_corrupts_a_live_lid() {
 }
 
 #[test]
+fn blank_named_include_no_longer_corrupts_a_live_lid() {
+    // Same fix, the other invalid-name case: an all-padding/empty
+    // `${NAME}` (`cb_id_filter_re`'s capture is `*`, not `+`, precisely
+    // so this masks too). Unit-tested in isolation elsewhere
+    // (`correlation::cb_id_filter_masks_a_name_containing_whitespace`,
+    // `templatize::cb_id_include_with_blank_name_is_left_untemplated_with_warning`)
+    // but not previously driven through the full templatize → resolve →
+    // reassign round trip the way the whitespace case is above.
+    let authored = r#"<a href="https://x.com/{{content_blocks.${} | id: 'cb1'}}/p">{{x | lid: 'liveaaaaaaaa1'}}</a>"#;
+    let t = templatize_body(authored, FieldKind::ContentBlock);
+    assert_eq!(t.lid_rewrites, 1);
+    assert_eq!(t.cb_id_rewrites, 0, "a blank name is never managed");
+    assert!(
+        t.warnings.iter().any(|w| w.contains("is empty")),
+        "expected a warning about the blank content block name, got: {:?}",
+        t.warnings
+    );
+
+    let remote_reassigned = authored.replace("| id: 'cb1'", "| id: 'cb7'");
+    let p = prepare_field(
+        &t.new_body,
+        Some(&remote_reassigned),
+        FieldKind::ContentBlock,
+    );
+    assert!(p.errors.is_empty(), "{:?}", p.errors);
+    assert!(
+        p.fallbacks.is_empty(),
+        "the live lid must survive cb_id reassignment: {:?}",
+        p.fallbacks
+    );
+    assert_eq!(
+        lids(&p.body),
+        vec!["liveaaaaaaaa1".to_string()],
+        "the live lid must not be overwritten by a slug: {}",
+        p.body
+    );
+}
+
+#[test]
 fn lid_in_a_non_anchor_element_body_has_no_template_side_anchor() {
     // Second known boundary (#84), found by the table above. The two sides
     // do not agree on which elements can carry an anchor:
