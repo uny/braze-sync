@@ -17,8 +17,9 @@ pub use correlation::{
     slug_for_cb_id, slug_for_lid, Anchor, CbIdCorrelation, LidCorrelation,
 };
 pub use integration::{
-    format_failures, format_fallback_reports, resolve_content_block_with_remote,
-    resolve_email_template_with_remote, FallbackReport, ResolutionFailure,
+    format_failures, format_fallback_reports, gated_fallback_count,
+    resolve_content_block_with_remote, resolve_email_template_with_remote, FallbackReport,
+    ResolutionFailure,
 };
 pub use placeholder::{
     extract_placeholders, find_suspicious_placeholders, has_placeholders, Placeholder,

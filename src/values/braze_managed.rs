@@ -770,6 +770,23 @@ mod tests {
     }
 
     #[test]
+    fn subject_with_more_remote_lids_than_template_does_not_gate() {
+        // The mirror case: remote has more lid values than the template has
+        // placeholders. The extra remote value is simply dropped (with a
+        // warning), never recorded as a fallback, so the gate's other half
+        // (`!fallbacks.is_empty()`) is never satisfied either — pins the
+        // positional path's hardcoded 0-unconsumed-count for this direction
+        // too, not just the template-longer-than-remote one above.
+        let template = "{{x | lid: '__BRAZESYNC__'}} A";
+        let remote = "{{x | lid: 'firstval123'}} A {{y | lid: 'secondval2b'}}";
+        let p = prepare_field(template, Some(remote), FieldKind::EmailSubject);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(p.body.contains("'firstval123'"));
+        assert!(p.fallbacks.is_empty(), "{:?}", p.fallbacks);
+        assert!(!p.fallback_gated);
+    }
+
+    #[test]
     fn retired_envelope_is_fatal() {
         let template = "stuff __BRAZESYNC.lid.foo__ stuff";
         let p = prepare_field(template, None, FieldKind::ContentBlock);

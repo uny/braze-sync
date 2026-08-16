@@ -166,6 +166,18 @@ pub fn resolve_email_template_with_remote(
     Ok(reports)
 }
 
+/// Count of fallback values across `reports` whose report is gated (see
+/// [`FallbackReport::gated`]). Shared by `format_fallback_reports` and the
+/// `diff` / `apply` CLI gate checks so the "how many are gated" definition
+/// has one source.
+pub fn gated_fallback_count(reports: &[FallbackReport]) -> usize {
+    reports
+        .iter()
+        .filter(|r| r.gated)
+        .map(|r| r.fallbacks.len())
+        .sum()
+}
+
 /// Human-readable summary block for collected drift fallbacks.
 /// Empty input → empty string (so callers can append unconditionally).
 pub fn format_fallback_reports(reports: &[FallbackReport]) -> String {
@@ -173,11 +185,7 @@ pub fn format_fallback_reports(reports: &[FallbackReport]) -> String {
         return String::new();
     }
     let total: usize = reports.iter().map(|r| r.fallbacks.len()).sum();
-    let gated_total: usize = reports
-        .iter()
-        .filter(|r| r.gated)
-        .map(|r| r.fallbacks.len())
-        .sum();
+    let gated_total = gated_fallback_count(reports);
     let mut out = String::new();
     out.push_str(&format!(
         "\nNotice: {total} link(s) resolved with fallback lid values \
@@ -417,6 +425,22 @@ mod tests {
         );
         let reports = resolve_content_block_with_remote(&mut block, Some(&remote)).unwrap();
         assert_eq!(reports.len(), 1);
+        assert!(reports[0].gated);
+    }
+
+    #[test]
+    fn email_template_placeholder_miss_and_remote_leftover_report_is_gated() {
+        // Same suspicious shape as the content_block case above, but through
+        // the per-field `resolve_field!` macro path — that path independently
+        // sets `gated: prep.fallback_gated` per field and had no coverage.
+        let mut t = et("welcome");
+        t.body_html = r#"<a href="https://x.com/new-page">{{x | lid: '__BRAZESYNC__'}}</a>"#.into();
+        let mut remote = et("welcome");
+        remote.body_html =
+            r#"<a href="https://x.com/old-page">{{x | lid: 'liveeeeeeee1'}}</a>"#.into();
+        let reports = resolve_email_template_with_remote(&mut t, Some(&remote)).unwrap();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].field, Some("body_html"));
         assert!(reports[0].gated);
     }
 

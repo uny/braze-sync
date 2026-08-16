@@ -21,7 +21,7 @@ use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::error::Error;
 use crate::format::{OutputFormat, TableFormatter};
 use crate::resource::ResourceKind;
-use crate::values::{format_fallback_reports, FallbackReport};
+use crate::values::{format_fallback_reports, gated_fallback_count, FallbackReport};
 use anyhow::{anyhow, Context as _};
 use clap::Args;
 use std::path::{Path, PathBuf};
@@ -234,16 +234,9 @@ pub async fn run(
         return Err(Error::DestructiveBlocked.into());
     }
 
-    let gated_fallback_count: usize = fallback_reports
-        .iter()
-        .filter(|r| r.gated)
-        .map(|r| r.fallbacks.len())
-        .sum();
-    if gated_fallback_count > 0 && !args.allow_fallback {
-        return Err(Error::FallbackGated {
-            count: gated_fallback_count,
-        }
-        .into());
+    let gated_count = gated_fallback_count(&fallback_reports);
+    if gated_count > 0 && !args.allow_fallback {
+        return Err(Error::FallbackGated { count: gated_count }.into());
     }
 
     check_for_unsupported_ops(&summary)?;
