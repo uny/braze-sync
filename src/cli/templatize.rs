@@ -33,6 +33,15 @@ pub async fn run(args: &TemplatizeArgs, cfg: &ConfigFile, config_dir: &Path) -> 
             .context("loading local content_blocks for templatize")?;
         for mut cb in blocks {
             let result = templatize_body(&cb.content, FieldKind::ContentBlock);
+            // Collected before the rewrite-count check: a body can carry a
+            // warning (e.g. an invalid cb_id name, #85) with zero rewrites,
+            // and that must still reach the operator rather than being
+            // dropped by the "nothing to do" skip below.
+            for w in &result.warnings {
+                summary
+                    .warnings
+                    .push(format!("content_block '{}': {w}", cb.name));
+            }
             if result.lid_rewrites + result.cb_id_rewrites == 0 {
                 if cb.content.contains("__BRAZESYNC__") {
                     summary.skipped.push(format!(
@@ -41,11 +50,6 @@ pub async fn run(args: &TemplatizeArgs, cfg: &ConfigFile, config_dir: &Path) -> 
                     ));
                 }
                 continue;
-            }
-            for w in &result.warnings {
-                summary
-                    .warnings
-                    .push(format!("content_block '{}': {w}", cb.name));
             }
             summary.touched_resources += 1;
             summary.lid_rewrites += result.lid_rewrites;
@@ -86,16 +90,8 @@ pub async fn run(args: &TemplatizeArgs, cfg: &ConfigFile, config_dir: &Path) -> 
                     .as_ref()
                     .map(|r| r.lid_rewrites + r.cb_id_rewrites)
                     .unwrap_or(0);
-            if total_rewrites == 0 {
-                if already_templated {
-                    summary.skipped.push(format!(
-                        "email_template '{}' already templated — skipping",
-                        et.name
-                    ));
-                }
-                continue;
-            }
-
+            // Collected before the rewrite-count check — see the matching
+            // comment in the content_block loop above (#85).
             for (field, warnings) in [
                 ("subject", &subject_r.warnings),
                 ("body_html", &body_html_r.warnings),
@@ -113,6 +109,16 @@ pub async fn run(args: &TemplatizeArgs, cfg: &ConfigFile, config_dir: &Path) -> 
                         .warnings
                         .push(format!("email_template '{}' (preheader): {w}", et.name));
                 }
+            }
+
+            if total_rewrites == 0 {
+                if already_templated {
+                    summary.skipped.push(format!(
+                        "email_template '{}' already templated — skipping",
+                        et.name
+                    ));
+                }
+                continue;
             }
 
             summary.touched_resources += 1;
