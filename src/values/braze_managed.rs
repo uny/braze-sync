@@ -16,8 +16,8 @@ use regex_lite::Regex;
 
 use crate::values::correlation::{
     extract_cb_id_values, extract_html_lid_values, extract_lid_values_unanchored,
-    extract_plaintext_lid_values, normalize_url, plaintext_url_anchors, slug_for_lid,
-    CbIdCorrelation, LidCorrelation, MANAGED_CB_ID_MASK, MANAGED_LID_MASK,
+    extract_plaintext_lid_values, normalize_url, plaintext_url_anchors, slug_for_lid, Anchor,
+    CbIdCorrelation, LidCorrelation,
 };
 use crate::values::placeholder::{
     extract_placeholders, find_suspicious_placeholders, PlaceholderType, ResolutionError, TOKEN,
@@ -126,8 +126,7 @@ pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> 
                 if v.is_none() {
                     // Display-only (see `format_failures`), so render the
                     // mask back rather than showing a key.
-                    let anchor =
-                        lid_anchor_for(&body, ph.start, field).map(|u| anchor_for_display(&u));
+                    let anchor = lid_anchor_for(&body, ph.start, field).map(|a| a.display());
                     errors.push(ResolutionError::UnresolvedLid {
                         start: ph.start,
                         anchor,
@@ -197,17 +196,17 @@ fn resolve_lid_batch(
     };
 
     // Each lid placeholder's anchor URL in template-appearance order.
-    let anchors: Vec<Option<String>> = lid_indices
+    let anchors: Vec<Option<Anchor>> = lid_indices
         .iter()
         .map(|&i| lid_anchor_for(body, placeholders[i].start, field))
         .collect();
 
-    let mut by_url: BTreeMap<String, std::collections::VecDeque<&LidCorrelation>> = BTreeMap::new();
+    let mut by_url: BTreeMap<Anchor, std::collections::VecDeque<&LidCorrelation>> = BTreeMap::new();
     for p in &remote_pairs {
         by_url.entry(p.url.clone()).or_default().push_back(p);
     }
 
-    let mut tmpl_per_url: BTreeMap<String, usize> = BTreeMap::new();
+    let mut tmpl_per_url: BTreeMap<Anchor, usize> = BTreeMap::new();
     for u in anchors.iter().flatten() {
         *tmpl_per_url.entry(u.clone()).or_insert(0) += 1;
     }
@@ -220,7 +219,7 @@ fn resolve_lid_batch(
                  If links were reordered in Braze, lid values may be assigned \
                  to the wrong placeholder.",
                 bucket.len(),
-                shown = anchor_for_display(url)
+                shown = url.display()
             ));
         }
     }
@@ -250,7 +249,7 @@ fn resolve_lid_batch(
             Some(p) => out.push(Some(p.value.clone())),
             None => {
                 let fallback = fallback_lid_for_url(Some(&url), &mut used, &mut seq);
-                let shown = anchor_for_display(&url);
+                let shown = url.display();
                 warnings.push(format!(
                     "lid: URL anchor '{shown}' not found in remote body — \
                      using fallback value '{fallback}' (new link; Braze will \
@@ -267,26 +266,16 @@ fn resolve_lid_batch(
     out
 }
 
-/// Render an anchor key for a human. The key carries a comparison-only
-/// sentinel where the Braze-managed filter stood, so printing it verbatim
-/// shows the operator a URL that appears nowhere in their template. Each
-/// sentinel renders back as the filter it replaced — a `| id:` inside an
-/// include must not read as `| lid:`.
-fn anchor_for_display(url: &str) -> String {
-    url.replace(MANAGED_LID_MASK, "| lid: '…'")
-        .replace(MANAGED_CB_ID_MASK, "| id: '…'")
-}
-
 /// Slug fallback for a single lid placeholder. `used` is shared across
 /// the batch so collisions are disambiguated with `_2`, `_3`, ….
 fn fallback_lid_for_url(
-    url: Option<&str>,
+    url: Option<&Anchor>,
     used: &mut BTreeMap<String, usize>,
     seq: &mut usize,
 ) -> String {
     let base = match url {
         Some(u) => {
-            let tail = url_path_tail(u);
+            let tail = url_path_tail(&u.fallback_source());
             let slug = slug_for_lid(&tail);
             if slug.is_empty() {
                 *seq += 1;
@@ -409,7 +398,7 @@ fn fallback_lid_batch(
     for &i in lid_indices {
         let anchor = lid_anchor_for(body, placeholders[i].start, field);
         out.push(Some(fallback_lid_for_url(
-            anchor.as_deref(),
+            anchor.as_ref(),
             &mut used,
             &mut seq,
         )));
@@ -427,15 +416,10 @@ fn unique(base: String, used: &mut BTreeMap<String, usize>) -> String {
     }
 }
 
+/// `url` must already be sentinel-free — callers pass
+/// `Anchor::fallback_source()`, never a raw anchor key, or the slug reads
+/// `…_braze_managed`.
 fn url_path_tail(url: &str) -> String {
-    // The input is an anchor *key*, so it may carry a comparison-only
-    // sentinel. The tail feeds `slug_for_lid`, whose output is POSTed as a
-    // live Braze `lid`, so strip them first or the slug reads
-    // `…_braze_managed`. Now that the plaintext run spans a whole `{{…}}`,
-    // a mask lands inside the key on that path too.
-    let url = &url
-        .replace(MANAGED_LID_MASK, "")
-        .replace(MANAGED_CB_ID_MASK, "");
     let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     let path_start = after_scheme
         .find('/')
@@ -530,7 +514,7 @@ fn cb_id_template_re() -> &'static Regex {
     })
 }
 
-fn lid_anchor_for(body: &str, offset: usize, field: FieldKind) -> Option<String> {
+fn lid_anchor_for(body: &str, offset: usize, field: FieldKind) -> Option<Anchor> {
     if field.supports_html_anchor() {
         if let Some(tag) = enclosing_open_tag(body, offset) {
             if let Some(url) = url_attr_re()
@@ -795,20 +779,6 @@ mod tests {
         assert_eq!(url_path_tail("https://x.com/page/?a=1#b"), "page");
         assert_eq!(url_path_tail("https://x.com/"), "");
         assert_eq!(url_path_tail("https://x.com/sale"), "sale");
-    }
-
-    #[test]
-    fn url_path_tail_strips_both_managed_sentinels_from_the_last_segment() {
-        // Both masks must be stripped, not just the lid one: the tail
-        // feeds `slug_for_lid`, whose output is POSTed as a live Braze
-        // `lid`. The include has to sit in the *final* segment or
-        // `rsplit('/')` discards it and the assertion cannot fail.
-        let cb = format!("https://x.com/{{{{content_blocks.${{base}}{MANAGED_CB_ID_MASK}}}}}");
-        assert_eq!(url_path_tail(&cb), "{{content_blocks.${base}}}");
-        assert_eq!(slug_for_lid(&url_path_tail(&cb)), "content_blocks_base");
-
-        let lid = format!("https://x.com/p{{{{x{MANAGED_LID_MASK}}}}}");
-        assert_eq!(url_path_tail(&lid), "p{{x}}");
     }
 
     #[test]

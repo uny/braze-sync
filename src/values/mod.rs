@@ -14,7 +14,7 @@ pub mod templatize;
 pub use braze_managed::{prepare_field, LidFallback, PreparedTemplate};
 pub use correlation::{
     extract_cb_id_values, extract_html_lid_values, extract_plaintext_lid_values, normalize_url,
-    slug_for_cb_id, slug_for_lid, CbIdCorrelation, LidCorrelation,
+    slug_for_cb_id, slug_for_lid, Anchor, CbIdCorrelation, LidCorrelation,
 };
 pub use integration::{
     format_failures, format_fallback_reports, resolve_content_block_with_remote,
