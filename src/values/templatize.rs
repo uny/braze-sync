@@ -76,9 +76,32 @@ pub fn templatize_body(body: &str, field: FieldKind) -> TemplatizedField {
     for m in cb_id_match_re().captures_iter(body) {
         let whole = m.get(0).expect("group 0 always present");
         let name = m.get(1).expect("name capture present").as_str();
+        let trimmed = name.trim_ascii();
+        let has_internal_whitespace = trimmed.bytes().any(|b| b.is_ascii_whitespace());
+        if trimmed.is_empty() || has_internal_whitespace {
+            // Braze content block names cannot be empty or contain
+            // whitespace, so this include can never denote a real content
+            // block. Leave it raw rather than manage it — but say so,
+            // instead of the silent gap #85 used to be
+            // (`correlation::cb_id_filter_re` still masks the raw `cbN`
+            // out of any nearby anchor key, so this does not corrupt an
+            // unrelated lid the way it used to).
+            let problem = if trimmed.is_empty() {
+                "is empty"
+            } else {
+                "contains whitespace"
+            };
+            warnings.push(format!(
+                "cb_id include at byte {}: content block name `{trimmed}` {problem}, \
+                 which Braze does not allow — leaving this include untemplated; \
+                 fix the name or the reference",
+                whole.start()
+            ));
+            continue;
+        }
         spans.push(DetectionSpan {
             range: whole.range(),
-            replacement: format!("{{{{content_blocks.${{{name}}} | id: '__BRAZESYNC__'}}}}"),
+            replacement: format!("{{{{content_blocks.${{{trimmed}}} | id: '__BRAZESYNC__'}}}}"),
         });
         cb_id_rewrites += 1;
     }
@@ -116,8 +139,14 @@ fn lid_match_re() -> &'static Regex {
 fn cb_id_match_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
+        // `${NAME}` is captured broadly (`[^}|]*`, not `[^\s}|]+`) so an
+        // include whose name holds whitespace is still detected. Braze
+        // forbids whitespace in a real content block name, so such an
+        // include can never be managed — but it must be *seen* here to
+        // warn about it (#85) rather than silently skipped, which is what
+        // let the raw `cbN` sit unmanaged with no diagnostic at all.
         Regex::new(
-            r#"\{\{\s*content_blocks\.\$\{\s*([^\s}|]+)\s*\}\s*\|\s*id:\s*(?:"cb[0-9]+"|'cb[0-9]+')\s*\}\}"#,
+            r#"\{\{\s*content_blocks\.\$\{([^}|]*)\}\s*\|\s*id:\s*(?:"cb[0-9]+"|'cb[0-9]+')\s*\}\}"#,
         )
         .expect("cb_id match regex is valid")
     })
@@ -154,6 +183,48 @@ mod tests {
     #[test]
     fn rewrites_cb_id_include() {
         let body = "{{content_blocks.${promo_banner} | id: 'cb42'}}";
+        let r = templatize_body(body, FieldKind::ContentBlock);
+        assert!(
+            r.new_body
+                .contains("{{content_blocks.${promo_banner} | id: '__BRAZESYNC__'}}"),
+            "got: {}",
+            r.new_body
+        );
+        assert_eq!(r.cb_id_rewrites, 1);
+    }
+
+    #[test]
+    fn cb_id_include_with_whitespace_in_name_is_left_untemplated_with_warning() {
+        // #85: Braze forbids whitespace in a content block name, so this
+        // include can never denote a real one. It must not be silently
+        // skipped — that was the bug.
+        let body = "{{content_blocks.${Plan (US)} | id: 'cb1'}}";
+        let r = templatize_body(body, FieldKind::ContentBlock);
+        assert_eq!(r.cb_id_rewrites, 0);
+        assert_eq!(r.new_body, body, "left untouched");
+        assert!(
+            r.warnings.iter().any(|w| w.contains("whitespace")),
+            "got: {:?}",
+            r.warnings
+        );
+    }
+
+    #[test]
+    fn cb_id_include_with_blank_name_is_left_untemplated_with_warning() {
+        let body = "{{content_blocks.${   } | id: 'cb1'}}";
+        let r = templatize_body(body, FieldKind::ContentBlock);
+        assert_eq!(r.cb_id_rewrites, 0);
+        assert_eq!(r.new_body, body, "left untouched");
+        assert!(
+            r.warnings.iter().any(|w| w.contains("is empty")),
+            "got: {:?}",
+            r.warnings
+        );
+    }
+
+    #[test]
+    fn cb_id_include_name_padding_is_trimmed() {
+        let body = "{{content_blocks.${ promo_banner } | id: 'cb42'}}";
         let r = templatize_body(body, FieldKind::ContentBlock);
         assert!(
             r.new_body

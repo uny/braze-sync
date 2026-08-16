@@ -484,6 +484,17 @@ fn cb_id_filter_re() -> &'static Regex {
     RE.get_or_init(|| {
         // Captures `${NAME}` so we can re-emit the documented form
         // (`{{content_blocks.${NAME}}}`) without the cb_id filter.
+        //
+        // Deliberately kept at `[^\s}|]+`, unlike `correlation::
+        // cb_id_filter_re` (#85): a `__BRAZESYNC__` token only ever exists
+        // here because `templatize` put it there, and `templatize` never
+        // manages an include whose name holds whitespace (Braze forbids
+        // it in a real content block name). Widening this pattern would
+        // only matter for a hand-authored `__BRAZESYNC__` with an invalid
+        // name — and for that, staying narrow is the safer outcome: the
+        // filter is left un-stripped and the body is POSTed with a
+        // dangling `| id: '__BRAZESYNC__'`, which Braze will reject
+        // loudly, rather than silently re-emitting an invalid include.
         Regex::new(
             r#"\{\{\s*content_blocks\.\$\{\s*([^\s}|]+)\s*\}\s*\|\s*id:\s*['"]__BRAZESYNC__['"]\s*\}\}"#,
         )
@@ -506,6 +517,12 @@ fn cb_id_name_at(body: &str, offset: usize) -> Option<String> {
 fn cb_id_template_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
+        // Deliberately kept at `[^\s}|]+` — see `cb_id_filter_re` above
+        // (#85). Used by `cb_id_name_at` to look up a `__BRAZESYNC__` cb_id
+        // placeholder's NAME; `templatize` never creates one for a name
+        // holding whitespace, so a lookup miss here (from a hand-authored
+        // body) should surface as the existing fatal `UnresolvedCbId`
+        // rather than resolve as if the name were valid.
         Regex::new(
             r#"\{\{\s*content_blocks\.\$\{\s*([^\s}|]+)\s*\}\s*\|\s*id:\s*['"]__BRAZESYNC__['"]\s*\}\}"#,
         )

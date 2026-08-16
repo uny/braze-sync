@@ -32,10 +32,12 @@
 //!
 //! - #84, an asymmetry in which elements each side accepts as an anchor.
 //!   Fails safe (fatal `UnresolvedLid`).
-//! - #85, an include whose `${NAME}` contains whitespace, skipped by
-//!   *both* sides' name patterns. Does **not** fail safe: see
-//!   `whitespace_named_include_is_not_managed_today`, which pins the
-//!   destructive case rather than the benign one.
+//! - #85 (fixed): an include whose `${NAME}` contains whitespace is still
+//!   left unmanaged by `templatize` — Braze forbids whitespace in a real
+//!   content block name, so such an include can never be templatized —
+//!   but `correlation::cb_id_filter_re` now masks the raw `cbN` out of
+//!   the anchor key regardless, so a nearby `lid` no longer inherits its
+//!   instability. See `whitespace_named_include_no_longer_corrupts_a_live_lid`.
 
 use crate::values::braze_managed::prepare_field;
 use crate::values::correlation::{extract_cb_id_values, extract_lid_values_unanchored};
@@ -364,6 +366,25 @@ fn respelling_never_merges_two_distinct_links() {
                 r#"{{content_blocks.${b} | id: 'cb2'}}">{{y | lid: 'liveaaaaaaaa2'}}"#,
             ],
         ),
+        // #85: an include's `${NAME}` may itself contain whitespace. It
+        // stays unmanaged by `templatize` (Braze forbids whitespace in a
+        // real content block name), but the masking that stabilizes a
+        // nearby lid's anchor key must still tell "a b" and "ab" apart —
+        // trim removes padding only, never interior bytes — or the two
+        // lids collapse onto one FIFO bucket. The cb_id value is held
+        // fixed (not reassigned) so the unmanaged include's raw `cbN`
+        // trivially matches remote; only the lid pairing is under test.
+        (
+            r#"<a href="https://x.com/{{content_blocks.${a b} | id: 'cb1'}}">{{x | lid: 'liveaaaaaaaa1'}}</a>
+               <a href="https://x.com/{{content_blocks.${ab} | id: 'cb1'}}">{{y | lid: 'liveaaaaaaaa2'}}</a>"#,
+            r#"<a href="https://x.com/{{content_blocks.${ab}|id:'cb1'}}">{{y | lid: 'liveaaaaaaaa2'}}</a>
+               <a href="https://x.com/{{content_blocks.${a b}|id:'cb1'}}">{{x | lid: 'liveaaaaaaaa1'}}</a>"#,
+            FieldKind::ContentBlock,
+            &[
+                r#"{{content_blocks.${a b} | id: 'cb1'}}">{{x | lid: 'liveaaaaaaaa1'}}"#,
+                r#"{{content_blocks.${ab} | id: 'cb1'}}">{{y | lid: 'liveaaaaaaaa2'}}"#,
+            ],
+        ),
         // Different path tails, same everything else.
         (
             r#"<a href="https://x.com/alpha">{{x | lid: 'liveaaaaaaaa1'}}</a>
@@ -383,51 +404,56 @@ fn respelling_never_merges_two_distinct_links() {
 }
 
 #[test]
-fn whitespace_named_include_is_not_managed_today() {
-    // Known gap (#85). `templatize` captures the include name with the
-    // same `[^\s}|]+` as `correlation`, so an include whose `${NAME}` holds
-    // whitespace is never templatized: the raw `cbN` stays in the committed
-    // body and is never re-fetched.
-    //
-    // Losing `cb_id` management is the benign half, and on its own it reads
-    // like the whole story — while the remote still spells `cb1`, both keys
-    // carry the same literal bytes and the lid resolves fine:
+fn whitespace_named_include_no_longer_corrupts_a_live_lid() {
+    // #85, fixed. `templatize` still declines to manage an include whose
+    // `${NAME}` holds whitespace — Braze forbids whitespace in a real
+    // content block name, so such an include can never denote one — but
+    // it now says so via a warning instead of staying silent, and
+    // `correlation::cb_id_filter_re` masks the raw `cbN` out of the
+    // anchor key regardless of whether the name is manageable. A nearby
+    // `lid` no longer inherits the instability of an include that can
+    // never correlate.
     let authored = r#"<a href="https://x.com/{{content_blocks.${Plan (US)} | id: 'cb1'}}/p">{{x | lid: 'liveaaaaaaaa1'}}</a>"#;
     let t = templatize_body(authored, FieldKind::ContentBlock);
     assert_eq!(t.lid_rewrites, 1);
-    assert_eq!(t.cb_id_rewrites, 0, "the gap: the include is left raw");
+    assert_eq!(
+        t.cb_id_rewrites, 0,
+        "still not managed — Braze cannot name a content block with whitespace"
+    );
     assert!(t.new_body.contains("| id: 'cb1'"), "got: {}", t.new_body);
+    assert!(
+        t.warnings.iter().any(|w| w.contains("whitespace")),
+        "expected a warning about the invalid content block name, got: {:?}",
+        t.warnings
+    );
 
     let p = prepare_field(&t.new_body, Some(authored), FieldKind::ContentBlock);
     assert!(p.errors.is_empty(), "{:?}", p.errors);
     assert!(p.fallbacks.is_empty(), "{:?}", p.fallbacks);
     assert_eq!(lids(&p.body), vec!["liveaaaaaaaa1".to_string()]);
 
-    // But it is not the whole story, and `correlation.rs`'s doc — "does not
-    // mask and its lid anchors do not correlate" — is right to warn. The
-    // unmasked `cbN` is *inside the anchor key*, so the moment Braze
-    // reassigns the content block the two keys diverge, the anchor misses,
-    // and the live lid is overwritten by a slug with `errors` empty — which
-    // `integration.rs` reports as a Notice while applying it. That makes
-    // #85 a destructive-write gap, not merely a management one, so it is
-    // pinned here as the failure it is rather than as accepted behaviour.
+    // Braze reassigns the (never-managed) cb_id. This used to overwrite
+    // the live lid with a path-tail slug, because the raw `cbN` sat
+    // inside the anchor key and the reassignment made the template-side
+    // and remote-side keys diverge. It no longer does: `cb_id_filter_re`
+    // masks the `cbN` out of the key regardless, so the key stays stable
+    // and the lid anchor still matches.
     let remote_reassigned = authored.replace("| id: 'cb1'", "| id: 'cb7'");
     let p = prepare_field(
         &t.new_body,
         Some(&remote_reassigned),
         FieldKind::ContentBlock,
     );
-    assert!(p.errors.is_empty(), "still silent: {:?}", p.errors);
-    assert_eq!(
-        p.fallbacks.len(),
-        1,
-        "the live lid is replaced by a fallback slug: {:?}",
+    assert!(p.errors.is_empty(), "{:?}", p.errors);
+    assert!(
+        p.fallbacks.is_empty(),
+        "the live lid must survive cb_id reassignment: {:?}",
         p.fallbacks
     );
     assert_eq!(
         lids(&p.body),
-        vec!["p".to_string()],
-        "slug from the URL path tail, POSTed over 'liveaaaaaaaa1': {}",
+        vec!["liveaaaaaaaa1".to_string()],
+        "the live lid must not be overwritten by a slug: {}",
         p.body
     );
 }
