@@ -7,6 +7,41 @@ versions follow [semver](https://semver.org/). Per IMPLEMENTATION.md
 changes; v1.0 freezes the public surface (CLI flags, config schema,
 file formats, JSON output, exit codes) for the full v1.x line.
 
+## [0.19.0] — 2026-08-17
+
+### Added
+
+- **Fallback gate.** `diff` now exits `8`, and `apply` requires
+  `--allow-fallback` in addition to `--confirm`, when a `lid`
+  placeholder resolves via a generated fallback slug under suspicious
+  conditions: an unmatched template placeholder *and* an unconsumed
+  remote `lid` value both present for the same field once exact
+  matching completes. An ordinary new link — an unmatched placeholder
+  with nothing left on the remote side to consume — does not gate,
+  and dry-run (`apply` without `--confirm`) is unaffected. Fixes #93.
+
+### Fixed
+
+- **A content block include whose `${NAME}` held whitespace no longer
+  breaks a neighboring `lid` anchor, and `templatize` no longer treats
+  such an include as if nothing were wrong.** Three related gaps
+  closed together:
+  - The mask that stabilizes the anchor key required the captured
+    `${NAME}` to carry no whitespace at all; when it did, the whole
+    include stayed unmasked in the key, and a later Braze-side cb_id
+    reassignment silently overwrote a neighboring `lid`'s live value
+    with a generated fallback slug.
+  - `templatize` now warns and leaves an include with an empty or
+    whitespace-holding name untemplated, instead of silently
+    mismanaging it — including a name differing only by a vertical tab,
+    which previously appeared to templatize successfully and then
+    deterministically failed to resolve later.
+  - `templatize`'s warnings — including the new one above — now reach
+    the operator even when a field has zero rewrites; they were
+    previously dropped by an early skip.
+
+  Fixes #85.
+
 ## [0.18.0] — 2026-08-14
 
 ### Added
