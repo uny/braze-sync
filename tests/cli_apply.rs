@@ -1862,11 +1862,18 @@ async fn mid_plan_write_failure_reports_applied_failed_and_not_attempted() {
                 {"content_block_id": "id-a", "name": "a_first"},
                 {"content_block_id": "id-b", "name": "b_dnd"},
                 {"content_block_id": "id-c", "name": "c_last"},
+                // Remote-only: an orphan, which fires no write at all.
+                {"content_block_id": "id-z", "name": "z_orphan"},
             ]
         })))
         .mount(&server)
         .await;
-    for (id, name) in [("id-a", "a_first"), ("id-b", "b_dnd"), ("id-c", "c_last")] {
+    for (id, name) in [
+        ("id-a", "a_first"),
+        ("id-b", "b_dnd"),
+        ("id-c", "c_last"),
+        ("id-z", "z_orphan"),
+    ] {
         Mock::given(method("GET"))
             .and(path("/content_blocks/info"))
             .and(query_param("content_block_id", id))
@@ -1937,6 +1944,9 @@ async fn mid_plan_write_failure_reports_applied_failed_and_not_attempted() {
         stderr.contains("- content_block 'c_last'"),
         "stderr: {stderr}"
     );
+    // Diffs that fire no API call must never be listed as pending work:
+    // `apply` would no-op them forever on the suggested re-run.
+    assert!(!stderr.contains("z_orphan"), "stderr: {stderr}");
     // The remediation the incident had to be re-derived by hand.
     assert!(
         stderr.contains("Run `braze-sync diff` to confirm the current remote state"),
