@@ -1943,3 +1943,88 @@ async fn mid_plan_write_failure_reports_applied_failed_and_not_attempted() {
     // The success path must not claim anything on an aborted run.
     assert!(!stderr.contains("✓ Applied"), "stderr: {stderr}");
 }
+
+// A catalog is several API calls (one per field diff) but used to be a
+// single write unit, so a failure on the second field reported
+// "applied (0): (none — no write landed before the failure)" while the
+// first field was already live in Braze. Each field is now its own unit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mid_catalog_field_failure_reports_the_fields_that_landed() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/catalogs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "catalogs": [
+                {"name": "cardiology", "fields": [{"name": "id", "type": "string"}]}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    // Added field ops are emitted in field-name order, so `b_score` is
+    // the middle write. Mounted first so it wins over the catch-all.
+    Mock::given(method("POST"))
+        .and(path("/catalogs/cardiology/fields"))
+        .and(body_json(json!({
+            "fields": [{"name": "b_score", "type": "number"}]
+        })))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "message": "Invalid field type for this catalog."
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/catalogs/cardiology/fields"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "ok"})))
+        // Only `a_sev` is written; `c_tail` is never attempted.
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_schema(
+        tmp.path(),
+        "cardiology",
+        &[
+            ("id", "string"),
+            ("a_sev", "number"),
+            ("b_score", "number"),
+            ("c_tail", "number"),
+        ],
+    );
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "catalog_schema", "--confirm"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The field that landed is named — this is the regression: it used
+    // to be absent, under a line claiming no write had landed.
+    assert!(stderr.contains("applied (1):"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("- catalog_schema 'cardiology' field 'a_sev' (add)"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("- catalog_schema 'cardiology' field 'b_score' (add): HTTP 400"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("not attempted (1):"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("- catalog_schema 'cardiology' field 'c_tail' (add)"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("no write landed before the failure"),
+        "stderr: {stderr}"
+    );
+}

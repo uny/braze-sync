@@ -24,7 +24,7 @@ use crate::diff::plan::{self, PlanFile};
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::error::Error;
 use crate::format::{OutputFormat, TableFormatter};
-use crate::resource::ResourceKind;
+use crate::resource::{CatalogField, ResourceKind};
 use crate::values::{format_fallback_reports, gated_fallback_count, FallbackReport};
 use anyhow::{anyhow, Context as _};
 use clap::Args;
@@ -277,17 +277,29 @@ pub async fn run(
     Ok(())
 }
 
-/// One resource-level write, in the order `apply` walks the plan.
+/// One write, in the order `apply` walks the plan.
 ///
 /// Materialising the walk as a list (instead of writing straight from
 /// the diff loop) is what lets a failure name the resources that were
 /// never attempted: they are simply the tail of this vector.
+///
+/// **Invariant: one unit is exactly one Braze API call.** The failure
+/// report enumerates units, so a unit that fanned out into several
+/// calls could land some of them and still be reported wholesale as
+/// "failed" — leaving writes that are live in Braze named nowhere. That
+/// is why a catalog's per-field writes are separate units
+/// ([`Self::CatalogField`]) rather than one catalog-sized unit.
 enum WriteUnit<'a> {
-    /// A catalog is one unit but several calls (one per field diff), so
-    /// a failure here can leave the *named* resource partly written —
-    /// which is why the report tells the operator to re-run `diff`
-    /// rather than trusting the labels alone.
-    CatalogSchema(&'a CatalogSchemaDiff),
+    /// Whole-catalog create/delete. `POST /catalogs` carries the full
+    /// schema and `DELETE /catalogs/{name}` drops it in one call, so
+    /// either is a single unit. Field-level edits are never routed
+    /// here — see [`Self::CatalogField`].
+    Catalog(&'a CatalogSchemaDiff),
+    /// One field add/delete on an existing catalog: one API call.
+    CatalogField {
+        catalog: &'a str,
+        op: &'a DiffOp<CatalogField>,
+    },
     ContentBlock(&'a ContentBlockDiff),
     EmailTemplate(&'a EmailTemplateDiff),
     /// Custom attribute deprecation toggles are one API call per
@@ -301,7 +313,17 @@ enum WriteUnit<'a> {
 impl WriteUnit<'_> {
     fn label(&self) -> String {
         match self {
-            Self::CatalogSchema(d) => format!("catalog_schema '{}'", d.name),
+            Self::Catalog(d) => format!("catalog_schema '{}'", d.name),
+            Self::CatalogField { catalog, op } => match op {
+                DiffOp::Added(f) => format!("catalog_schema '{catalog}' field '{}' (add)", f.name),
+                DiffOp::Removed(f) => {
+                    format!("catalog_schema '{catalog}' field '{}' (delete)", f.name)
+                }
+                DiffOp::Modified { to, .. } => {
+                    format!("catalog_schema '{catalog}' field '{}' (modify)", to.name)
+                }
+                DiffOp::Unchanged => format!("catalog_schema '{catalog}' field (unchanged)"),
+            },
             Self::ContentBlock(d) => format!("content_block '{}'", d.name),
             Self::EmailTemplate(d) => format!("email_template '{}'", d.name),
             Self::CustomAttributeBlocklist { names, blocklisted } => format!(
@@ -323,7 +345,8 @@ impl WriteUnit<'_> {
         email_template_id_index: Option<&EmailTemplateIdIndex>,
     ) -> anyhow::Result<usize> {
         match self {
-            Self::CatalogSchema(d) => apply_catalog_schema(client, d).await,
+            Self::Catalog(d) => apply_catalog_schema(client, d).await,
+            Self::CatalogField { catalog, op } => apply_catalog_field(client, catalog, op).await,
             Self::ContentBlock(d) => apply_content_block(client, d, content_block_id_index).await,
             Self::EmailTemplate(d) => {
                 apply_email_template(client, d, email_template_id_index).await
@@ -345,11 +368,20 @@ fn collect_write_units(summary: &DiffSummary) -> Vec<WriteUnit<'_>> {
     let mut ca_reactivate: Vec<&str> = Vec::new();
     for diff in &summary.diffs {
         match diff {
-            ResourceDiff::CatalogSchema(d) => {
-                if d.has_changes() {
-                    units.push(WriteUnit::CatalogSchema(d));
+            ResourceDiff::CatalogSchema(d) => match &d.op {
+                // One call carries the whole schema in either direction.
+                DiffOp::Added(_) | DiffOp::Removed(_) => units.push(WriteUnit::Catalog(d)),
+                // Field-level edits are one call each, so they are one
+                // unit each — see the `WriteUnit` invariant.
+                DiffOp::Modified { .. } | DiffOp::Unchanged => {
+                    for op in d.field_diffs.iter().filter(|op| op.is_change()) {
+                        units.push(WriteUnit::CatalogField {
+                            catalog: &d.name,
+                            op,
+                        });
+                    }
                 }
-            }
+            },
             ResourceDiff::ContentBlock(d) => {
                 if !d.orphan && d.op.is_change() {
                     units.push(WriteUnit::ContentBlock(d));
@@ -652,65 +684,78 @@ async fn apply_content_block(
     }
 }
 
+/// Create or delete a whole catalog. Both are a single API call:
+/// `POST /catalogs` carries the full schema (so no per-field POSTs are
+/// needed for a create) and `DELETE /catalogs/{name}` drops the schema
+/// and all items at once (so per-field DELETEs would be redundant, and
+/// would 404 once the catalog is gone).
+///
+/// Field-level edits on an existing catalog do not come here — they are
+/// one [`WriteUnit::CatalogField`] each, applied by
+/// [`apply_catalog_field`].
 async fn apply_catalog_schema(
     client: &BrazeClient,
     d: &CatalogSchemaDiff,
 ) -> anyhow::Result<usize> {
-    // `POST /catalogs` carries the full schema, so the per-field loop
-    // below is skipped for `Added` to avoid duplicate field POSTs.
-    if let DiffOp::Added(cat) = &d.op {
-        tracing::info!(catalog = %d.name, "creating new catalog");
-        client
-            .create_catalog(cat)
-            .await
-            .with_context(|| format!("creating catalog '{}'", d.name))?;
-        return Ok(1);
-    }
-
-    // Top-level delete short-circuits the field loop: `DELETE /catalogs/{name}`
-    // drops the schema and all items in one call, so per-field DELETEs would
-    // be redundant (and would 404 once the catalog is gone).
-    if let DiffOp::Removed(_) = &d.op {
-        tracing::info!(catalog = %d.name, "deleting catalog");
-        client
-            .delete_catalog(&d.name)
-            .await
-            .with_context(|| format!("deleting catalog '{}'", d.name))?;
-        return Ok(1);
-    }
-
-    let mut count = 0;
-    for fd in &d.field_diffs {
-        match fd {
-            DiffOp::Added(f) => {
-                tracing::info!(
-                    catalog = %d.name,
-                    field = %f.name,
-                    field_type = f.field_type.as_str(),
-                    "adding catalog field"
-                );
-                client.add_catalog_field(&d.name, f).await?;
-                count += 1;
-            }
-            DiffOp::Removed(f) => {
-                tracing::info!(
-                    catalog = %d.name,
-                    field = %f.name,
-                    "deleting catalog field"
-                );
-                client.delete_catalog_field(&d.name, &f.name).await?;
-                count += 1;
-            }
-            DiffOp::Modified { .. } => {
-                return Err(anyhow!(
-                    "internal: Modified field op should have been rejected \
-                     by check_for_unsupported_ops"
-                ));
-            }
-            DiffOp::Unchanged => {}
+    match &d.op {
+        DiffOp::Added(cat) => {
+            tracing::info!(catalog = %d.name, "creating new catalog");
+            client
+                .create_catalog(cat)
+                .await
+                .with_context(|| format!("creating catalog '{}'", d.name))?;
+            Ok(1)
         }
+        DiffOp::Removed(_) => {
+            tracing::info!(catalog = %d.name, "deleting catalog");
+            client
+                .delete_catalog(&d.name)
+                .await
+                .with_context(|| format!("deleting catalog '{}'", d.name))?;
+            Ok(1)
+        }
+        DiffOp::Modified { .. } | DiffOp::Unchanged => Err(anyhow!(
+            "internal: catalog '{}' routed to the whole-catalog write \
+             path without a create/delete op",
+            d.name,
+        )),
     }
-    Ok(count)
+}
+
+/// Apply one field diff on an existing catalog — exactly one API call,
+/// which is what lets the failure report name precisely which fields
+/// landed and which were never attempted.
+async fn apply_catalog_field(
+    client: &BrazeClient,
+    catalog: &str,
+    op: &DiffOp<CatalogField>,
+) -> anyhow::Result<usize> {
+    match op {
+        DiffOp::Added(f) => {
+            tracing::info!(
+                catalog = %catalog,
+                field = %f.name,
+                field_type = f.field_type.as_str(),
+                "adding catalog field"
+            );
+            client.add_catalog_field(catalog, f).await?;
+            Ok(1)
+        }
+        DiffOp::Removed(f) => {
+            tracing::info!(
+                catalog = %catalog,
+                field = %f.name,
+                "deleting catalog field"
+            );
+            client.delete_catalog_field(catalog, &f.name).await?;
+            Ok(1)
+        }
+        DiffOp::Modified { .. } => Err(anyhow!(
+            "internal: Modified field op should have been rejected \
+             by check_for_unsupported_ops"
+        )),
+        DiffOp::Unchanged => Ok(0),
+    }
 }
 
 async fn apply_email_template(
