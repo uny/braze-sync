@@ -15,11 +15,25 @@ file formats, JSON output, exit codes) for the full v1.x line.
   failure (a Braze rejection, a permission error, a transient 4xx) still
   aborts the run — Braze has no cross-resource transaction — but the run
   now enumerates what it applied, what failed with the API error, and
-  what it never attempted, plus the `diff`-then-re-`apply` remediation.
-  Previously a failed run printed only the error, so a run that wrote 20
-  of 25 resources and one that wrote none looked identical and the real
-  remote state had to be re-derived from a second `diff`. Successful
-  writes are also echoed per resource as the walk proceeds.
+  what it never attempted, plus the remediation. Previously a failed run
+  printed only the error, so a run that wrote 20 of 25 resources and one
+  that wrote none looked identical and the real remote state had to be
+  re-derived from a second `diff`. Successful writes are also echoed per
+  resource as the walk proceeds.
+
+  The enumeration is per **API call**, not per resource: a catalog's
+  field writes are listed one field at a time, so a failure partway
+  through a catalog still names the fields that landed. A run whose
+  first write fails reports that nothing was applied rather than
+  claiming a partial state, and a plan-locked run is told to regenerate
+  its plan before re-running (the applied writes drop out of the fresh
+  diff, so `apply --plan` would otherwise exit 7).
+
+  **Output change:** the per-batch line `  ✓ deprecated N custom
+  attribute(s)` / `  ✓ reactivated N custom attribute(s)` is replaced by
+  the unified per-write line `  ✓ custom_attribute deprecate (a, b)`.
+  Anything grepping stderr for the old wording needs updating; `--format
+  json` output on stdout is unaffected.
 
 ## [0.19.0] — 2026-08-17
 

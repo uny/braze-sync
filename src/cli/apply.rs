@@ -10,8 +10,8 @@
 //! cross-write atomicity. Because that partial state is real and
 //! nothing downstream flags it, an aborted run enumerates what it
 //! applied, what failed, and what it never attempted (see
-//! `report_partial_apply`), so the operator does not have to re-derive
-//! the remote state from a second `diff`.
+//! `report_partial_apply`), so the applied set is reported rather than
+//! inferred from a second `diff`.
 
 use crate::braze::BrazeClient;
 use crate::config::{ApplyOrder, ResolvedConfig};

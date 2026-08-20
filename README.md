@@ -148,13 +148,13 @@ braze-sync apply --confirm --allow-destructive # catalog/field deletes permitted
 ```
 
 `apply` is **not atomic across resources** — Braze exposes no
-cross-resource transaction. Writes are issued one resource at a time and
+cross-resource transaction. Writes are issued one API call at a time and
 the run aborts on the first failure, so a rejection mid-plan (e.g. Braze
 refusing `update` on a drag-and-drop content block) leaves the earlier
-writes live. The aborted run enumerates exactly that, so you never have
-to re-derive it from a second `diff`:
+writes live. The aborted run names them, so the applied set is reported
+rather than inferred:
 
-```
+```text
 ✗ apply aborted — partial state left in Braze (no cross-resource rollback):
   applied (20):
     - content_block 'header_ja'
@@ -165,10 +165,23 @@ to re-derive it from a second `diff`:
     - content_block 'footer_ja'
     …
   → the applied writes above are live and are not rolled back.
+    Run `braze-sync diff` to confirm the current remote state, then
+    re-run `apply` with the same flags to pick up the changes that
+    were not attempted.
 ```
 
-Re-running `apply` after fixing (or excluding) the offending resource
-picks up the changes that were not attempted.
+Each line is one API call — a catalog's field writes are listed per
+field — so nothing can land without being named. If the *first* write
+fails, nothing was applied and the run says so instead of claiming a
+partial state.
+
+Re-run `apply` with the same flags after fixing (or excluding) the
+offending resource to pick up the changes that were not attempted; the
+`diff` is recomputed, so the writes that already landed are skipped.
+**Exception:** a plan-locked run (`--plan`) must have its plan
+regenerated with `diff --plan-out` first — the applied writes are gone
+from the fresh diff, so re-running `apply --plan` as-is exits **7**
+(plan drift) without writing anything.
 
 API keys never live in the config file. The config only references the
 *name* of the environment variable (`api_key_env`), and the key is
