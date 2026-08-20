@@ -147,6 +147,48 @@ braze-sync apply --confirm                     # add fields ok, deletes → exit
 braze-sync apply --confirm --allow-destructive # catalog/field deletes permitted
 ```
 
+`apply` is **not atomic across resources** — Braze exposes no
+cross-resource transaction. Writes are issued one API call at a time and
+the run aborts on the first failure, so a rejection mid-plan (e.g. Braze
+refusing `update` on a drag-and-drop content block) leaves the earlier
+writes live. The aborted run names them, so the applied set is reported
+rather than inferred:
+
+```text
+✗ apply aborted — partial state left in Braze (no cross-resource rollback):
+  applied (20):
+    - content_block 'header_ja'
+    …
+  failed (may or may not have landed):
+    - content_block 'promo_dnd': HTTP 400 Bad Request: {"message":"DND Content blocks are not allowed to be updated from the API."}
+  not attempted (4):
+    - content_block 'footer_ja'
+    …
+  → the applied writes above are live and are not rolled back.
+  → a failed write is not proof that nothing changed: Braze can
+    commit a write whose response never reaches the client.
+    Run `braze-sync diff` to confirm the current remote state, then
+    re-run `apply` with the same flags to pick up the changes that
+    were not attempted.
+```
+
+Each line is one API call — a catalog's field writes are listed per
+field — so nothing can land without being named. `applied` and `not
+attempted` are certain; the **failed** write is not, because Braze can
+commit a write whose response never reaches the client (every request
+carries a timeout). That is why the report still points at `diff` to
+confirm. If the *first* write fails there is no earlier write
+to roll back, and the run says that instead of claiming a partial
+state.
+
+Re-run `apply` with the same flags after fixing (or excluding) the
+offending resource to pick up the changes that were not attempted; the
+`diff` is recomputed, so the writes that already landed are skipped.
+**Exception:** a plan-locked run (`--plan`) must have its plan
+regenerated with `diff --plan-out` first — the applied writes are gone
+from the fresh diff, so re-running `apply --plan` as-is exits **7**
+(plan drift) without writing anything.
+
 API keys never live in the config file. The config only references the
 *name* of the environment variable (`api_key_env`), and the key is
 held in `secrecy::SecretString` from the moment it leaves the OS so

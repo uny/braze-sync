@@ -7,7 +7,11 @@
 //! cross-resource transaction, so a mid-loop failure can still leave
 //! earlier writes applied — the pre-validation prevents *known-bad*
 //! plans from firing any writes at all, but it does not promise
-//! cross-write atomicity.
+//! cross-write atomicity. Because that partial state is real and
+//! nothing downstream flags it, an aborted run enumerates what it
+//! applied, what failed, and what it never attempted (see
+//! `report_partial_apply`), so the applied set is reported rather than
+//! inferred from a second `diff`.
 
 use crate::braze::BrazeClient;
 use crate::config::{ApplyOrder, ResolvedConfig};
@@ -20,7 +24,7 @@ use crate::diff::plan::{self, PlanFile};
 use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
 use crate::error::Error;
 use crate::format::{OutputFormat, TableFormatter};
-use crate::resource::ResourceKind;
+use crate::resource::{CatalogField, ResourceKind};
 use crate::values::{format_fallback_reports, gated_fallback_count, FallbackReport};
 use anyhow::{anyhow, Context as _};
 use clap::Args;
@@ -241,20 +245,152 @@ pub async fn run(
 
     check_for_unsupported_ops(&summary)?;
 
+    let units = collect_write_units(&summary);
     let mut applied = 0;
+    let mut done: Vec<String> = Vec::new();
+    for (i, unit) in units.iter().enumerate() {
+        let label = unit.label();
+        match unit
+            .execute(
+                &client,
+                content_block_id_index.as_ref(),
+                email_template_id_index.as_ref(),
+            )
+            .await
+        {
+            Ok(n) => {
+                applied += n;
+                eprintln!("  ✓ {label}");
+                done.push(label);
+            }
+            Err(err) => {
+                // Braze has no cross-resource transaction: everything in
+                // `done` is already live. Enumerate it here rather than
+                // making the operator re-derive it from a second `diff`.
+                report_partial_apply(&done, &label, &err, &units[i + 1..], args.plan.is_some());
+                return Err(err);
+            }
+        }
+    }
+
+    eprintln!("✓ Applied {applied} change(s).");
+    Ok(())
+}
+
+/// One write, in the order `apply` walks the plan.
+///
+/// Materialising the walk as a list (instead of writing straight from
+/// the diff loop) is what lets a failure name the resources that were
+/// never attempted: they are simply the tail of this vector.
+///
+/// **Invariant: one unit is exactly one Braze API call.** The failure
+/// report enumerates units, so a unit that fanned out into several
+/// calls could land some of them and still be reported wholesale as
+/// "failed" — leaving writes that are live in Braze named nowhere. That
+/// is why a catalog's per-field writes are separate units
+/// ([`Self::CatalogField`]) rather than one catalog-sized unit.
+enum WriteUnit<'a> {
+    /// Whole-catalog create/delete. `POST /catalogs` carries the full
+    /// schema and `DELETE /catalogs/{name}` drops it in one call, so
+    /// either is a single unit. Field-level edits are never routed
+    /// here — see [`Self::CatalogField`].
+    Catalog(&'a CatalogSchemaDiff),
+    /// One field add/delete on an existing catalog: one API call.
+    CatalogField {
+        catalog: &'a str,
+        op: &'a DiffOp<CatalogField>,
+    },
+    ContentBlock(&'a ContentBlockDiff),
+    EmailTemplate(&'a EmailTemplateDiff),
+    /// Custom attribute deprecation toggles are one API call per
+    /// direction, so a whole direction is a single unit.
+    CustomAttributeBlocklist {
+        names: Vec<&'a str>,
+        blocklisted: bool,
+    },
+}
+
+impl WriteUnit<'_> {
+    fn label(&self) -> String {
+        match self {
+            Self::Catalog(d) => format!("catalog_schema '{}'", d.name),
+            Self::CatalogField { catalog, op } => match op {
+                DiffOp::Added(f) => format!("catalog_schema '{catalog}' field '{}' (add)", f.name),
+                DiffOp::Removed(f) => {
+                    format!("catalog_schema '{catalog}' field '{}' (delete)", f.name)
+                }
+                DiffOp::Modified { to, .. } => {
+                    format!("catalog_schema '{catalog}' field '{}' (modify)", to.name)
+                }
+                DiffOp::Unchanged => format!("catalog_schema '{catalog}' field (unchanged)"),
+            },
+            Self::ContentBlock(d) => format!("content_block '{}'", d.name),
+            Self::EmailTemplate(d) => format!("email_template '{}'", d.name),
+            Self::CustomAttributeBlocklist { names, blocklisted } => format!(
+                "custom_attribute {} ({})",
+                if *blocklisted {
+                    "deprecate"
+                } else {
+                    "reactivate"
+                },
+                names.join(", "),
+            ),
+        }
+    }
+
+    async fn execute(
+        &self,
+        client: &BrazeClient,
+        content_block_id_index: Option<&ContentBlockIdIndex>,
+        email_template_id_index: Option<&EmailTemplateIdIndex>,
+    ) -> anyhow::Result<usize> {
+        match self {
+            Self::Catalog(d) => apply_catalog_schema(client, d).await,
+            Self::CatalogField { catalog, op } => apply_catalog_field(client, catalog, op).await,
+            Self::ContentBlock(d) => apply_content_block(client, d, content_block_id_index).await,
+            Self::EmailTemplate(d) => {
+                apply_email_template(client, d, email_template_id_index).await
+            }
+            Self::CustomAttributeBlocklist { names, blocklisted } => {
+                apply_custom_attribute_blocklist(client, names, *blocklisted).await
+            }
+        }
+    }
+}
+
+/// Flatten the plan into the writes `apply` will actually issue, in
+/// write order. Diffs that fire no API call (orphans, unchanged,
+/// informational tag drift) are left out so they can never show up as
+/// "not attempted" in a failure report.
+fn collect_write_units(summary: &DiffSummary) -> Vec<WriteUnit<'_>> {
+    let mut units = Vec::new();
     let mut ca_deprecate: Vec<&str> = Vec::new();
     let mut ca_reactivate: Vec<&str> = Vec::new();
     for diff in &summary.diffs {
         match diff {
-            ResourceDiff::CatalogSchema(d) => {
-                applied += apply_catalog_schema(&client, d).await?;
-            }
+            ResourceDiff::CatalogSchema(d) => match &d.op {
+                // One call carries the whole schema in either direction.
+                DiffOp::Added(_) | DiffOp::Removed(_) => units.push(WriteUnit::Catalog(d)),
+                // Field-level edits are one call each, so they are one
+                // unit each — see the `WriteUnit` invariant.
+                DiffOp::Modified { .. } | DiffOp::Unchanged => {
+                    for op in d.field_diffs.iter().filter(|op| op.is_change()) {
+                        units.push(WriteUnit::CatalogField {
+                            catalog: &d.name,
+                            op,
+                        });
+                    }
+                }
+            },
             ResourceDiff::ContentBlock(d) => {
-                applied += apply_content_block(&client, d, content_block_id_index.as_ref()).await?;
+                if !d.orphan && d.op.is_change() {
+                    units.push(WriteUnit::ContentBlock(d));
+                }
             }
             ResourceDiff::EmailTemplate(d) => {
-                applied +=
-                    apply_email_template(&client, d, email_template_id_index.as_ref()).await?;
+                if !d.orphan && d.op.is_change() {
+                    units.push(WriteUnit::EmailTemplate(d));
+                }
             }
             ResourceDiff::CustomAttribute(d) => {
                 if let CustomAttributeOp::DeprecationToggled { to, .. } = &d.op {
@@ -271,12 +407,73 @@ pub async fn run(
         }
     }
 
-    if !ca_deprecate.is_empty() || !ca_reactivate.is_empty() {
-        applied += apply_custom_attribute_batch(&client, &ca_deprecate, &ca_reactivate).await?;
+    // Batched last, and by direction, to keep the blocklist calls at two
+    // per run regardless of attribute count.
+    for (names, blocklisted) in [(ca_deprecate, true), (ca_reactivate, false)] {
+        if !names.is_empty() {
+            units.push(WriteUnit::CustomAttributeBlocklist { names, blocklisted });
+        }
+    }
+    units
+}
+
+/// Emit what the run knows at the point it gives up: which writes
+/// landed, which one failed, and which were never attempted.
+///
+/// Without this the operator cannot distinguish a run that wrote
+/// nothing from one that wrote most of the plan — the writes that
+/// landed are real and correct, so nothing downstream flags them.
+///
+/// Every claim here is scoped to what is actually known. Two limits
+/// shape the wording: a run whose first write failed left no *earlier*
+/// write to roll back, and the failed write itself is of **unknown**
+/// state — every request carries a client-side timeout (and the two
+/// `send_json` create paths additionally decode the response), so Braze
+/// can commit a write whose result never reaches us. Only `applied` and
+/// `not attempted` are certain, which is why the failed line is phrased
+/// as a caution rather than a claim about this particular error.
+fn report_partial_apply(
+    applied: &[String],
+    failed: &str,
+    err: &anyhow::Error,
+    pending: &[WriteUnit],
+    plan_locked: bool,
+) {
+    if applied.is_empty() {
+        eprintln!("✗ apply aborted on the first write:");
+    } else {
+        eprintln!("✗ apply aborted — partial state left in Braze (no cross-resource rollback):");
+    }
+    eprintln!("  applied ({}):", applied.len());
+    for label in applied {
+        eprintln!("    - {label}");
+    }
+    if applied.is_empty() {
+        eprintln!("    (none — no earlier write to roll back)");
+    }
+    eprintln!("  failed (may or may not have landed):");
+    eprintln!("    - {failed}: {err:#}");
+    eprintln!("  not attempted ({}):", pending.len());
+    for unit in pending {
+        eprintln!("    - {}", unit.label());
     }
 
-    eprintln!("✓ Applied {applied} change(s).");
-    Ok(())
+    if !applied.is_empty() {
+        eprintln!("  → the applied writes above are live and are not rolled back.");
+    }
+    eprintln!("  → a failed write is not proof that nothing changed: Braze can");
+    eprintln!("    commit a write whose response never reaches the client.");
+    eprintln!("    Run `braze-sync diff` to confirm the current remote state, then");
+    eprintln!("    re-run `apply` with the same flags to pick up the changes that");
+    eprintln!("    were not attempted.");
+    if plan_locked {
+        // Any write that landed drops out of the fresh diff, so the
+        // saved plan no longer matches and `check_plan_ops` exits 7
+        // before issuing a single write.
+        eprintln!("    Because this run was plan-locked, regenerate the plan first");
+        eprintln!("    (`diff --plan-out`) — re-running `apply --plan` as-is exits 7");
+        eprintln!("    if anything landed.");
+    }
 }
 
 /// Reject ops the API can't actually perform. Runs before any write
@@ -515,65 +712,78 @@ async fn apply_content_block(
     }
 }
 
+/// Create or delete a whole catalog. Both are a single API call:
+/// `POST /catalogs` carries the full schema (so no per-field POSTs are
+/// needed for a create) and `DELETE /catalogs/{name}` drops the schema
+/// and all items at once (so per-field DELETEs would be redundant, and
+/// would 404 once the catalog is gone).
+///
+/// Field-level edits on an existing catalog do not come here — they are
+/// one [`WriteUnit::CatalogField`] each, applied by
+/// [`apply_catalog_field`].
 async fn apply_catalog_schema(
     client: &BrazeClient,
     d: &CatalogSchemaDiff,
 ) -> anyhow::Result<usize> {
-    // `POST /catalogs` carries the full schema, so the per-field loop
-    // below is skipped for `Added` to avoid duplicate field POSTs.
-    if let DiffOp::Added(cat) = &d.op {
-        tracing::info!(catalog = %d.name, "creating new catalog");
-        client
-            .create_catalog(cat)
-            .await
-            .with_context(|| format!("creating catalog '{}'", d.name))?;
-        return Ok(1);
-    }
-
-    // Top-level delete short-circuits the field loop: `DELETE /catalogs/{name}`
-    // drops the schema and all items in one call, so per-field DELETEs would
-    // be redundant (and would 404 once the catalog is gone).
-    if let DiffOp::Removed(_) = &d.op {
-        tracing::info!(catalog = %d.name, "deleting catalog");
-        client
-            .delete_catalog(&d.name)
-            .await
-            .with_context(|| format!("deleting catalog '{}'", d.name))?;
-        return Ok(1);
-    }
-
-    let mut count = 0;
-    for fd in &d.field_diffs {
-        match fd {
-            DiffOp::Added(f) => {
-                tracing::info!(
-                    catalog = %d.name,
-                    field = %f.name,
-                    field_type = f.field_type.as_str(),
-                    "adding catalog field"
-                );
-                client.add_catalog_field(&d.name, f).await?;
-                count += 1;
-            }
-            DiffOp::Removed(f) => {
-                tracing::info!(
-                    catalog = %d.name,
-                    field = %f.name,
-                    "deleting catalog field"
-                );
-                client.delete_catalog_field(&d.name, &f.name).await?;
-                count += 1;
-            }
-            DiffOp::Modified { .. } => {
-                return Err(anyhow!(
-                    "internal: Modified field op should have been rejected \
-                     by check_for_unsupported_ops"
-                ));
-            }
-            DiffOp::Unchanged => {}
+    match &d.op {
+        DiffOp::Added(cat) => {
+            tracing::info!(catalog = %d.name, "creating new catalog");
+            client
+                .create_catalog(cat)
+                .await
+                .with_context(|| format!("creating catalog '{}'", d.name))?;
+            Ok(1)
         }
+        DiffOp::Removed(_) => {
+            tracing::info!(catalog = %d.name, "deleting catalog");
+            client
+                .delete_catalog(&d.name)
+                .await
+                .with_context(|| format!("deleting catalog '{}'", d.name))?;
+            Ok(1)
+        }
+        DiffOp::Modified { .. } | DiffOp::Unchanged => Err(anyhow!(
+            "internal: catalog '{}' routed to the whole-catalog write \
+             path without a create/delete op",
+            d.name,
+        )),
     }
-    Ok(count)
+}
+
+/// Apply one field diff on an existing catalog — exactly one API call,
+/// which is what lets the failure report name precisely which fields
+/// landed and which were never attempted.
+async fn apply_catalog_field(
+    client: &BrazeClient,
+    catalog: &str,
+    op: &DiffOp<CatalogField>,
+) -> anyhow::Result<usize> {
+    match op {
+        DiffOp::Added(f) => {
+            tracing::info!(
+                catalog = %catalog,
+                field = %f.name,
+                field_type = f.field_type.as_str(),
+                "adding catalog field"
+            );
+            client.add_catalog_field(catalog, f).await?;
+            Ok(1)
+        }
+        DiffOp::Removed(f) => {
+            tracing::info!(
+                catalog = %catalog,
+                field = %f.name,
+                "deleting catalog field"
+            );
+            client.delete_catalog_field(catalog, &f.name).await?;
+            Ok(1)
+        }
+        DiffOp::Modified { .. } => Err(anyhow!(
+            "internal: Modified field op should have been rejected \
+             by check_for_unsupported_ops"
+        )),
+        DiffOp::Unchanged => Ok(0),
+    }
 }
 
 async fn apply_email_template(
@@ -617,36 +827,24 @@ async fn apply_email_template(
     }
 }
 
-/// Batch custom attribute deprecation toggles by direction so we issue
-/// at most two API calls. Each batch is reported to stderr on success so
-/// the user can tell what was committed if a later batch fails.
-async fn apply_custom_attribute_batch(
+/// Toggle one direction of custom attribute deprecation. Callers batch
+/// by direction so a run issues at most two blocklist calls regardless
+/// of attribute count; the per-unit success line is printed by the
+/// caller's walk.
+async fn apply_custom_attribute_blocklist(
     client: &BrazeClient,
-    to_deprecate: &[&str],
-    to_reactivate: &[&str],
+    names: &[&str],
+    blocklisted: bool,
 ) -> anyhow::Result<usize> {
-    let mut applied = 0;
-    for (names, blocklisted, verb) in [
-        (to_deprecate, true, "deprecating"),
-        (to_reactivate, false, "reactivating"),
-    ] {
-        if names.is_empty() {
-            continue;
-        }
-        tracing::info!(attributes = ?names, "{verb} custom attributes");
-        client
-            .set_custom_attribute_blocklist(names, blocklisted)
-            .await
-            .with_context(|| format!("{verb} custom attributes"))?;
-        let n = names.len();
-        let past = if blocklisted {
-            "deprecated"
-        } else {
-            "reactivated"
-        };
-        eprintln!("  ✓ {past} {n} custom attribute(s)");
-        applied += n;
-    }
-
-    Ok(applied)
+    let verb = if blocklisted {
+        "deprecating"
+    } else {
+        "reactivating"
+    };
+    tracing::info!(attributes = ?names, "{verb} custom attributes");
+    client
+        .set_custom_attribute_blocklist(names, blocklisted)
+        .await
+        .with_context(|| format!("{verb} custom attributes"))?;
+    Ok(names.len())
 }
