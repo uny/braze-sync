@@ -1922,12 +1922,14 @@ async fn mid_plan_write_failure_reports_applied_failed_and_not_attempted() {
         stderr.contains("- content_block 'a_first'"),
         "stderr: {stderr}"
     );
+    // Anchored to the failed line: the API error also reaches stderr via
+    // the top-level `error:` handler, so an unanchored `contains` would
+    // pass even with the report gutted.
     assert!(
-        stderr.contains("- content_block 'b_dnd': "),
-        "stderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("DND Content blocks are not allowed"),
+        stderr.contains(
+            "- content_block 'b_dnd': HTTP 400 Bad Request: \
+             {\"message\":\"DND Content blocks are not allowed to be updated from the API.\"}"
+        ),
         "stderr: {stderr}"
     );
     assert!(stderr.contains("not attempted (1):"), "stderr: {stderr}");
@@ -2025,6 +2027,97 @@ async fn mid_catalog_field_failure_reports_the_fields_that_landed() {
     );
     assert!(
         !stderr.contains("no write landed before the failure"),
+        "stderr: {stderr}"
+    );
+}
+
+// A run whose *first* write fails left no partial state, so the report
+// must not claim one — the operator would otherwise go hunting for
+// writes that were never issued.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_write_failure_reports_no_partial_state() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [
+                {"content_block_id": "id-a", "name": "a_dnd"},
+                {"content_block_id": "id-b", "name": "b_last"},
+            ]
+        })))
+        .mount(&server)
+        .await;
+    for (id, name) in [("id-a", "a_dnd"), ("id-b", "b_last")] {
+        Mock::given(method("GET"))
+            .and(path("/content_blocks/info"))
+            .and(query_param("content_block_id", id))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "name": name,
+                "content": "old body\n",
+                "tags": []
+            })))
+            .mount(&server)
+            .await;
+    }
+    // The very first write is the one Braze refuses.
+    Mock::given(method("POST"))
+        .and(path("/content_blocks/update"))
+        .and(body_partial_json(json!({"content_block_id": "id-a"})))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "message": "DND Content blocks are not allowed to be updated from the API."
+        })))
+        .mount(&server)
+        .await;
+    // Nothing else may be written.
+    Mock::given(method("POST"))
+        .and(path("/content_blocks/update"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    for name in ["a_dnd", "b_last"] {
+        write_local_content_block(tmp.path(), name, "new body\n");
+    }
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "content_block", "--confirm"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("apply aborted on the first write — nothing was applied"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("applied (0):"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("(none — remote state is unchanged)"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("nothing to roll back"), "stderr: {stderr}");
+    // The claims that only hold for a genuinely partial run must be absent.
+    assert!(
+        !stderr.contains("partial state left in Braze"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("the applied writes above are live"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("not attempted (1):"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("- content_block 'b_last'"),
         "stderr: {stderr}"
     );
 }

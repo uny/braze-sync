@@ -267,7 +267,7 @@ pub async fn run(
                 // Braze has no cross-resource transaction: everything in
                 // `done` is already live. Enumerate it here rather than
                 // making the operator re-derive it from a second `diff`.
-                report_partial_apply(&done, &label, &err, &units[i + 1..]);
+                report_partial_apply(&done, &label, &err, &units[i + 1..], args.plan.is_some());
                 return Err(err);
             }
         }
@@ -423,19 +423,28 @@ fn collect_write_units(summary: &DiffSummary) -> Vec<WriteUnit<'_>> {
 /// Without this the operator cannot distinguish a run that wrote
 /// nothing from one that wrote most of the plan — the writes that
 /// landed are real and correct, so nothing downstream flags them.
+///
+/// Every claim here is scoped to what actually happened: a run whose
+/// first write failed left no partial state at all, and saying it did
+/// would send the operator hunting for writes that were never issued.
 fn report_partial_apply(
     applied: &[String],
     failed: &str,
     err: &anyhow::Error,
     pending: &[WriteUnit],
+    plan_locked: bool,
 ) {
-    eprintln!("✗ apply aborted — partial state left in Braze (no cross-resource rollback):");
+    if applied.is_empty() {
+        eprintln!("✗ apply aborted on the first write — nothing was applied:");
+    } else {
+        eprintln!("✗ apply aborted — partial state left in Braze (no cross-resource rollback):");
+    }
     eprintln!("  applied ({}):", applied.len());
     for label in applied {
         eprintln!("    - {label}");
     }
     if applied.is_empty() {
-        eprintln!("    (none — no write landed before the failure)");
+        eprintln!("    (none — remote state is unchanged)");
     }
     eprintln!("  failed:");
     eprintln!("    - {failed}: {err:#}");
@@ -443,9 +452,23 @@ fn report_partial_apply(
     for unit in pending {
         eprintln!("    - {}", unit.label());
     }
+
+    if applied.is_empty() {
+        eprintln!("  → nothing to roll back. Fix the failure above, then re-run");
+        eprintln!("    `apply` with the same flags.");
+        return;
+    }
     eprintln!("  → the applied writes above are live and are not rolled back.");
     eprintln!("    Run `braze-sync diff` to confirm the current remote state, then");
-    eprintln!("    re-run `apply` to pick up the changes that were not attempted.");
+    eprintln!("    re-run `apply` with the same flags to pick up the changes that");
+    eprintln!("    were not attempted.");
+    if plan_locked {
+        // The applied writes drop out of the fresh diff, so the saved
+        // plan no longer matches and `check_plan_ops` would exit 7
+        // before issuing a single write.
+        eprintln!("    Because this run was plan-locked, regenerate the plan first");
+        eprintln!("    (`diff --plan-out`) — re-running `apply --plan` as-is exits 7.");
+    }
 }
 
 /// Reject ops the API can't actually perform. Runs before any write
