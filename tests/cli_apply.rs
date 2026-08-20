@@ -2107,15 +2107,21 @@ async fn first_write_failure_reports_no_partial_state() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("apply aborted on the first write — nothing was applied"),
+        stderr.contains("apply aborted on the first write:"),
         "stderr: {stderr}"
     );
     assert!(stderr.contains("applied (0):"), "stderr: {stderr}");
     assert!(
-        stderr.contains("(none — remote state is unchanged)"),
+        stderr.contains("(none — no earlier write to roll back)"),
         "stderr: {stderr}"
     );
-    assert!(stderr.contains("nothing to roll back"), "stderr: {stderr}");
+    // The failed write itself is of unknown state — Braze can commit a
+    // write whose response is lost — so the report must not claim the
+    // remote state is unchanged.
+    assert!(
+        stderr.contains("the failed write may itself have landed"),
+        "stderr: {stderr}"
+    );
     // The claims that only hold for a genuinely partial run must be absent.
     assert!(
         !stderr.contains("partial state left in Braze"),

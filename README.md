@@ -159,21 +159,27 @@ rather than inferred:
   applied (20):
     - content_block 'header_ja'
     …
-  failed:
+  failed (may or may not have landed):
     - content_block 'promo_dnd': HTTP 400 Bad Request: {"message":"DND Content blocks are not allowed to be updated from the API."}
   not attempted (4):
     - content_block 'footer_ja'
     …
   → the applied writes above are live and are not rolled back.
+  → the failed write may itself have landed: Braze can commit a
+    write whose response is lost to a timeout or a decode error.
     Run `braze-sync diff` to confirm the current remote state, then
     re-run `apply` with the same flags to pick up the changes that
     were not attempted.
 ```
 
 Each line is one API call — a catalog's field writes are listed per
-field — so nothing can land without being named. If the *first* write
-fails, nothing was applied and the run says so instead of claiming a
-partial state.
+field — so nothing can land without being named. `applied` and `not
+attempted` are certain; the **failed** write is not, because Braze can
+commit a write whose response never reaches the client (request
+timeout, undecodable body). That is why the report still points at
+`diff` to confirm. If the *first* write fails there is no earlier write
+to roll back, and the run says that instead of claiming a partial
+state.
 
 Re-run `apply` with the same flags after fixing (or excluding) the
 offending resource to pick up the changes that were not attempted; the

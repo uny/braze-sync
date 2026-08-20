@@ -23,9 +23,12 @@ file formats, JSON output, exit codes) for the full v1.x line.
 
   The enumeration is per **API call**, not per resource: a catalog's
   field writes are listed one field at a time, so a failure partway
-  through a catalog still names the fields that landed. A run whose
-  first write fails reports that nothing was applied rather than
-  claiming a partial state, and a plan-locked run is told to regenerate
+  through a catalog still names the fields that landed. `applied` and
+  `not attempted` are certain; the failed write is reported as
+  possibly-landed, since Braze can commit a write whose response is lost
+  to a timeout or a decode error. A run whose first write fails reports
+  that there is no earlier write to roll back rather than claiming a
+  partial state, and a plan-locked run is told to regenerate
   its plan before re-running (the applied writes drop out of the fresh
   diff, so `apply --plan` would otherwise exit 7).
 

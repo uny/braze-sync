@@ -424,9 +424,12 @@ fn collect_write_units(summary: &DiffSummary) -> Vec<WriteUnit<'_>> {
 /// nothing from one that wrote most of the plan — the writes that
 /// landed are real and correct, so nothing downstream flags them.
 ///
-/// Every claim here is scoped to what actually happened: a run whose
-/// first write failed left no partial state at all, and saying it did
-/// would send the operator hunting for writes that were never issued.
+/// Every claim here is scoped to what is actually known. Two limits
+/// shape the wording: a run whose first write failed left no *earlier*
+/// write to roll back, and the failed write itself is of **unknown**
+/// state — `send_json` decodes the response, and the client has a
+/// request timeout, so Braze can commit a write whose result never
+/// reaches us. Only `applied` and `not attempted` are certain.
 fn report_partial_apply(
     applied: &[String],
     failed: &str,
@@ -435,7 +438,7 @@ fn report_partial_apply(
     plan_locked: bool,
 ) {
     if applied.is_empty() {
-        eprintln!("✗ apply aborted on the first write — nothing was applied:");
+        eprintln!("✗ apply aborted on the first write:");
     } else {
         eprintln!("✗ apply aborted — partial state left in Braze (no cross-resource rollback):");
     }
@@ -444,30 +447,30 @@ fn report_partial_apply(
         eprintln!("    - {label}");
     }
     if applied.is_empty() {
-        eprintln!("    (none — remote state is unchanged)");
+        eprintln!("    (none — no earlier write to roll back)");
     }
-    eprintln!("  failed:");
+    eprintln!("  failed (may or may not have landed):");
     eprintln!("    - {failed}: {err:#}");
     eprintln!("  not attempted ({}):", pending.len());
     for unit in pending {
         eprintln!("    - {}", unit.label());
     }
 
-    if applied.is_empty() {
-        eprintln!("  → nothing to roll back. Fix the failure above, then re-run");
-        eprintln!("    `apply` with the same flags.");
-        return;
+    if !applied.is_empty() {
+        eprintln!("  → the applied writes above are live and are not rolled back.");
     }
-    eprintln!("  → the applied writes above are live and are not rolled back.");
+    eprintln!("  → the failed write may itself have landed: Braze can commit a");
+    eprintln!("    write whose response is lost to a timeout or a decode error.");
     eprintln!("    Run `braze-sync diff` to confirm the current remote state, then");
     eprintln!("    re-run `apply` with the same flags to pick up the changes that");
     eprintln!("    were not attempted.");
     if plan_locked {
-        // The applied writes drop out of the fresh diff, so the saved
-        // plan no longer matches and `check_plan_ops` would exit 7
+        // Any write that landed drops out of the fresh diff, so the
+        // saved plan no longer matches and `check_plan_ops` exits 7
         // before issuing a single write.
         eprintln!("    Because this run was plan-locked, regenerate the plan first");
-        eprintln!("    (`diff --plan-out`) — re-running `apply --plan` as-is exits 7.");
+        eprintln!("    (`diff --plan-out`) — re-running `apply --plan` as-is exits 7");
+        eprintln!("    if anything landed.");
     }
 }
 
