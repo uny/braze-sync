@@ -165,8 +165,8 @@ rather than inferred:
     - content_block 'footer_ja'
     …
   → the applied writes above are live and are not rolled back.
-  → the failed write may itself have landed: Braze can commit a
-    write whose response is lost to a timeout or a decode error.
+  → a failed write is not proof that nothing changed: Braze can
+    commit a write whose response never reaches the client.
     Run `braze-sync diff` to confirm the current remote state, then
     re-run `apply` with the same flags to pick up the changes that
     were not attempted.
@@ -175,9 +175,9 @@ rather than inferred:
 Each line is one API call — a catalog's field writes are listed per
 field — so nothing can land without being named. `applied` and `not
 attempted` are certain; the **failed** write is not, because Braze can
-commit a write whose response never reaches the client (request
-timeout, undecodable body). That is why the report still points at
-`diff` to confirm. If the *first* write fails there is no earlier write
+commit a write whose response never reaches the client (every request
+carries a timeout). That is why the report still points at `diff` to
+confirm. If the *first* write fails there is no earlier write
 to roll back, and the run says that instead of claiming a partial
 state.
 

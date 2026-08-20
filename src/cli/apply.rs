@@ -427,9 +427,11 @@ fn collect_write_units(summary: &DiffSummary) -> Vec<WriteUnit<'_>> {
 /// Every claim here is scoped to what is actually known. Two limits
 /// shape the wording: a run whose first write failed left no *earlier*
 /// write to roll back, and the failed write itself is of **unknown**
-/// state — `send_json` decodes the response, and the client has a
-/// request timeout, so Braze can commit a write whose result never
-/// reaches us. Only `applied` and `not attempted` are certain.
+/// state — every request carries a client-side timeout (and the two
+/// `send_json` create paths additionally decode the response), so Braze
+/// can commit a write whose result never reaches us. Only `applied` and
+/// `not attempted` are certain, which is why the failed line is phrased
+/// as a caution rather than a claim about this particular error.
 fn report_partial_apply(
     applied: &[String],
     failed: &str,
@@ -459,8 +461,8 @@ fn report_partial_apply(
     if !applied.is_empty() {
         eprintln!("  → the applied writes above are live and are not rolled back.");
     }
-    eprintln!("  → the failed write may itself have landed: Braze can commit a");
-    eprintln!("    write whose response is lost to a timeout or a decode error.");
+    eprintln!("  → a failed write is not proof that nothing changed: Braze can");
+    eprintln!("    commit a write whose response never reaches the client.");
     eprintln!("    Run `braze-sync diff` to confirm the current remote state, then");
     eprintln!("    re-run `apply` with the same flags to pick up the changes that");
     eprintln!("    were not attempted.");

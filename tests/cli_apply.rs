@@ -2119,7 +2119,7 @@ async fn first_write_failure_reports_no_partial_state() {
     // write whose response is lost — so the report must not claim the
     // remote state is unchanged.
     assert!(
-        stderr.contains("the failed write may itself have landed"),
+        stderr.contains("a failed write is not proof that nothing changed"),
         "stderr: {stderr}"
     );
     // The claims that only hold for a genuinely partial run must be absent.
