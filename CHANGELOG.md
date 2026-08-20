@@ -7,7 +7,7 @@ versions follow [semver](https://semver.org/). Per IMPLEMENTATION.md
 changes; v1.0 freezes the public surface (CLI flags, config schema,
 file formats, JSON output, exit codes) for the full v1.x line.
 
-## [Unreleased]
+## [0.20.0] — 2026-08-20
 
 ### Changed
 
@@ -40,6 +40,11 @@ file formats, JSON output, exit codes) for the full v1.x line.
   API call: a catalog with three field additions emits three
   `  ✓ catalog_schema 'x' field '…' (add)` lines rather than one per
   resource.
+
+### Security
+
+- **`h2` bumped to 0.4.17** for RUSTSEC-2026-0258. Transitive dependency
+  via `reqwest`; no braze-sync API surface is affected.
 
 ## [0.19.0] — 2026-08-17
 
