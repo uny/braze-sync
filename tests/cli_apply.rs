@@ -1841,3 +1841,105 @@ async fn apply_non_cb_et_kind_ignores_stray_values_directory_files() {
     .await
     .unwrap();
 }
+
+// =====================================================================
+// Partial-apply reporting (#96)
+// =====================================================================
+//
+// Braze has no cross-resource transaction: a per-resource rejection
+// mid-plan (a DND content block refusing `update`, a permission error,
+// a transient 4xx) leaves every earlier write live. The run must say so
+// — a run that wrote nothing and a run that wrote most of the plan used
+// to look identical in the output.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mid_plan_write_failure_reports_applied_failed_and_not_attempted() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [
+                {"content_block_id": "id-a", "name": "a_first"},
+                {"content_block_id": "id-b", "name": "b_dnd"},
+                {"content_block_id": "id-c", "name": "c_last"},
+            ]
+        })))
+        .mount(&server)
+        .await;
+    for (id, name) in [("id-a", "a_first"), ("id-b", "b_dnd"), ("id-c", "c_last")] {
+        Mock::given(method("GET"))
+            .and(path("/content_blocks/info"))
+            .and(query_param("content_block_id", id))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "name": name,
+                "content": "old body\n",
+                "tags": []
+            })))
+            .mount(&server)
+            .await;
+    }
+    // The middle block is the one Braze refuses. Mounted first so it
+    // wins over the catch-all success mock below.
+    Mock::given(method("POST"))
+        .and(path("/content_blocks/update"))
+        .and(body_partial_json(json!({"content_block_id": "id-b"})))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "message": "DND Content blocks are not allowed to be updated from the API."
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/content_blocks/update"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
+        // Only the first block is written; the third is never attempted.
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    for name in ["a_first", "b_dnd", "c_last"] {
+        write_local_content_block(tmp.path(), name, "new body\n");
+    }
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "content_block", "--confirm"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("apply aborted"), "stderr: {stderr}");
+    assert!(stderr.contains("applied (1):"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("- content_block 'a_first'"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("- content_block 'b_dnd': "),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("DND Content blocks are not allowed"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("not attempted (1):"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("- content_block 'c_last'"),
+        "stderr: {stderr}"
+    );
+    // The remediation the incident had to be re-derived by hand.
+    assert!(
+        stderr.contains("Run `braze-sync diff` to confirm the current remote state"),
+        "stderr: {stderr}"
+    );
+    // The success path must not claim anything on an aborted run.
+    assert!(!stderr.contains("✓ Applied"), "stderr: {stderr}");
+}

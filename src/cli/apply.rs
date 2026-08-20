@@ -7,7 +7,11 @@
 //! cross-resource transaction, so a mid-loop failure can still leave
 //! earlier writes applied — the pre-validation prevents *known-bad*
 //! plans from firing any writes at all, but it does not promise
-//! cross-write atomicity.
+//! cross-write atomicity. Because that partial state is real and
+//! nothing downstream flags it, an aborted run enumerates what it
+//! applied, what failed, and what it never attempted (see
+//! `report_partial_apply`), so the operator does not have to re-derive
+//! the remote state from a second `diff`.
 
 use crate::braze::BrazeClient;
 use crate::config::{ApplyOrder, ResolvedConfig};
@@ -241,20 +245,120 @@ pub async fn run(
 
     check_for_unsupported_ops(&summary)?;
 
+    let units = collect_write_units(&summary);
     let mut applied = 0;
+    let mut done: Vec<String> = Vec::new();
+    for (i, unit) in units.iter().enumerate() {
+        let label = unit.label();
+        match unit
+            .execute(
+                &client,
+                content_block_id_index.as_ref(),
+                email_template_id_index.as_ref(),
+            )
+            .await
+        {
+            Ok(n) => {
+                applied += n;
+                eprintln!("  ✓ {label}");
+                done.push(label);
+            }
+            Err(err) => {
+                // Braze has no cross-resource transaction: everything in
+                // `done` is already live. Enumerate it here rather than
+                // making the operator re-derive it from a second `diff`.
+                report_partial_apply(&done, &label, &err, &units[i + 1..]);
+                return Err(err);
+            }
+        }
+    }
+
+    eprintln!("✓ Applied {applied} change(s).");
+    Ok(())
+}
+
+/// One resource-level write, in the order `apply` walks the plan.
+///
+/// Materialising the walk as a list (instead of writing straight from
+/// the diff loop) is what lets a failure name the resources that were
+/// never attempted: they are simply the tail of this vector.
+enum WriteUnit<'a> {
+    /// A catalog is one unit but several calls (one per field diff), so
+    /// a failure here can leave the *named* resource partly written —
+    /// which is why the report tells the operator to re-run `diff`
+    /// rather than trusting the labels alone.
+    CatalogSchema(&'a CatalogSchemaDiff),
+    ContentBlock(&'a ContentBlockDiff),
+    EmailTemplate(&'a EmailTemplateDiff),
+    /// Custom attribute deprecation toggles are one API call per
+    /// direction, so a whole direction is a single unit.
+    CustomAttributeBlocklist {
+        names: Vec<&'a str>,
+        blocklisted: bool,
+    },
+}
+
+impl WriteUnit<'_> {
+    fn label(&self) -> String {
+        match self {
+            Self::CatalogSchema(d) => format!("catalog_schema '{}'", d.name),
+            Self::ContentBlock(d) => format!("content_block '{}'", d.name),
+            Self::EmailTemplate(d) => format!("email_template '{}'", d.name),
+            Self::CustomAttributeBlocklist { names, blocklisted } => format!(
+                "custom_attribute {} ({})",
+                if *blocklisted {
+                    "deprecate"
+                } else {
+                    "reactivate"
+                },
+                names.join(", "),
+            ),
+        }
+    }
+
+    async fn execute(
+        &self,
+        client: &BrazeClient,
+        content_block_id_index: Option<&ContentBlockIdIndex>,
+        email_template_id_index: Option<&EmailTemplateIdIndex>,
+    ) -> anyhow::Result<usize> {
+        match self {
+            Self::CatalogSchema(d) => apply_catalog_schema(client, d).await,
+            Self::ContentBlock(d) => apply_content_block(client, d, content_block_id_index).await,
+            Self::EmailTemplate(d) => {
+                apply_email_template(client, d, email_template_id_index).await
+            }
+            Self::CustomAttributeBlocklist { names, blocklisted } => {
+                apply_custom_attribute_blocklist(client, names, *blocklisted).await
+            }
+        }
+    }
+}
+
+/// Flatten the plan into the writes `apply` will actually issue, in
+/// write order. Diffs that fire no API call (orphans, unchanged,
+/// informational tag drift) are left out so they can never show up as
+/// "not attempted" in a failure report.
+fn collect_write_units(summary: &DiffSummary) -> Vec<WriteUnit<'_>> {
+    let mut units = Vec::new();
     let mut ca_deprecate: Vec<&str> = Vec::new();
     let mut ca_reactivate: Vec<&str> = Vec::new();
     for diff in &summary.diffs {
         match diff {
             ResourceDiff::CatalogSchema(d) => {
-                applied += apply_catalog_schema(&client, d).await?;
+                if d.has_changes() {
+                    units.push(WriteUnit::CatalogSchema(d));
+                }
             }
             ResourceDiff::ContentBlock(d) => {
-                applied += apply_content_block(&client, d, content_block_id_index.as_ref()).await?;
+                if !d.orphan && d.op.is_change() {
+                    units.push(WriteUnit::ContentBlock(d));
+                }
             }
             ResourceDiff::EmailTemplate(d) => {
-                applied +=
-                    apply_email_template(&client, d, email_template_id_index.as_ref()).await?;
+                if !d.orphan && d.op.is_change() {
+                    units.push(WriteUnit::EmailTemplate(d));
+                }
             }
             ResourceDiff::CustomAttribute(d) => {
                 if let CustomAttributeOp::DeprecationToggled { to, .. } = &d.op {
@@ -271,12 +375,45 @@ pub async fn run(
         }
     }
 
-    if !ca_deprecate.is_empty() || !ca_reactivate.is_empty() {
-        applied += apply_custom_attribute_batch(&client, &ca_deprecate, &ca_reactivate).await?;
+    // Batched last, and by direction, to keep the blocklist calls at two
+    // per run regardless of attribute count.
+    for (names, blocklisted) in [(ca_deprecate, true), (ca_reactivate, false)] {
+        if !names.is_empty() {
+            units.push(WriteUnit::CustomAttributeBlocklist { names, blocklisted });
+        }
     }
+    units
+}
 
-    eprintln!("✓ Applied {applied} change(s).");
-    Ok(())
+/// Emit what the run knows at the point it gives up: which writes
+/// landed, which one failed, and which were never attempted.
+///
+/// Without this the operator cannot distinguish a run that wrote
+/// nothing from one that wrote most of the plan — the writes that
+/// landed are real and correct, so nothing downstream flags them.
+fn report_partial_apply(
+    applied: &[String],
+    failed: &str,
+    err: &anyhow::Error,
+    pending: &[WriteUnit],
+) {
+    eprintln!("✗ apply aborted — partial state left in Braze (no cross-resource rollback):");
+    eprintln!("  applied ({}):", applied.len());
+    for label in applied {
+        eprintln!("    - {label}");
+    }
+    if applied.is_empty() {
+        eprintln!("    (none — no write landed before the failure)");
+    }
+    eprintln!("  failed:");
+    eprintln!("    - {failed}: {err:#}");
+    eprintln!("  not attempted ({}):", pending.len());
+    for unit in pending {
+        eprintln!("    - {}", unit.label());
+    }
+    eprintln!("  → the applied writes above are live and are not rolled back.");
+    eprintln!("    Run `braze-sync diff` to confirm the current remote state, then");
+    eprintln!("    re-run `apply` to pick up the changes that were not attempted.");
 }
 
 /// Reject ops the API can't actually perform. Runs before any write
@@ -617,36 +754,24 @@ async fn apply_email_template(
     }
 }
 
-/// Batch custom attribute deprecation toggles by direction so we issue
-/// at most two API calls. Each batch is reported to stderr on success so
-/// the user can tell what was committed if a later batch fails.
-async fn apply_custom_attribute_batch(
+/// Toggle one direction of custom attribute deprecation. Callers batch
+/// by direction so a run issues at most two blocklist calls regardless
+/// of attribute count; the per-unit success line is printed by the
+/// caller's walk.
+async fn apply_custom_attribute_blocklist(
     client: &BrazeClient,
-    to_deprecate: &[&str],
-    to_reactivate: &[&str],
+    names: &[&str],
+    blocklisted: bool,
 ) -> anyhow::Result<usize> {
-    let mut applied = 0;
-    for (names, blocklisted, verb) in [
-        (to_deprecate, true, "deprecating"),
-        (to_reactivate, false, "reactivating"),
-    ] {
-        if names.is_empty() {
-            continue;
-        }
-        tracing::info!(attributes = ?names, "{verb} custom attributes");
-        client
-            .set_custom_attribute_blocklist(names, blocklisted)
-            .await
-            .with_context(|| format!("{verb} custom attributes"))?;
-        let n = names.len();
-        let past = if blocklisted {
-            "deprecated"
-        } else {
-            "reactivated"
-        };
-        eprintln!("  ✓ {past} {n} custom attribute(s)");
-        applied += n;
-    }
-
-    Ok(applied)
+    let verb = if blocklisted {
+        "deprecating"
+    } else {
+        "reactivating"
+    };
+    tracing::info!(attributes = ?names, "{verb} custom attributes");
+    client
+        .set_custom_attribute_blocklist(names, blocklisted)
+        .await
+        .with_context(|| format!("{verb} custom attributes"))?;
+    Ok(names.len())
 }

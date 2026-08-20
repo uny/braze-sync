@@ -147,6 +147,29 @@ braze-sync apply --confirm                     # add fields ok, deletes → exit
 braze-sync apply --confirm --allow-destructive # catalog/field deletes permitted
 ```
 
+`apply` is **not atomic across resources** — Braze exposes no
+cross-resource transaction. Writes are issued one resource at a time and
+the run aborts on the first failure, so a rejection mid-plan (e.g. Braze
+refusing `update` on a drag-and-drop content block) leaves the earlier
+writes live. The aborted run enumerates exactly that, so you never have
+to re-derive it from a second `diff`:
+
+```
+✗ apply aborted — partial state left in Braze (no cross-resource rollback):
+  applied (20):
+    - content_block 'header_ja'
+    …
+  failed:
+    - content_block 'promo_dnd': HTTP 400 Bad Request: {"message":"DND Content blocks are not allowed to be updated from the API."}
+  not attempted (4):
+    - content_block 'footer_ja'
+    …
+  → the applied writes above are live and are not rolled back.
+```
+
+Re-running `apply` after fixing (or excluding) the offending resource
+picks up the changes that were not attempted.
+
 API keys never live in the config file. The config only references the
 *name* of the environment variable (`api_key_env`), and the key is
 held in `secrecy::SecretString` from the moment it leaves the OS so
