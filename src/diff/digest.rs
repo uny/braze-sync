@@ -29,11 +29,16 @@
 //! The byte encoding below is part of the plan file format. Changing it
 //! invalidates every saved plan, so any change here must bump
 //! [`CURRENT_PLAN_VERSION`](crate::diff::plan::CURRENT_PLAN_VERSION).
-//! The insta snapshots in this module make an encoding change impossible
-//! to make *silently* — they fail, and accepting a new one is the prompt
-//! to bump. Nothing enforces the bump itself: accept the snapshot without
-//! it and every already-saved v2 plan starts reporting drift its remote
-//! never had.
+//! The insta snapshots in this module catch an encoding change *for the
+//! three fixtures they pin*, and a failure there is the prompt to bump.
+//! Two gaps to keep in mind, because neither is enforced:
+//!
+//! - Nothing ties the bump to the snapshot. Accept a new one and leave
+//!   the version alone, and every already-saved v2 plan starts reporting
+//!   drift its remote never had.
+//! - An input class the fixtures do not exercise can change encoding
+//!   with all three still green — a catalog with a repeated field name
+//!   did exactly that when this projection moved to a `BTreeMap`.
 //!
 //! # Limitation
 //!
