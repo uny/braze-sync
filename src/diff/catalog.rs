@@ -329,6 +329,21 @@ mod tests {
             assert_agree(&base(), &b);
         }
 
+        #[test]
+        fn duplicate_field_names_collapse_in_both() {
+            // Braze's schema cannot produce this, but the equivalence
+            // must not rest on that: `diff_fields` keys by name and the
+            // last entry wins, so the projection has to do the same or
+            // it distinguishes two catalogs the diff cannot.
+            let dup = cat(vec![
+                field("id", CatalogFieldType::String),
+                field("id", CatalogFieldType::Number),
+            ]);
+            let collapsed = cat(vec![field("id", CatalogFieldType::Number)]);
+            assert!(diff_fields(&dup.fields, &collapsed.fields).is_empty());
+            assert_agree(&dup, &collapsed);
+        }
+
         /// Compile-time guard: adding a field to `Catalog` or
         /// `CatalogField` breaks this destructure, which is the prompt to
         /// decide whether it belongs in `diff_fields` *and* in the
