@@ -35,9 +35,13 @@
 //! - **It does not cover catalog items.** Deleting a catalog deletes its
 //!   items, which braze-sync never fetches; the schema digest says
 //!   nothing about rows added since the plan.
-//! - **`scope.environment` is a config name, not a workspace identity.**
-//!   Repointing an environment at a different Braze workspace is not
-//!   visible here.
+//! - **`scope` pins the cluster, not the workspace.** `scope.environment`
+//!   is a config label and `scope.api_endpoint` the REST host `diff`
+//!   talked to; both are checked at apply time, so repointing an
+//!   environment at a *different* Braze cluster is now caught. Swapping
+//!   only the API key — same endpoint, different workspace — is not: the
+//!   key is deliberately absent from the plan so it stays publishable as
+//!   a CI artifact, and the plan therefore records no workspace identity.
 //! - **A digest is not confidentiality.** Predictable content can be
 //!   guessed and confirmed. It is small enough to publish as a CI
 //!   artifact, which is why the plan carries digests rather than payloads.
@@ -70,6 +74,12 @@ pub struct PlanFile {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlanScope {
     pub environment: String,
+    /// The Braze API endpoint `diff` actually talked to, as
+    /// [`url::Url`] normalized it. Required: an environment *name* is a
+    /// config label that can be repointed at a different Braze cluster
+    /// between plan and apply, so the name alone is not evidence about
+    /// where the plan's observations came from.
+    pub api_endpoint: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource: Option<ResourceKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -189,6 +199,7 @@ impl PlanFile {
     pub fn from_summary(
         summary: &DiffSummary,
         environment: impl Into<String>,
+        api_endpoint: impl Into<String>,
         resource: Option<ResourceKind>,
         name: Option<String>,
     ) -> Self {
@@ -198,6 +209,7 @@ impl PlanFile {
             braze_sync_version: env!("CARGO_PKG_VERSION").to_string(),
             scope: PlanScope {
                 environment: environment.into(),
+                api_endpoint: api_endpoint.into(),
                 resource,
                 name,
             },
@@ -205,10 +217,37 @@ impl PlanFile {
         }
     }
 
+    /// Read a plan, gating the schema parse on `version`.
+    ///
+    /// The version is probed on its own first so a plan from an older
+    /// format fails with "regenerate", not with whichever field this
+    /// binary's schema happens to have gained since. Every other field
+    /// is then required: a plan that cannot be fully parsed carries no
+    /// evidence this binary can check.
     pub fn read_from(path: &Path) -> std::io::Result<Self> {
         let bytes = std::fs::read(path)?;
-        serde_json::from_slice(&bytes)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        let invalid =
+            |e: serde_json::Error| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
+
+        #[derive(Deserialize)]
+        struct VersionProbe {
+            version: u32,
+        }
+        let probe: VersionProbe = serde_json::from_slice(&bytes).map_err(invalid)?;
+        if probe.version != CURRENT_PLAN_VERSION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "plan file version {} is not supported by this binary \
+                     (expected {}). Regenerate with `diff --plan-out` and review \
+                     the new plan — an older plan carries no evidence this binary \
+                     can check.",
+                    probe.version, CURRENT_PLAN_VERSION,
+                ),
+            ));
+        }
+
+        serde_json::from_slice(&bytes).map_err(invalid)
     }
 
     pub fn write_to(&self, path: &Path) -> std::io::Result<()> {
@@ -492,6 +531,7 @@ mod tests {
             braze_sync_version: "test".into(),
             scope: PlanScope {
                 environment: "dev".into(),
+                api_endpoint: "https://rest.iad-01.braze.com/".into(),
                 resource: None,
                 name: None,
             },
@@ -557,6 +597,7 @@ mod tests {
             braze_sync_version: "0.12.0".into(),
             scope: PlanScope {
                 environment: "dev".into(),
+                api_endpoint: "https://rest.iad-01.braze.com/".into(),
                 resource: Some(ResourceKind::ContentBlock),
                 name: None,
             },

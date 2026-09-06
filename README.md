@@ -204,6 +204,15 @@ exactly this:
 > Apply the *current* local intent, provided the remote preconditions
 > the plan recorded still hold.
 
+The plan also records which environment it was generated for **and the
+Braze endpoint that environment pointed at**; `apply --plan` checks both
+before its first API call. An environment name is a config label that can
+be repointed at another Braze cluster, and a plan's remote observations
+say nothing about a cluster it never talked to. What the plan does not
+record is the API key, so it stays safe to publish as a CI artifact —
+the cost is that swapping only the key, on the same endpoint, is not
+caught.
+
 It deliberately does **not** freeze the change set: editing a local file
 between plan and apply still applies, as long as the op shapes match.
 Nor is it concurrency control — Braze's REST API offers no `If-Match`,

@@ -162,6 +162,7 @@ pub async fn run(
         let plan = PlanFile::from_summary(
             &summary,
             resolved.environment_name.clone(),
+            resolved.api_endpoint.to_string(),
             args.resource,
             args.name.clone(),
         );
