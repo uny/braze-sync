@@ -263,4 +263,95 @@ mod tests {
         assert!(d.field_diffs.is_empty());
         assert!(!d.has_changes());
     }
+
+    // -----------------------------------------------------------
+    // digest <=> "diff_fields is empty". Catalog has no syncable_eq;
+    // the diff's notion of "unchanged" is an empty field diff, and the
+    // plan's remote precondition must agree with exactly that.
+    // See src/diff/digest.rs.
+    // -----------------------------------------------------------
+
+    mod digest_equivalence {
+        use super::*;
+        use crate::diff::digest;
+        use crate::resource::Catalog;
+
+        fn cat(fields: Vec<CatalogField>) -> Catalog {
+            Catalog {
+                name: "products".into(),
+                description: None,
+                fields,
+            }
+        }
+
+        fn field(name: &str, field_type: CatalogFieldType) -> CatalogField {
+            CatalogField {
+                name: name.into(),
+                field_type,
+            }
+        }
+
+        fn base() -> Catalog {
+            cat(vec![
+                field("id", CatalogFieldType::String),
+                field("price", CatalogFieldType::Number),
+            ])
+        }
+
+        #[track_caller]
+        fn assert_agree(a: &Catalog, b: &Catalog) {
+            assert_eq!(
+                diff_fields(&a.fields, &b.fields).is_empty(),
+                digest::catalog(a) == digest::catalog(b),
+                "digest and diff_fields disagree on {a:?} vs {b:?}",
+            );
+        }
+
+        #[test]
+        fn identical_agree() {
+            assert_agree(&base(), &base());
+        }
+
+        #[test]
+        fn field_order_agrees() {
+            let mut b = base();
+            b.fields.reverse();
+            assert!(diff_fields(&base().fields, &b.fields).is_empty());
+            assert_agree(&base(), &b);
+        }
+
+        #[test]
+        fn description_is_ignored_by_both() {
+            let mut b = base();
+            b.description = Some("edited remotely".into());
+            assert_agree(&base(), &b);
+        }
+
+        #[test]
+        fn field_changes_disagree_in_both() {
+            let variants = vec![
+                cat(vec![field("id", CatalogFieldType::String)]),
+                cat(vec![
+                    field("id", CatalogFieldType::String),
+                    field("price", CatalogFieldType::String),
+                ]),
+                cat(vec![
+                    field("id", CatalogFieldType::String),
+                    field("price", CatalogFieldType::Number),
+                    field("sku", CatalogFieldType::String),
+                ]),
+                cat(vec![
+                    field("id", CatalogFieldType::String),
+                    field("cost", CatalogFieldType::Number),
+                ]),
+            ];
+            for b in variants {
+                assert!(
+                    !diff_fields(&base().fields, &b.fields).is_empty(),
+                    "expected a real change: {b:?}",
+                );
+                assert_agree(&base(), &b);
+            }
+        }
+    }
 }

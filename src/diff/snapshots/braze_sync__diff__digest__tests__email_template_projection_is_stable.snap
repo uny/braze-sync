@@ -1,0 +1,6 @@
+---
+source: src/diff/digest.rs
+assertion_line: 208
+expression: email_template(&tpl())
+---
+f2ee4828697cc58b4dd5d8b9e08f24b7473a1dd1452c036f19b72f25c1bb3f84

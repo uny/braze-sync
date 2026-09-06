@@ -185,9 +185,26 @@ Re-run `apply` with the same flags after fixing (or excluding) the
 offending resource to pick up the changes that were not attempted; the
 `diff` is recomputed, so the writes that already landed are skipped.
 **Exception:** a plan-locked run (`--plan`) must have its plan
-regenerated with `diff --plan-out` first — the applied writes are gone
-from the fresh diff, so re-running `apply --plan` as-is exits **7**
-(plan drift) without writing anything.
+regenerated with `diff --plan-out` first — the writes that landed moved
+the remote away from what the plan recorded, so re-running
+`apply --plan` as-is exits **7** (plan drift) without writing anything.
+
+### What a plan file guarantees
+
+`diff --plan-out` records, for every op it can apply, a digest of the
+**remote** side as `diff` observed it. `apply --plan` re-fetches, and
+refuses to run if the op set changed *or* if any of those remote objects
+moved. So a plan authorizes exactly this:
+
+> Apply the *current* local intent, provided the remote preconditions
+> the plan recorded still hold.
+
+It deliberately does **not** freeze the change set: editing a local file
+between plan and apply still applies, as long as the op shapes match.
+Nor is it concurrency control — Braze's REST API offers no `If-Match`,
+so the check happens against apply's own fetch and a lost update remains
+possible in the window before the write. The plan carries digests rather
+than payloads, which keeps it safe to publish as a CI artifact.
 
 API keys never live in the config file. The config only references the
 *name* of the environment variable (`api_key_env`), and the key is
@@ -244,7 +261,7 @@ across all v1.x releases.
 | `4` | Authentication failed (invalid API key) |
 | `5` | Rate limit retries exhausted |
 | `6` | Destructive change blocked (pass `--allow-destructive`) |
-| `7` | Plan/apply mismatch (`apply --plan` ops drift) |
+| `7` | Plan/apply mismatch (`apply --plan`: op set differs, or the remote moved since the plan) |
 | `8` | Fallback gate (unmatched placeholder + unconsumed remote lid). Unlike `2`, `diff` has no opt-in flag for this — it always exits `8` when the gate fires; `apply` requires `--allow-fallback` |
 
 ## Output formats

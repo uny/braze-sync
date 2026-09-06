@@ -214,7 +214,17 @@ pub async fn run(
     // Print the fresh plan first so the operator sees it even on mismatch.
     if let Some(saved) = &saved_plan {
         check_plan_ops(saved, &summary)?;
-        eprintln!("✓ Plan matches saved plan ({} op(s)).", saved.ops.len());
+        let checked = saved
+            .ops
+            .iter()
+            .filter(|op| op.precondition.is_some())
+            .count();
+        eprintln!(
+            "✓ Plan verified: scope, {} op(s), and the remote state of {} of them \
+             are unchanged since the plan was generated.",
+            saved.ops.len(),
+            checked,
+        );
     }
 
     if summary.actionable_count() == 0 {
@@ -467,9 +477,11 @@ fn report_partial_apply(
     eprintln!("    re-run `apply` with the same flags to pick up the changes that");
     eprintln!("    were not attempted.");
     if plan_locked {
-        // Any write that landed drops out of the fresh diff, so the
-        // saved plan no longer matches and `check_plan_ops` exits 7
-        // before issuing a single write.
+        // A write that landed moves the remote away from the digest the
+        // plan recorded, so `check_plan_ops` exits 7 before issuing a
+        // single write. Op shape alone would not be enough here: a
+        // catalog that got one of its two field writes still recomputes
+        // to the same `modify` op.
         eprintln!("    Because this run was plan-locked, regenerate the plan first");
         eprintln!("    (`diff --plan-out`) — re-running `apply --plan` as-is exits 7");
         eprintln!("    if anything landed.");
@@ -571,9 +583,20 @@ fn check_plan_scope(plan: &PlanFile, environment: &str, args: &ApplyArgs) -> any
     if plan.version != plan::CURRENT_PLAN_VERSION {
         return Err(anyhow!(
             "plan file version {} is not supported by this binary \
-             (expected {}). Regenerate with `diff --plan-out`.",
+             (expected {}). Regenerate with `diff --plan-out` and review \
+             the new plan — an older plan carries no evidence this binary \
+             can check.",
             plan.version,
             plan::CURRENT_PLAN_VERSION,
+        ));
+    }
+    if let Err(problems) = plan.validate() {
+        eprintln!("✗ malformed plan file: ops are missing required remote preconditions");
+        for problem in &problems {
+            eprintln!("    - {problem}");
+        }
+        return Err(anyhow!(
+            "plan file cannot be checked; regenerate with `diff --plan-out`"
         ));
     }
     if plan.scope.environment != environment {
@@ -621,8 +644,9 @@ fn warn_on_plan_metadata(plan: &PlanFile) {
     }
 }
 
-/// Compare the saved plan's ops against the freshly-computed summary.
-/// Returns `Error::PlanDrift` on any (kind, name, op_type) mismatch.
+/// Compare the saved plan against the freshly-computed summary: first the
+/// op shapes, then the remote preconditions of the ops that matched.
+/// Returns `Error::PlanDrift` on either.
 fn check_plan_ops(saved: &PlanFile, fresh: &DiffSummary) -> anyhow::Result<()> {
     let fresh_ops = plan::collect_ops(fresh);
     let diff = saved.diff_ops(&fresh_ops);
@@ -633,13 +657,41 @@ fn check_plan_ops(saved: &PlanFile, fresh: &DiffSummary) -> anyhow::Result<()> {
     if !diff.missing.is_empty() {
         eprintln!("  ops in saved plan but not in fresh plan (resolved or absorbed remotely):");
         for op in &diff.missing {
-            eprintln!("    - {} '{}' [{:?}]", op.kind.as_str(), op.name, op.op);
+            eprintln!(
+                "    - {} '{}' [{}]",
+                op.kind.as_str(),
+                op.name,
+                op.op.as_str()
+            );
         }
     }
     if !diff.extra.is_empty() {
         eprintln!("  ops in fresh plan but not in saved plan (new drift since plan):");
         for op in &diff.extra {
-            eprintln!("    - {} '{}' [{:?}]", op.kind.as_str(), op.name, op.op);
+            eprintln!(
+                "    - {} '{}' [{}]",
+                op.kind.as_str(),
+                op.name,
+                op.op.as_str()
+            );
+        }
+    }
+    if !diff.precondition_drift.is_empty() {
+        // Attribution matters: the op shape is unchanged, so this is the
+        // remote moving, not a local edit.
+        eprintln!(
+            "  ops whose remote state changed since the plan was generated \
+             (applying would overwrite that change):"
+        );
+        for drift in &diff.precondition_drift {
+            eprintln!(
+                "    - {} '{}' [{}]: remote state moved (planned {}, found {})",
+                drift.op.kind.as_str(),
+                drift.op.name,
+                drift.op.op.as_str(),
+                drift.expected.describe(),
+                drift.found.describe(),
+            );
         }
     }
     eprintln!("  → regenerate with `diff --plan-out` and review before re-applying");

@@ -58,7 +58,7 @@ dotenvy = "0.15"
 # CSV for catalog items error types (Phase B)
 csv = "1"
 
-# Hashing for catalog items diff
+# Remote-state digests in the plan file
 blake3 = "1"
 
 # Text diff (Content Block body comparison, future Email Template parts)
