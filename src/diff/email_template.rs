@@ -294,4 +294,114 @@ mod tests {
         let modified = diff(Some(&l2), Some(&r2)).unwrap();
         assert!(!modified.op.is_destructive());
     }
+
+    // -----------------------------------------------------------
+    // digest <=> syncable_eq. See src/diff/digest.rs.
+    // -----------------------------------------------------------
+
+    mod digest_equivalence {
+        use super::*;
+        use crate::diff::digest;
+
+        fn base() -> EmailTemplate {
+            EmailTemplate {
+                name: "welcome".into(),
+                subject: "Hi".into(),
+                body_html: "<p>hi</p>".into(),
+                body_plaintext: "hi".into(),
+                description: Some("read-only".into()),
+                preheader: Some("peek".into()),
+                should_inline_css: Some(true),
+                tags: vec!["a".into(), "b".into()],
+            }
+        }
+
+        #[track_caller]
+        fn assert_agree(a: &EmailTemplate, b: &EmailTemplate) {
+            assert_eq!(
+                syncable_eq(a, b),
+                digest::email_template(a) == digest::email_template(b),
+                "digest and syncable_eq disagree on {a:?} vs {b:?}",
+            );
+        }
+
+        #[test]
+        fn identical_agree() {
+            assert_agree(&base(), &base());
+        }
+
+        #[test]
+        fn none_and_empty_preheader_agree() {
+            let mut a = base();
+            a.preheader = None;
+            let mut b = base();
+            b.preheader = Some(String::new());
+            assert!(syncable_eq(&a, &b));
+            assert_agree(&a, &b);
+        }
+
+        #[test]
+        fn unset_inline_css_differs_from_false_in_both() {
+            let mut a = base();
+            a.should_inline_css = None;
+            let mut b = base();
+            b.should_inline_css = Some(false);
+            assert!(!syncable_eq(&a, &b));
+            assert_agree(&a, &b);
+        }
+
+        #[test]
+        fn tag_order_agrees() {
+            let mut b = base();
+            b.tags.reverse();
+            assert!(syncable_eq(&base(), &b));
+            assert_agree(&base(), &b);
+        }
+
+        #[test]
+        fn description_is_ignored_by_both() {
+            let mut b = base();
+            b.description = Some("edited remotely".into());
+            assert!(syncable_eq(&base(), &b));
+            assert_agree(&base(), &b);
+        }
+
+        /// Compile-time guard on the list below — see the same test in
+        /// `diff::content_block` for why the hand-written mutation list
+        /// cannot be trusted to stay exhaustive on its own.
+        #[test]
+        fn mutation_list_covers_every_field() {
+            let EmailTemplate {
+                name: _,
+                subject: _,
+                body_html: _,
+                body_plaintext: _,
+                description: _,
+                preheader: _,
+                should_inline_css: _,
+                tags: _,
+            } = base();
+        }
+
+        #[test]
+        fn every_syncable_field_change_disagrees_in_both() {
+            let mutations: Vec<fn(&mut EmailTemplate)> = vec![
+                |t| t.name = "other".into(),
+                |t| t.subject = "changed".into(),
+                |t| t.body_html = "changed".into(),
+                |t| t.body_plaintext = "changed".into(),
+                |t| t.preheader = Some("changed".into()),
+                |t| t.should_inline_css = Some(false),
+                |t| t.should_inline_css = None,
+                |t| t.tags.push("extra".into()),
+                |t| t.tags.clear(),
+            ];
+            for mutate in mutations {
+                let mut b = base();
+                mutate(&mut b);
+                assert!(!syncable_eq(&base(), &b), "expected a real change: {b:?}");
+                assert_agree(&base(), &b);
+            }
+        }
+    }
 }

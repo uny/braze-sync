@@ -185,9 +185,39 @@ Re-run `apply` with the same flags after fixing (or excluding) the
 offending resource to pick up the changes that were not attempted; the
 `diff` is recomputed, so the writes that already landed are skipped.
 **Exception:** a plan-locked run (`--plan`) must have its plan
-regenerated with `diff --plan-out` first — the applied writes are gone
-from the fresh diff, so re-running `apply --plan` as-is exits **7**
-(plan drift) without writing anything.
+regenerated with `diff --plan-out` first — the writes that landed moved
+the remote away from what the plan recorded, so re-running
+`apply --plan` as-is exits **7** (plan drift) without writing anything.
+
+### What a plan file guarantees
+
+`diff --plan-out` records, for every op that would overwrite a remote
+body (`modify`, `destructive_delete`), a digest of the **remote** side as
+`diff` observed it; an `add` records the remote's *absence* instead.
+`deprecate` / `reactivate` record nothing — they write a boolean whose
+expected prior value the op direction already states, so a remote toggle
+removes the op from the fresh diff and is caught as op drift. `apply
+--plan` re-fetches, and refuses to run if the op set changed *or* if any
+of those remote preconditions no longer holds. So a plan authorizes
+exactly this:
+
+> Apply the *current* local intent, provided the remote preconditions
+> the plan recorded still hold.
+
+It deliberately does **not** freeze the change set: editing a local file
+between plan and apply still applies, as long as the op shapes match.
+Nor is it concurrency control — Braze's REST API offers no `If-Match`,
+so the check happens against apply's own fetch and a lost update remains
+possible in the window before the write.
+
+The plan carries digests rather than payloads, so publishing it as a CI
+artifact does not disclose content directly — but a digest is not
+confidentiality. The projection is an unkeyed, deterministic hash whose
+encoding is public in this repo, so anyone holding the artifact can
+recompute a guess and confirm it. Resource *names* are in the plan in
+cleartext regardless. Treat a plan file as you would any other build
+artifact describing your Braze workspace, and do not publish plans that
+touch sensitive resources to readers you would not otherwise trust.
 
 API keys never live in the config file. The config only references the
 *name* of the environment variable (`api_key_env`), and the key is
@@ -244,7 +274,7 @@ across all v1.x releases.
 | `4` | Authentication failed (invalid API key) |
 | `5` | Rate limit retries exhausted |
 | `6` | Destructive change blocked (pass `--allow-destructive`) |
-| `7` | Plan/apply mismatch (`apply --plan` ops drift) |
+| `7` | Plan/apply mismatch (`apply --plan`: op set differs, or the remote moved since the plan) |
 | `8` | Fallback gate (unmatched placeholder + unconsumed remote lid). Unlike `2`, `diff` has no opt-in flag for this — it always exits `8` when the gate fires; `apply` requires `--allow-fallback` |
 
 ## Output formats

@@ -7,6 +7,72 @@ versions follow [semver](https://semver.org/). Per IMPLEMENTATION.md
 changes; v1.0 freezes the public surface (CLI flags, config schema,
 file formats, JSON output, exit codes) for the full v1.x line.
 
+## [Unreleased]
+
+### Changed
+
+- **`apply --plan` now checks the remote, not just the op shape (#100).**
+  The plan file's own doc comment promised a Terraform-style plan/apply
+  lock — apply refuses to run when the live Braze state has drifted —
+  but the check compared only the multiset of `{kind, name, op}`. Remote
+  drift that did not change an operation's *classification* was
+  invisible: a content block already classified `modify`, edited in the
+  web console, still recomputed to `modify`, so the multisets matched,
+  the run printed `✓ Plan matches saved plan`, and the console edit was
+  overwritten with no warning.
+
+  `diff --plan-out` now records, for every op that would overwrite a
+  remote body, a digest of the **remote** side as `diff` observed it; an
+  `add` records absence instead, and `deprecate` / `reactivate` record
+  nothing (their expected prior value is the op direction itself, so a
+  remote toggle drops the op from the fresh diff and is caught as op
+  drift). `apply --plan` compares those preconditions against its own
+  fresh fetch and exits `7` when one no longer holds, naming the drift as
+  a remote change rather than a local edit. Local edits between plan and
+  apply are still applied as long as they leave the op shapes unchanged —
+  the plan binds the remote preconditions, not the change set. The plan
+  carries digests, not payloads, so publishing it discloses no content
+  directly; the digest is unkeyed and its encoding is public, so it
+  remains a confirmation oracle for guessable content rather than a
+  secret (see README).
+
+  Each digest covers exactly the surface the corresponding `syncable_eq`
+  compares; the equivalence is pinned by tests so the digest and the
+  diff cannot drift apart. Read-only fields `apply` can never overwrite
+  (`ContentBlock::state`, `EmailTemplate::description`,
+  `Catalog::description`) stay outside the projection.
+
+  This makes true a claim `apply` was already printing: after a partial
+  apply, re-running the same plan now really does exit `7`. For a
+  catalog whose fields are written one API call at a time, the surviving
+  ops previously kept the same shape and the replay was allowed through.
+
+  **Not claimed, and stated in the docs rather than papered over:** this
+  is not concurrency control (Braze offers no `If-Match`, so the window
+  between check and write remains), it does not freeze the reviewed
+  change set, it does not detect a remote object replaced by identical
+  content under a different Braze ID, the catalog digest says nothing
+  about catalog items, and `scope.environment` is a config name rather
+  than a workspace identity.
+
+- **Catalog field removals are planned as `destructive_delete`.**
+  Dropping a field is a destructive write, but the plan classified it as
+  `modify` — the destructive check sat in a `classify` branch that
+  `diff_schema` cannot actually produce. That dead branch is removed and
+  the check moved to the reachable one. The `--allow-destructive` gate
+  itself was already correct; this aligns the plan's vocabulary with it.
+
+### Breaking
+
+- **Plan file version 2; version 1 files are rejected.** A v1 plan
+  carries no evidence about the remote, so it cannot be checked rather
+  than migrated. Regenerate with `diff --plan-out` — and review the new
+  plan, since regenerating immediately before `apply` would discard the
+  correspondence to what was reviewed. A v2 plan whose `modify` or
+  `destructive_delete` op is missing its digest is rejected as
+  malformed; a missing precondition is never treated as "skip the check
+  for this op".
+
 ## [0.20.0] — 2026-08-20
 
 ### Changed

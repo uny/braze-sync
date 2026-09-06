@@ -1,0 +1,6 @@
+---
+source: src/diff/digest.rs
+assertion_line: 213
+expression: catalog(&cat())
+---
+3b355ea34977f226a1e801dde61b7cffca1bff58798d88c2384f08b7b65ba80c

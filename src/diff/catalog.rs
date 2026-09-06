@@ -263,4 +263,130 @@ mod tests {
         assert!(d.field_diffs.is_empty());
         assert!(!d.has_changes());
     }
+
+    // -----------------------------------------------------------
+    // digest <=> "diff_fields is empty", for two catalogs of the SAME
+    // name — the digest also covers `name`, which `diff_fields` never
+    // sees, and `diff_ops` pairs ops by name before comparing digests.
+    // Catalog has no syncable_eq; the diff's notion of "unchanged" is an
+    // empty field diff, and the plan's remote precondition must agree
+    // with exactly that. See src/diff/digest.rs.
+    // -----------------------------------------------------------
+
+    mod digest_equivalence {
+        use super::*;
+        use crate::diff::digest;
+        use crate::resource::Catalog;
+
+        fn cat(fields: Vec<CatalogField>) -> Catalog {
+            Catalog {
+                name: "products".into(),
+                description: None,
+                fields,
+            }
+        }
+
+        fn field(name: &str, field_type: CatalogFieldType) -> CatalogField {
+            CatalogField {
+                name: name.into(),
+                field_type,
+            }
+        }
+
+        fn base() -> Catalog {
+            cat(vec![
+                field("id", CatalogFieldType::String),
+                field("price", CatalogFieldType::Number),
+            ])
+        }
+
+        #[track_caller]
+        fn assert_agree(a: &Catalog, b: &Catalog) {
+            assert_eq!(
+                diff_fields(&a.fields, &b.fields).is_empty(),
+                digest::catalog(a) == digest::catalog(b),
+                "digest and diff_fields disagree on {a:?} vs {b:?}",
+            );
+        }
+
+        #[test]
+        fn identical_agree() {
+            assert_agree(&base(), &base());
+        }
+
+        #[test]
+        fn field_order_agrees() {
+            let mut b = base();
+            b.fields.reverse();
+            assert!(diff_fields(&base().fields, &b.fields).is_empty());
+            assert_agree(&base(), &b);
+        }
+
+        #[test]
+        fn description_is_ignored_by_both() {
+            let mut b = base();
+            b.description = Some("edited remotely".into());
+            assert_agree(&base(), &b);
+        }
+
+        #[test]
+        fn duplicate_field_names_collapse_in_both() {
+            // Braze's schema cannot produce this, but the equivalence
+            // must not rest on that: `diff_fields` keys by name and the
+            // last entry wins, so the projection has to do the same or
+            // it distinguishes two catalogs the diff cannot.
+            let dup = cat(vec![
+                field("id", CatalogFieldType::String),
+                field("id", CatalogFieldType::Number),
+            ]);
+            let collapsed = cat(vec![field("id", CatalogFieldType::Number)]);
+            assert!(diff_fields(&dup.fields, &collapsed.fields).is_empty());
+            assert_agree(&dup, &collapsed);
+        }
+
+        /// Compile-time guard: adding a field to `Catalog` or
+        /// `CatalogField` breaks this destructure, which is the prompt to
+        /// decide whether it belongs in `diff_fields` *and* in the
+        /// projection. The variant list below is hand-written and cannot
+        /// notice a field neither side looks at.
+        #[test]
+        fn variant_list_covers_every_field() {
+            let Catalog {
+                name: _,
+                description: _,
+                fields: _,
+            } = base();
+            let CatalogField {
+                name: _,
+                field_type: _,
+            } = field("id", CatalogFieldType::String);
+        }
+
+        #[test]
+        fn field_changes_disagree_in_both() {
+            let variants = vec![
+                cat(vec![field("id", CatalogFieldType::String)]),
+                cat(vec![
+                    field("id", CatalogFieldType::String),
+                    field("price", CatalogFieldType::String),
+                ]),
+                cat(vec![
+                    field("id", CatalogFieldType::String),
+                    field("price", CatalogFieldType::Number),
+                    field("sku", CatalogFieldType::String),
+                ]),
+                cat(vec![
+                    field("id", CatalogFieldType::String),
+                    field("cost", CatalogFieldType::Number),
+                ]),
+            ];
+            for b in variants {
+                assert!(
+                    !diff_fields(&base().fields, &b.fields).is_empty(),
+                    "expected a real change: {b:?}",
+                );
+                assert_agree(&base(), &b);
+            }
+        }
+    }
 }

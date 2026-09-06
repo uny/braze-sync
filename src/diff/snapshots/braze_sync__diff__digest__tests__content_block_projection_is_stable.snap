@@ -1,0 +1,6 @@
+---
+source: src/diff/digest.rs
+assertion_line: 203
+expression: content_block(&cb())
+---
+63c1d9f7d4ff1c2c453160885a696910a58c73a705189baf8d2041c6f33d9dbb

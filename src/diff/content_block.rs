@@ -286,4 +286,98 @@ mod tests {
         let modified = diff(Some(&l2), Some(&r2)).unwrap();
         assert!(!modified.op.is_destructive());
     }
+
+    // -----------------------------------------------------------
+    // digest <=> syncable_eq. The plan file's remote precondition is
+    // only sound while these two agree; see src/diff/digest.rs.
+    // -----------------------------------------------------------
+
+    mod digest_equivalence {
+        use super::*;
+        use crate::diff::digest;
+
+        fn base() -> ContentBlock {
+            ContentBlock {
+                name: "hero".into(),
+                description: Some("d".into()),
+                content: "body".into(),
+                tags: vec!["a".into(), "b".into()],
+                state: ContentBlockState::Active,
+            }
+        }
+
+        #[track_caller]
+        fn assert_agree(a: &ContentBlock, b: &ContentBlock) {
+            assert_eq!(
+                syncable_eq(a, b),
+                digest::content_block(a) == digest::content_block(b),
+                "digest and syncable_eq disagree on {a:?} vs {b:?}",
+            );
+        }
+
+        #[test]
+        fn identical_agree() {
+            assert_agree(&base(), &base());
+        }
+
+        #[test]
+        fn none_and_empty_description_agree() {
+            let mut a = base();
+            a.description = None;
+            let mut b = base();
+            b.description = Some(String::new());
+            assert!(syncable_eq(&a, &b));
+            assert_agree(&a, &b);
+        }
+
+        #[test]
+        fn tag_order_agrees() {
+            let mut b = base();
+            b.tags.reverse();
+            assert!(syncable_eq(&base(), &b));
+            assert_agree(&base(), &b);
+        }
+
+        #[test]
+        fn state_is_ignored_by_both() {
+            let mut b = base();
+            b.state = ContentBlockState::Draft;
+            assert!(syncable_eq(&base(), &b));
+            assert_agree(&base(), &b);
+        }
+
+        /// Compile-time guard on the list below. Adding a field to
+        /// `ContentBlock` breaks this destructure, which is the prompt to
+        /// decide whether it belongs in `syncable_eq` *and* in the
+        /// projection — a field added to one but not the other silently
+        /// falsifies the biconditional, and no runtime test here would
+        /// notice because the mutation list is hand-written.
+        #[test]
+        fn mutation_list_covers_every_field() {
+            let ContentBlock {
+                name: _,
+                description: _,
+                content: _,
+                tags: _,
+                state: _,
+            } = base();
+        }
+
+        #[test]
+        fn every_syncable_field_change_disagrees_in_both() {
+            let mutations: Vec<fn(&mut ContentBlock)> = vec![
+                |c| c.name = "other".into(),
+                |c| c.description = Some("changed".into()),
+                |c| c.content = "changed".into(),
+                |c| c.tags.push("extra".into()),
+                |c| c.tags.clear(),
+            ];
+            for mutate in mutations {
+                let mut b = base();
+                mutate(&mut b);
+                assert!(!syncable_eq(&base(), &b), "expected a real change: {b:?}");
+                assert_agree(&base(), &b);
+            }
+        }
+    }
 }
