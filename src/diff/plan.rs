@@ -6,12 +6,18 @@
 //!
 //! > Apply the *current* local intent, provided that (a) the set of
 //! > operations still has the shape the plan recorded, and (b) the
-//! > remote side of every op that writes to Braze is still what `diff`
-//! > observed when the plan was generated.
+//! > remote side of every op that would overwrite a remote body is still
+//! > what `diff` observed when the plan was generated.
 //!
 //! Both halves are enforced: (a) by the op multiset comparison in
 //! [`PlanFile::diff_ops`], (b) by the [`RemotePrecondition`] carried on
 //! each op and checked against a freshly-fetched remote at apply time.
+//!
+//! `Deprecate` / `Reactivate` are covered by (a) alone — they write a
+//! boolean whose expected prior value the op direction already states, so
+//! a remote toggle removes the op from the fresh diff rather than
+//! surviving it with a stale precondition. See
+//! [`PlanOpType::requires_precondition`].
 //!
 //! # What this does not promise
 //!
@@ -87,12 +93,28 @@ pub enum RemotePrecondition {
     Digest(String),
 }
 
+/// Length of the hex form of a blake3 digest, which is what
+/// [`crate::diff::digest`] emits.
+const DIGEST_HEX_LEN: usize = 64;
+
+/// Whether a plan-supplied string is shaped like one of our digests.
+/// The plan file is operator-supplied input, so the *shape* is checked
+/// rather than assumed — see [`PlanFile::validate`].
+fn is_digest_hex(s: &str) -> bool {
+    s.len() == DIGEST_HEX_LEN && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 impl RemotePrecondition {
     /// Short human-readable form for drift reporting.
+    ///
+    /// Truncates by *character*, not by byte: `validate` rejects a
+    /// malformed digest before this can be reached, but this is a public
+    /// method on operator-supplied data and must not be one edit away
+    /// from panicking on a split codepoint.
     pub fn describe(&self) -> String {
         match self {
             Self::Absent => "absent".to_string(),
-            Self::Digest(d) => format!("digest {}…", &d[..d.len().min(12)]),
+            Self::Digest(d) => format!("digest {}…", d.chars().take(12).collect::<String>()),
         }
     }
 }
@@ -262,6 +284,10 @@ impl PlanFile {
     /// treated as a malformed plan, never as "skip the comparison for
     /// this op" — silently degrading to the pre-v2 shape-only check is
     /// exactly the failure mode v2 exists to remove.
+    ///
+    /// A digest that is not one of ours is rejected here for the same
+    /// reason, and because everything downstream — the comparison, the
+    /// drift report — is entitled to assume the shape this checks.
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut problems = Vec::new();
         for op in &self.ops {
@@ -273,7 +299,14 @@ impl PlanFile {
             match (expected, &op.precondition) {
                 (None, None) => {}
                 (Some("absent"), Some(RemotePrecondition::Absent)) => {}
-                (Some("a digest"), Some(RemotePrecondition::Digest(_))) => {}
+                (Some("a digest"), Some(RemotePrecondition::Digest(d))) if is_digest_hex(d) => {}
+                (Some("a digest"), Some(RemotePrecondition::Digest(_))) => problems.push(format!(
+                    "{} {}: op `{}` carries a malformed digest \
+                     (expected {DIGEST_HEX_LEN} lowercase hex characters)",
+                    op.kind.as_str(),
+                    op.name,
+                    op.op.as_str(),
+                )),
                 (None, Some(_)) => problems.push(format!(
                     "{} {}: op `{}` must not carry a remote precondition",
                     op.kind.as_str(),
@@ -429,11 +462,18 @@ mod tests {
         Catalog, CatalogField, CatalogFieldType, ContentBlock, ContentBlockState,
     };
 
+    /// A distinct, *well-formed* digest per name. `validate` checks the
+    /// hex shape, so a readable placeholder like `digest-of-hero` would
+    /// make every fixture below a malformed plan.
+    fn digest_like(name: &str) -> String {
+        blake3::hash(name.as_bytes()).to_hex().to_string()
+    }
+
     fn op(kind: ResourceKind, name: &str, op: PlanOpType) -> PlanOp {
         let precondition = match op {
             PlanOpType::Add => Some(RemotePrecondition::Absent),
             PlanOpType::Modify | PlanOpType::DestructiveDelete => {
-                Some(RemotePrecondition::Digest(format!("digest-of-{name}")))
+                Some(RemotePrecondition::Digest(digest_like(name)))
             }
             _ => None,
         };
@@ -592,6 +632,33 @@ mod tests {
         assert_eq!(problems.len(), 2);
         assert!(problems[0].contains("requires absent"), "{problems:?}");
         assert!(problems[1].contains("must not carry"), "{problems:?}");
+    }
+
+    #[test]
+    fn validate_rejects_a_malformed_digest() {
+        // Not hex — and byte 12 lands inside the '€', which is what
+        // `describe` used to slice straight through.
+        let plan = plan_with(vec![PlanOp {
+            kind: ResourceKind::ContentBlock,
+            name: "hero".into(),
+            op: PlanOpType::Modify,
+            precondition: Some(RemotePrecondition::Digest("aaaaaaaaaaa€zz".into())),
+        }]);
+        let problems = plan.validate().unwrap_err();
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("malformed digest"), "{problems:?}");
+    }
+
+    #[test]
+    fn describe_truncates_by_character_not_byte() {
+        // `validate` rejects this shape before `describe` can see it;
+        // `describe` is public, so it must not panic on it regardless.
+        let p = RemotePrecondition::Digest("aaaaaaaaaaa€zz".into());
+        assert_eq!(p.describe(), "digest aaaaaaaaaaa€…");
+        assert_eq!(
+            RemotePrecondition::Digest(digest_like("hero")).describe(),
+            format!("digest {}…", &digest_like("hero")[..12]),
+        );
     }
 
     #[test]

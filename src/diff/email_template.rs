@@ -366,6 +366,23 @@ mod tests {
             assert_agree(&base(), &b);
         }
 
+        /// Compile-time guard on the list below — see the same test in
+        /// `diff::content_block` for why the hand-written mutation list
+        /// cannot be trusted to stay exhaustive on its own.
+        #[test]
+        fn mutation_list_covers_every_field() {
+            let EmailTemplate {
+                name: _,
+                subject: _,
+                body_html: _,
+                body_plaintext: _,
+                description: _,
+                preheader: _,
+                should_inline_css: _,
+                tags: _,
+            } = base();
+        }
+
         #[test]
         fn every_syncable_field_change_disagrees_in_both() {
             let mutations: Vec<fn(&mut EmailTemplate)> = vec![

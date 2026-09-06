@@ -20,7 +20,7 @@ use common::{
 };
 use predicates::prelude::PredicateBooleanExt;
 use serde_json::json;
-use wiremock::matchers::{method, path, query_param};
+use wiremock::matchers::{body_json, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -468,8 +468,17 @@ async fn local_only_edit_between_plan_and_apply_still_applies() {
         })))
         .mount(&server)
         .await;
+    // Match the body, not just the call: "a write fired" would also pass
+    // if apply had pushed the plan-time content, which is precisely the
+    // reading this test exists to rule out.
     Mock::given(method("POST"))
         .and(path("/content_blocks/update"))
+        .and(body_json(json!({
+            "content_block_id": "id-promo",
+            "name": "promo",
+            "content": "edited after planning\n",
+            "tags": []
+        })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
         .expect(1)
         .mount(&server)

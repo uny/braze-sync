@@ -265,10 +265,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------
-    // digest <=> "diff_fields is empty". Catalog has no syncable_eq;
-    // the diff's notion of "unchanged" is an empty field diff, and the
-    // plan's remote precondition must agree with exactly that.
-    // See src/diff/digest.rs.
+    // digest <=> "diff_fields is empty", for two catalogs of the SAME
+    // name — the digest also covers `name`, which `diff_fields` never
+    // sees, and `diff_ops` pairs ops by name before comparing digests.
+    // Catalog has no syncable_eq; the diff's notion of "unchanged" is an
+    // empty field diff, and the plan's remote precondition must agree
+    // with exactly that. See src/diff/digest.rs.
     // -----------------------------------------------------------
 
     mod digest_equivalence {
@@ -325,6 +327,24 @@ mod tests {
             let mut b = base();
             b.description = Some("edited remotely".into());
             assert_agree(&base(), &b);
+        }
+
+        /// Compile-time guard: adding a field to `Catalog` or
+        /// `CatalogField` breaks this destructure, which is the prompt to
+        /// decide whether it belongs in `diff_fields` *and* in the
+        /// projection. The variant list below is hand-written and cannot
+        /// notice a field neither side looks at.
+        #[test]
+        fn variant_list_covers_every_field() {
+            let Catalog {
+                name: _,
+                description: _,
+                fields: _,
+            } = base();
+            let CatalogField {
+                name: _,
+                field_type: _,
+            } = field("id", CatalogFieldType::String);
         }
 
         #[test]

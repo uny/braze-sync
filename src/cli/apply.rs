@@ -591,7 +591,7 @@ fn check_plan_scope(plan: &PlanFile, environment: &str, args: &ApplyArgs) -> any
         ));
     }
     if let Err(problems) = plan.validate() {
-        eprintln!("✗ malformed plan file: ops are missing required remote preconditions");
+        eprintln!("✗ malformed plan file: ops carry the wrong remote preconditions");
         for problem in &problems {
             eprintln!("    - {problem}");
         }

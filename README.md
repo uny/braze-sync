@@ -191,10 +191,15 @@ the remote away from what the plan recorded, so re-running
 
 ### What a plan file guarantees
 
-`diff --plan-out` records, for every op it can apply, a digest of the
-**remote** side as `diff` observed it. `apply --plan` re-fetches, and
-refuses to run if the op set changed *or* if any of those remote objects
-moved. So a plan authorizes exactly this:
+`diff --plan-out` records, for every op that would overwrite a remote
+body (`modify`, `destructive_delete`), a digest of the **remote** side as
+`diff` observed it; an `add` records the remote's *absence* instead.
+`deprecate` / `reactivate` record nothing — they write a boolean whose
+expected prior value the op direction already states, so a remote toggle
+removes the op from the fresh diff and is caught as op drift. `apply
+--plan` re-fetches, and refuses to run if the op set changed *or* if any
+of those remote preconditions no longer holds. So a plan authorizes
+exactly this:
 
 > Apply the *current* local intent, provided the remote preconditions
 > the plan recorded still hold.
@@ -203,8 +208,16 @@ It deliberately does **not** freeze the change set: editing a local file
 between plan and apply still applies, as long as the op shapes match.
 Nor is it concurrency control — Braze's REST API offers no `If-Match`,
 so the check happens against apply's own fetch and a lost update remains
-possible in the window before the write. The plan carries digests rather
-than payloads, which keeps it safe to publish as a CI artifact.
+possible in the window before the write.
+
+The plan carries digests rather than payloads, so publishing it as a CI
+artifact does not disclose content directly — but a digest is not
+confidentiality. The projection is an unkeyed, deterministic hash whose
+encoding is public in this repo, so anyone holding the artifact can
+recompute a guess and confirm it. Resource *names* are in the plan in
+cleartext regardless. Treat a plan file as you would any other build
+artifact describing your Braze workspace, and do not publish plans that
+touch sensitive resources to readers you would not otherwise trust.
 
 API keys never live in the config file. The config only references the
 *name* of the environment variable (`api_key_env`), and the key is

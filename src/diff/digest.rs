@@ -28,8 +28,12 @@
 //!
 //! The byte encoding below is part of the plan file format. Changing it
 //! invalidates every saved plan, so any change here must bump
-//! [`CURRENT_PLAN_VERSION`](crate::diff::plan::CURRENT_PLAN_VERSION). The
-//! insta snapshots in this module exist to make that impossible to forget.
+//! [`CURRENT_PLAN_VERSION`](crate::diff::plan::CURRENT_PLAN_VERSION).
+//! The insta snapshots in this module make an encoding change impossible
+//! to make *silently* — they fail, and accepting a new one is the prompt
+//! to bump. Nothing enforces the bump itself: accept the snapshot without
+//! it and every already-saved v2 plan starts reporting drift its remote
+//! never had.
 //!
 //! # Limitation
 //!
@@ -40,6 +44,7 @@
 //! to the digest. See the type's doc comment.
 
 use blake3::Hasher;
+use std::collections::BTreeMap;
 
 use crate::resource::{Catalog, ContentBlock, EmailTemplate};
 
@@ -126,18 +131,30 @@ pub fn email_template(tpl: &EmailTemplate) -> String {
 
 /// Digest the surface `diff::catalog::diff_fields` compares: the field set
 /// keyed by name, each with its type. Field order does not matter (the
-/// diff keys by name via `BTreeMap`), so fields are sorted here.
+/// diff keys by name via `BTreeMap`), so fields are keyed the same way here.
+///
+/// Also covers `name`, which `diff_fields` does not look at — the diff is
+/// handed two field lists that the caller already paired by catalog name.
+/// So the equivalence holds *per catalog name*, which is the only way it
+/// is ever used: `diff_ops` pairs ops by `(kind, name, op_type)` before
+/// any digest is compared.
 ///
 /// Excludes `description`: Braze has no endpoint to update it, so
 /// `diff_schema` treats description-only differences as `Unchanged` and
 /// `apply` can never overwrite one.
 pub fn catalog(cat: &Catalog) -> String {
-    let mut fields: Vec<(&str, &'static str)> = cat
+    // Keyed by name, exactly as `diff_fields` keys its own `BTreeMap`:
+    // that gives the sort for free, and it collapses a repeated field
+    // name last-wins the same way the diff does. A sorted `Vec` of pairs
+    // would instead distinguish two catalogs the diff cannot tell apart,
+    // breaking the equivalence in the direction that matters (digest
+    // silent while the diff sees a change) — unreachable through Braze's
+    // schema, but the invariant is what everything downstream rests on.
+    let fields: BTreeMap<&str, &'static str> = cat
         .fields
         .iter()
         .map(|f| (f.name.as_str(), f.field_type.as_str()))
         .collect();
-    fields.sort_unstable();
 
     let mut p = Projection::new("catalog_schema/v2");
     p.str_field(&cat.name);

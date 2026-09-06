@@ -21,14 +21,20 @@ file formats, JSON output, exit codes) for the full v1.x line.
   the run printed `✓ Plan matches saved plan`, and the console edit was
   overwritten with no warning.
 
-  `diff --plan-out` now records, for every op that writes to Braze, a
-  digest of the **remote** side as `diff` observed it (`add` records
-  absence instead). `apply --plan` compares those preconditions against
-  its own fresh fetch and exits `7` when one no longer holds, naming the
-  drift as a remote change rather than a local edit. The plan carries
-  digests, not payloads, so it stays safe to publish as a CI artifact,
-  and local edits between plan and apply are still applied — the plan
-  binds the remote preconditions, not the change set.
+  `diff --plan-out` now records, for every op that would overwrite a
+  remote body, a digest of the **remote** side as `diff` observed it; an
+  `add` records absence instead, and `deprecate` / `reactivate` record
+  nothing (their expected prior value is the op direction itself, so a
+  remote toggle drops the op from the fresh diff and is caught as op
+  drift). `apply --plan` compares those preconditions against its own
+  fresh fetch and exits `7` when one no longer holds, naming the drift as
+  a remote change rather than a local edit. Local edits between plan and
+  apply are still applied as long as they leave the op shapes unchanged —
+  the plan binds the remote preconditions, not the change set. The plan
+  carries digests, not payloads, so publishing it discloses no content
+  directly; the digest is unkeyed and its encoding is public, so it
+  remains a confirmation oracle for guessable content rather than a
+  secret (see README).
 
   Each digest covers exactly the surface the corresponding `syncable_eq`
   compares; the equivalence is pinned by tests so the digest and the
