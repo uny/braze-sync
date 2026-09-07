@@ -100,6 +100,46 @@ impl ConfigFile {
                     )));
                 }
             }
+            // Credentials in the endpoint are rejected, not stripped.
+            // braze-sync authenticates with the API key from
+            // `api_key_env`, so userinfo here is never meaningful — and
+            // `Url` serializes it verbatim into the `scope.api_endpoint`
+            // that `diff --plan-out` writes, which is a file meant to be
+            // publishable as a CI artifact. Stripping instead would make
+            // the plan disagree with the endpoint apply actually calls.
+            if !env.api_endpoint.username().is_empty() || env.api_endpoint.password().is_some() {
+                return Err(Error::Config(format!(
+                    "environment '{name}': api_endpoint must not embed credentials \
+                     (found a username or password in the URL). braze-sync reads its \
+                     API key from the '{}' environment variable; remove the \
+                     'user:password@' prefix from the endpoint.",
+                    env.api_key_env,
+                )));
+            }
+            // Same reasoning, same artifact: `Url` serializes the query
+            // and fragment verbatim too, and `url_for` keeps the query on
+            // every request — so `https://proxy.example/?access_token=…`
+            // is a *working* config today, and its token would be
+            // published in every plan file. Neither part addresses a Braze
+            // REST endpoint, so rejecting them costs nothing real.
+            // The message never echoes the value back into logs.
+            let leaked = match (env.api_endpoint.query(), env.api_endpoint.fragment()) {
+                (Some(_), Some(_)) => Some("a query string and a fragment"),
+                (Some(_), None) => Some("a query string"),
+                (None, Some(_)) => Some("a fragment"),
+                (None, None) => None,
+            };
+            if let Some(found) = leaked {
+                return Err(Error::Config(format!(
+                    "environment '{name}': api_endpoint must not carry {found} \
+                     — it is written verbatim into the plan file that \
+                     `diff --plan-out` publishes, so a token there would be \
+                     published with it. braze-sync reads its API key from the \
+                     '{}' environment variable; give api_endpoint as a plain \
+                     REST host without one.",
+                    env.api_key_env,
+                )));
+            }
         }
         // Compile every resource's exclude_patterns at load time so
         // malformed regexes fail fast instead of at first use.
@@ -421,6 +461,102 @@ environments:
         let msg = err.to_string();
         assert!(msg.contains("http"), "expected http scheme hint: {msg}");
         assert!(msg.contains("ftp"), "expected actual scheme: {msg}");
+    }
+
+    #[test]
+    fn rejects_endpoint_embedding_credentials() {
+        // `Url` serializes userinfo verbatim, and `diff --plan-out`
+        // writes the endpoint into a plan file meant to be publishable
+        // as a CI artifact. Config load is the place to stop it.
+        for endpoint in [
+            "https://apiuser:s3cret@rest.braze.eu",
+            "https://apiuser@rest.braze.eu",
+        ] {
+            let yaml = format!(
+                r#"
+version: 1
+default_environment: dev
+environments:
+  dev:
+    api_endpoint: {endpoint}
+    api_key_env: BRAZE_DEV_API_KEY
+"#
+            );
+            let f = write_config(&yaml);
+            let err = ConfigFile::load(f.path()).unwrap_err();
+            assert!(matches!(err, Error::Config(_)), "endpoint: {endpoint}");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("must not embed credentials"),
+                "endpoint {endpoint}: {msg}"
+            );
+            // The error must not echo the secret back into logs or CI output.
+            assert!(!msg.contains("s3cret"), "error leaked the password: {msg}");
+            // A multi-line literal that lost its `\` continuations renders
+            // with runs of indentation inside the sentence. `contains` alone
+            // passes over that, so pin the whitespace too.
+            assert!(
+                !msg.contains("  "),
+                "message has collapsed indentation: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_endpoint_with_query_or_fragment() {
+        // Userinfo is not the only URL component `Url` serializes into
+        // the plan: `url_for` keeps the query on every request, so a
+        // proxy token in `?access_token=` is a *working* config whose
+        // secret would be published with every plan file.
+        for (endpoint, want) in [
+            (
+                "https://proxy.example/?access_token=s3cret",
+                "a query string",
+            ),
+            ("https://rest.braze.eu/#s3cret", "a fragment"),
+            (
+                "https://proxy.example/?access_token=s3cret#f",
+                "a query string and a fragment",
+            ),
+        ] {
+            let yaml = format!(
+                r#"
+version: 1
+default_environment: dev
+environments:
+  dev:
+    api_endpoint: {endpoint}
+    api_key_env: BRAZE_DEV_API_KEY
+"#
+            );
+            let f = write_config(&yaml);
+            let err = ConfigFile::load(f.path()).unwrap_err();
+            assert!(matches!(err, Error::Config(_)), "endpoint: {endpoint}");
+            let msg = err.to_string();
+            assert!(
+                msg.contains(&format!("must not carry {want}")),
+                "endpoint {endpoint}: {msg}"
+            );
+            assert!(!msg.contains("s3cret"), "error leaked the token: {msg}");
+            assert!(
+                !msg.contains("  "),
+                "message has collapsed indentation: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_endpoint_without_credentials() {
+        let yaml = r#"
+version: 1
+default_environment: dev
+environments:
+  dev:
+    api_endpoint: https://rest.fra-02.braze.eu
+    api_key_env: BRAZE_DEV_API_KEY
+"#;
+        let f = write_config(yaml);
+        assert!(ConfigFile::load(f.path()).is_ok());
     }
 
     #[test]

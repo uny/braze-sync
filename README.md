@@ -204,6 +204,15 @@ exactly this:
 > Apply the *current* local intent, provided the remote preconditions
 > the plan recorded still hold.
 
+The plan also records which environment it was generated for **and the
+Braze endpoint that environment pointed at**; `apply --plan` checks both
+before its first API call. An environment name is a config label that can
+be repointed at another Braze cluster, and a plan's remote observations
+say nothing about a cluster it never talked to. What the plan does not
+record is the API key, so it stays safe to publish as a CI artifact —
+the cost is that swapping only the key, on the same endpoint, is not
+caught.
+
 It deliberately does **not** freeze the change set: editing a local file
 between plan and apply still applies, as long as the op shapes match.
 Nor is it concurrency control — Braze's REST API offers no `If-Match`,
@@ -274,7 +283,7 @@ across all v1.x releases.
 | `4` | Authentication failed (invalid API key) |
 | `5` | Rate limit retries exhausted |
 | `6` | Destructive change blocked (pass `--allow-destructive`) |
-| `7` | Plan/apply mismatch (`apply --plan`: op set differs, or the remote moved since the plan) |
+| `7` | Plan/apply mismatch (`apply --plan`: op set differs, the remote moved since the plan, or the plan's scope — environment or endpoint — no longer matches) |
 | `8` | Fallback gate (unmatched placeholder + unconsumed remote lid). Unlike `2`, `diff` has no opt-in flag for this — it always exits `8` when the gate fires; `apply` requires `--allow-fallback` |
 
 ## Output formats

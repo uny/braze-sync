@@ -54,6 +54,9 @@ async fn diff_plan_out_writes_plan_file() {
     let plan: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(plan["version"], 2);
     assert_eq!(plan["scope"]["environment"], "test");
+    // Recorded as `Url` normalizes it — mock server URIs carry no
+    // trailing slash, the parsed form does.
+    assert_eq!(plan["scope"]["api_endpoint"], format!("{}/", server.uri()));
     assert_eq!(plan["scope"]["resource"], "catalog_schema");
     let ops = plan["ops"].as_array().unwrap();
     assert_eq!(ops.len(), 1);
@@ -220,7 +223,7 @@ async fn apply_plan_environment_mismatch_exits_7_before_api_call() {
         "version": 2,
         "generated_at": "2026-05-18T00:00:00Z",
         "braze_sync_version": env!("CARGO_PKG_VERSION"),
-        "scope": {"environment": "prod"},
+        "scope": {"environment": "prod", "api_endpoint": format!("{}/", server.uri())},
         "ops": []
     });
     std::fs::write(&plan_path, serde_json::to_vec_pretty(&plan_json).unwrap()).unwrap();
@@ -235,6 +238,67 @@ async fn apply_plan_environment_mismatch_exits_7_before_api_call() {
             .assert()
             .failure()
             .code(7);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_plan_endpoint_mismatch_exits_7_before_api_call() {
+    // Issue #106: the environment *name* is a config label, not a
+    // workspace identity. Here the name matches on both sides and only
+    // the endpoint moved — a name-only scope check would wave this
+    // through and apply the plan's observations to a different cluster.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/catalogs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"catalogs": []})))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_schema(tmp.path(), "newcat", &[("id", "string")]);
+    let plan_path = tmp.path().join("plan.json");
+
+    let plan_arg = format!("--plan-out={}", plan_path.display());
+    let cfg = config_path.clone();
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", cfg.to_str().unwrap()])
+            .args(["diff", "--resource", "catalog_schema", &plan_arg])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    // Repoint environment `test` at a dead endpoint, leaving the name
+    // untouched. A dead address is the sharper assertion: if the scope
+    // check did not fire first, apply would fail on a connection error,
+    // not on exit 7.
+    let repointed = write_config(tmp.path(), "http://127.0.0.1:1");
+    // `write_config` returns a path built from `dir` alone, so comparing
+    // paths would hold whether or not the rewrite landed. Read the file
+    // back instead — the repoint is this test's entire premise.
+    assert!(std::fs::read_to_string(&repointed)
+        .unwrap()
+        .contains("http://127.0.0.1:1"));
+
+    let plan_in = format!("--plan={}", plan_path.display());
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--confirm", &plan_in])
+            .assert()
+            .failure()
+            .code(7)
+            .stderr(predicates::str::contains("Braze endpoint"))
+            .stderr(predicates::str::contains("http://127.0.0.1:1"));
     })
     .await
     .unwrap();
@@ -546,6 +610,9 @@ async fn v1_plan_file_is_rejected() {
             "version": 1,
             "generated_at": "2026-05-18T00:00:00Z",
             "braze_sync_version": "0.20.0",
+            // No `api_endpoint`: a real v1 plan predates the field. The
+            // version probe must reject it before the schema parse can
+            // complain about a missing field.
             "scope": {"environment": "test"},
             "ops": [{"kind": "content_block", "name": "promo", "op": "modify"}]
         }))
@@ -566,7 +633,17 @@ async fn v1_plan_file_is_rejected() {
             // deliberately distinct from the 7 that means "the world
             // moved".
             .code(1)
-            .stderr(predicates::str::contains("diff --plan-out"));
+            // Name the version explicitly. The malformed-plan branch of
+            // `check_plan_scope` also exits 1 and also says "regenerate
+            // with `diff --plan-out`", and this fixture's op carries no
+            // precondition — so it would satisfy a looser assertion even
+            // if the version probe stopped running first, which is the
+            // one thing this test exists to prove.
+            .stderr(predicates::str::contains(
+                "plan file version 1 is not supported",
+            ))
+            .stderr(predicates::str::contains("diff --plan-out"))
+            .stderr(predicates::str::contains("malformed plan file").not());
     })
     .await
     .unwrap();
@@ -592,7 +669,7 @@ async fn v2_plan_missing_a_required_digest_is_rejected_before_any_api_call() {
             "version": 2,
             "generated_at": "2026-05-18T00:00:00Z",
             "braze_sync_version": env!("CARGO_PKG_VERSION"),
-            "scope": {"environment": "test"},
+            "scope": {"environment": "test", "api_endpoint": format!("{}/", server.uri())},
             "ops": [{"kind": "content_block", "name": "promo", "op": "modify"}]
         }))
         .unwrap(),

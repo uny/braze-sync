@@ -29,6 +29,7 @@ use crate::values::{format_fallback_reports, gated_fallback_count, FallbackRepor
 use anyhow::{anyhow, Context as _};
 use clap::Args;
 use std::path::{Path, PathBuf};
+use url::Url;
 
 use super::diff::{
     compute_catalog_schema_diffs, compute_content_block_plan, compute_custom_attribute_diffs,
@@ -90,7 +91,12 @@ pub async fn run(
     let saved_plan = if let Some(path) = &args.plan {
         let plan = PlanFile::read_from(path)
             .with_context(|| format!("reading plan file {}", path.display()))?;
-        check_plan_scope(&plan, &resolved.environment_name, args)?;
+        check_plan_scope(
+            &plan,
+            &resolved.environment_name,
+            &resolved.api_endpoint,
+            args,
+        )?;
         warn_on_plan_metadata(&plan);
         Some(plan)
     } else {
@@ -579,17 +585,12 @@ fn enforce_tag_preflight(
 }
 
 /// Reject obvious plan-vs-CLI mismatches before doing any remote work.
-fn check_plan_scope(plan: &PlanFile, environment: &str, args: &ApplyArgs) -> anyhow::Result<()> {
-    if plan.version != plan::CURRENT_PLAN_VERSION {
-        return Err(anyhow!(
-            "plan file version {} is not supported by this binary \
-             (expected {}). Regenerate with `diff --plan-out` and review \
-             the new plan — an older plan carries no evidence this binary \
-             can check.",
-            plan.version,
-            plan::CURRENT_PLAN_VERSION,
-        ));
-    }
+fn check_plan_scope(
+    plan: &PlanFile,
+    environment: &str,
+    api_endpoint: &Url,
+    args: &ApplyArgs,
+) -> anyhow::Result<()> {
     if let Err(problems) = plan.validate() {
         eprintln!("✗ malformed plan file: ops carry the wrong remote preconditions");
         for problem in &problems {
@@ -604,6 +605,17 @@ fn check_plan_scope(plan: &PlanFile, environment: &str, args: &ApplyArgs) -> any
             "✗ plan drift: plan was generated for environment '{}' \
              but apply targets '{}'",
             plan.scope.environment, environment,
+        );
+        return Err(Error::PlanDrift.into());
+    }
+    // The environment *name* matching is not enough: the same name can be
+    // repointed at a different Braze cluster between plan and apply, and
+    // then the plan's remote observations describe someone else's data.
+    if plan.scope.api_endpoint != api_endpoint.to_string() {
+        eprintln!(
+            "✗ plan drift: plan was generated against Braze endpoint '{}' \
+             but apply targets '{}'",
+            plan.scope.api_endpoint, api_endpoint,
         );
         return Err(Error::PlanDrift.into());
     }
