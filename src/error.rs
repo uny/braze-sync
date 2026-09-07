@@ -48,6 +48,15 @@ pub enum Error {
     #[error("Plan drift: saved plan does not match the freshly-computed plan")]
     PlanDrift,
 
+    /// The plan's `generated_at` falls outside the validity window that
+    /// `--max-plan-age` defines. Distinct from [`Error::PlanDrift`]: age
+    /// is not itself evidence that the remote moved, so CI can tell
+    /// "the approval expired" apart from "the world changed". Which edge
+    /// of the window was crossed is printed at the call site, as for
+    /// [`Error::PlanDrift`].
+    #[error("Plan outside its validity window: --max-plan-age was exceeded")]
+    PlanOutsideValidityWindow,
+
     #[error("Rate limit exhausted after {retries} retries")]
     RateLimitExhausted { retries: u32 },
 

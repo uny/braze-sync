@@ -244,6 +244,258 @@ async fn apply_plan_environment_mismatch_exits_7_before_api_call() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_plan_past_max_plan_age_exits_9_before_any_api_call() {
+    // Issue #104. Every verb is mocked to fail and expected zero times:
+    // an expired approval must cost no API call at all, not just no
+    // write.
+    let server = MockServer::start().await;
+    for verb in ["GET", "POST", "PUT", "DELETE"] {
+        Mock::given(method(verb))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    let plan_path = tmp.path().join("plan.json");
+
+    // Scope matches on every axis — age is the only thing wrong, so a
+    // pass here can only come from the age check.
+    let plan_json = serde_json::json!({
+        "version": 2,
+        "generated_at": "2026-05-18T00:00:00Z",
+        "braze_sync_version": env!("CARGO_PKG_VERSION"),
+        "scope": {"environment": "test", "api_endpoint": format!("{}/", server.uri())},
+        "ops": []
+    });
+    std::fs::write(&plan_path, serde_json::to_vec_pretty(&plan_json).unwrap()).unwrap();
+
+    let plan_in = format!("--plan={}", plan_path.display());
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--confirm", &plan_in, "--max-plan-age", "1h"])
+            .assert()
+            .failure()
+            .code(9)
+            .stderr(predicates::str::contains("validity window"));
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_plan_generated_in_the_future_exits_9() {
+    // Clock skew past the tolerance: the same window, its lower edge.
+    let server = MockServer::start().await;
+    for verb in ["GET", "POST", "PUT", "DELETE"] {
+        Mock::given(method(verb))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    let plan_path = tmp.path().join("plan.json");
+
+    let future = chrono::Utc::now() + chrono::TimeDelta::hours(1);
+    let plan_json = serde_json::json!({
+        "version": 2,
+        "generated_at": future.to_rfc3339(),
+        "braze_sync_version": env!("CARGO_PKG_VERSION"),
+        "scope": {"environment": "test", "api_endpoint": format!("{}/", server.uri())},
+        "ops": []
+    });
+    std::fs::write(&plan_path, serde_json::to_vec_pretty(&plan_json).unwrap()).unwrap();
+
+    let plan_in = format!("--plan={}", plan_path.display());
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            // A generous window must not launder a broken clock.
+            .args(["apply", "--confirm", &plan_in, "--max-plan-age", "365d"])
+            .assert()
+            .failure()
+            .code(9)
+            .stderr(predicates::str::contains("clock"));
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_without_max_plan_age_still_only_warns_on_an_old_plan() {
+    // The default is unchanged: `--max-plan-age` is opt-in, so a plan
+    // old enough to exit 9 with the flag still applies without it.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/catalogs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"catalogs": []})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/catalogs"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"message": "success"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_schema(tmp.path(), "newcat", &[("id", "string")]);
+    let plan_path = tmp.path().join("plan.json");
+
+    let plan_out = format!("--plan-out={}", plan_path.display());
+    let config_for_diff = config_path.clone();
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_for_diff.to_str().unwrap()])
+            .args(["diff", "--resource", "catalog_schema", &plan_out])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    // Backdate a real, matching plan so age is the only thing off.
+    let mut plan: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&plan_path).unwrap()).unwrap();
+    plan["generated_at"] = serde_json::json!("2026-05-18T00:00:00Z");
+    std::fs::write(&plan_path, serde_json::to_vec_pretty(&plan).unwrap()).unwrap();
+
+    let plan_in = format!("--plan={}", plan_path.display());
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args([
+                "apply",
+                "--resource",
+                "catalog_schema",
+                "--confirm",
+                &plan_in,
+            ])
+            .assert()
+            .success()
+            .stderr(predicates::str::contains("hour(s) old"));
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_within_max_plan_age_proceeds() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/catalogs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"catalogs": []})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/catalogs"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"message": "success"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_schema(tmp.path(), "newcat", &[("id", "string")]);
+    let plan_path = tmp.path().join("plan.json");
+
+    let plan_out = format!("--plan-out={}", plan_path.display());
+    let config_for_diff = config_path.clone();
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_for_diff.to_str().unwrap()])
+            .args(["diff", "--resource", "catalog_schema", &plan_out])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    let plan_in = format!("--plan={}", plan_path.display());
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args([
+                "apply",
+                "--resource",
+                "catalog_schema",
+                "--confirm",
+                &plan_in,
+                "--max-plan-age",
+                "1h30m",
+            ])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn max_plan_age_without_a_plan_is_a_config_error() {
+    // The flag is an expiry on a specific approval; with no plan there
+    // is nothing to expire, so silently ignoring it would be a trap.
+    let server = MockServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--confirm", "--max-plan-age", "1h"])
+            .assert()
+            .failure()
+            .code(3);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn max_plan_age_rejects_an_unparseable_duration() {
+    let server = MockServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    let plan_path = tmp.path().join("plan.json");
+    std::fs::write(&plan_path, "{}").unwrap();
+
+    let plan_in = format!("--plan={}", plan_path.display());
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--confirm", &plan_in, "--max-plan-age", "soon"])
+            .assert()
+            .failure()
+            .code(3);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn apply_plan_endpoint_mismatch_exits_7_before_api_call() {
     // Issue #106: the environment *name* is a config label, not a
     // workspace identity. Here the name matches on both sides and only

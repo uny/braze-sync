@@ -42,6 +42,12 @@
 //!   only the API key — same endpoint, different workspace — is not: the
 //!   key is deliberately absent from the plan so it stays publishable as
 //!   a CI artifact, and the plan therefore records no workspace identity.
+//! - **It does not expire on its own.** A plan carries `generated_at`,
+//!   but age is not evidence that the remote moved, so staleness is only
+//!   a warning by default. `apply --max-plan-age` opts into treating the
+//!   plan as an approval with an expiry — a separate policy with its own
+//!   exit code, deliberately not part of the evidence above. See
+//!   [`check_validity_window`].
 //! - **A digest is not confidentiality.** Predictable content can be
 //!   guessed and confirmed. It is small enough to publish as a CI
 //!   artifact, which is why the plan carries digests rather than payloads.
@@ -61,6 +67,65 @@ pub const CURRENT_PLAN_VERSION: u32 = 2;
 
 /// Warn at apply time when the saved plan is older than this.
 pub const STALE_PLAN_WARN_THRESHOLD: chrono::TimeDelta = chrono::TimeDelta::hours(24);
+
+/// How far a plan's `generated_at` may sit in the future before apply
+/// treats it as a broken clock rather than tolerable skew between the
+/// machine that ran `diff` and the one running `apply`.
+pub const PLAN_CLOCK_SKEW_TOLERANCE: chrono::TimeDelta = chrono::TimeDelta::minutes(5);
+
+/// Why a plan fell outside the validity window `--max-plan-age` defines.
+///
+/// Not a form of plan drift: elapsed time is not evidence that the
+/// remote moved. This is the expiry of an *approval*, which is why it
+/// carries its own exit code.
+#[derive(Debug, thiserror::Error)]
+pub enum OutsideValidityWindow {
+    #[error("generated {} ago, but --max-plan-age is {}", fmt_delta(*age), fmt_delta(*max_age))]
+    Expired {
+        age: chrono::TimeDelta,
+        max_age: chrono::TimeDelta,
+    },
+    #[error(
+        "generated_at is {} in the future (tolerance {}) — check the clock on \
+         the machine that ran `diff`",
+        fmt_delta(*ahead),
+        fmt_delta(PLAN_CLOCK_SKEW_TOLERANCE)
+    )]
+    AheadOfClock { ahead: chrono::TimeDelta },
+}
+
+/// Render a `TimeDelta` the way `--max-plan-age` is written (`1h 30m`).
+/// Sub-second precision is noise here, so it is dropped.
+fn fmt_delta(d: chrono::TimeDelta) -> String {
+    let secs = d.num_seconds().unsigned_abs();
+    humantime::format_duration(std::time::Duration::from_secs(secs)).to_string()
+}
+
+/// Check `generated_at` against the validity window that `--max-plan-age`
+/// defines: `generated_at - PLAN_CLOCK_SKEW_TOLERANCE <= now <=
+/// generated_at + max_age`.
+///
+/// One window, both edges. A future `generated_at` is not a separate
+/// policy — it is the lower edge, and it is rejected for the same reason
+/// the upper edge is: the plan's age cannot be established, so there is
+/// no evidence the approval is still current.
+///
+/// Only reachable when the caller passed `--max-plan-age`; without it
+/// staleness stays a warning (see [`STALE_PLAN_WARN_THRESHOLD`]).
+pub fn check_validity_window(
+    generated_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+    max_age: chrono::TimeDelta,
+) -> Result<(), OutsideValidityWindow> {
+    let age = now.signed_duration_since(generated_at);
+    if age < -PLAN_CLOCK_SKEW_TOLERANCE {
+        return Err(OutsideValidityWindow::AheadOfClock { ahead: -age });
+    }
+    if age > max_age {
+        return Err(OutsideValidityWindow::Expired { age, max_age });
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanFile {
@@ -494,6 +559,96 @@ fn classify_orphanable<T>(
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeDelta;
+
+    fn at(s: &str) -> DateTime<Utc> {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn validity_window_accepts_a_plan_inside_max_age() {
+        assert!(check_validity_window(
+            at("2026-09-07T00:00:00Z"),
+            at("2026-09-07T00:59:00Z"),
+            TimeDelta::hours(1),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn validity_window_accepts_a_plan_exactly_at_max_age() {
+        // The bound is inclusive: `age > max_age` rejects, so a plan
+        // that is exactly `max_age` old is still inside the window.
+        assert!(check_validity_window(
+            at("2026-09-07T00:00:00Z"),
+            at("2026-09-07T01:00:00Z"),
+            TimeDelta::hours(1),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn validity_window_rejects_a_plan_past_max_age() {
+        let err = check_validity_window(
+            at("2026-09-07T00:00:00Z"),
+            at("2026-09-07T01:00:01Z"),
+            TimeDelta::hours(1),
+        )
+        .unwrap_err();
+        assert!(matches!(err, OutsideValidityWindow::Expired { .. }));
+        assert!(err.to_string().contains("--max-plan-age"));
+    }
+
+    #[test]
+    fn zero_max_age_rejects_any_elapsed_time() {
+        // `--max-plan-age 0` is a coherent policy: regenerate now.
+        assert!(check_validity_window(
+            at("2026-09-07T00:00:00Z"),
+            at("2026-09-07T00:00:01Z"),
+            TimeDelta::zero(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn validity_window_tolerates_future_generated_at_within_skew() {
+        // A CI runner a few minutes ahead of the applying machine must
+        // not fail the build.
+        assert!(check_validity_window(
+            at("2026-09-07T00:04:00Z"),
+            at("2026-09-07T00:00:00Z"),
+            TimeDelta::hours(1),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn validity_window_rejects_future_generated_at_beyond_skew() {
+        // Past the tolerance the age cannot be established at all, so
+        // there is no evidence the approval is current — same rejection
+        // as expiry, not a warning.
+        let err = check_validity_window(
+            at("2026-09-07T00:06:00Z"),
+            at("2026-09-07T00:00:00Z"),
+            TimeDelta::hours(1),
+        )
+        .unwrap_err();
+        assert!(matches!(err, OutsideValidityWindow::AheadOfClock { .. }));
+        assert!(err.to_string().contains("clock"));
+    }
+
+    #[test]
+    fn a_future_plan_is_rejected_even_when_max_age_is_generous() {
+        // The lower edge does not move with `max_age`: a huge window
+        // must not launder a broken clock.
+        assert!(check_validity_window(
+            at("2026-09-07T01:00:00Z"),
+            at("2026-09-07T00:00:00Z"),
+            TimeDelta::days(365),
+        )
+        .is_err());
+    }
+
     use super::*;
     use crate::diff::catalog::CatalogSchemaDiff;
     use crate::diff::content_block::ContentBlockDiff;

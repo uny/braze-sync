@@ -9,6 +9,33 @@ file formats, JSON output, exit codes) for the full v1.x line.
 
 ## [Unreleased]
 
+### Added
+
+- **`apply --max-plan-age <DURATION>` expires a plan (#104).** A plan
+  older than 24 hours has always printed a warning and then applied
+  anyway. Pass `--max-plan-age 1h30m` (any human-readable duration) and
+  `apply` instead exits **9** before its first API call, so an expired
+  approval costs neither a write nor a read. The check runs once at
+  startup rather than per write — expiring mid-run would abandon the
+  apply half-finished, which is exactly the state the
+  applied/failed/not-attempted report exists to avoid.
+
+  This is a new **exit code 9**, not a reuse of 7. Elapsed time is not
+  by itself evidence that the remote moved, so folding it into plan
+  drift would make CI unable to tell "the approval expired" from "the
+  world changed". Exit codes freeze at v1.0; this is added inside that
+  window deliberately.
+
+  The flag requires `--plan` and is opt-in: without it the 24-hour
+  warning is unchanged, so existing pipelines keep working.
+
+  A `generated_at` in the *future* is rejected the same way, as the
+  other edge of one validity window (`generated_at - 5min <= now <=
+  generated_at + max_age`) rather than as a separate policy. Five
+  minutes of clock skew between the machine that ran `diff` and the one
+  running `apply` is tolerated; past that the plan's age cannot be
+  established, and a generous `--max-plan-age` does not launder it.
+
 ### Changed
 
 - **The plan file now records the Braze endpoint it was generated

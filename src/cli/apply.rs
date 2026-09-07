@@ -29,6 +29,7 @@ use crate::values::{format_fallback_reports, gated_fallback_count, FallbackRepor
 use anyhow::{anyhow, Context as _};
 use clap::Args;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use url::Url;
 
 use super::diff::{
@@ -71,6 +72,19 @@ pub struct ApplyArgs {
     /// code 7 on mismatch.
     #[arg(long, value_name = "PATH")]
     pub plan: Option<PathBuf>,
+
+    /// Treat the plan as an approval that expires: refuse to apply, before
+    /// any Braze API call, once the plan is older than this. Accepts
+    /// human-readable durations (`30m`, `2h`, `1h30m`, `7d`). Exits with
+    /// code 9. Without this flag an old plan only warns.
+    #[arg(long, value_name = "DURATION", requires = "plan", value_parser = parse_max_plan_age)]
+    pub max_plan_age: Option<Duration>,
+}
+
+/// Parse `--max-plan-age`. `0` is accepted: "regenerate the plan now" is
+/// a coherent policy, not a mistake.
+fn parse_max_plan_age(raw: &str) -> Result<Duration, String> {
+    humantime::parse_duration(raw).map_err(|e| format!("invalid duration {raw:?}: {e}"))
 }
 
 pub async fn run(
@@ -97,7 +111,7 @@ pub async fn run(
             &resolved.api_endpoint,
             args,
         )?;
-        warn_on_plan_metadata(&plan);
+        check_plan_metadata(&plan, args)?;
         Some(plan)
     } else {
         None
@@ -637,7 +651,15 @@ fn check_plan_scope(
     Ok(())
 }
 
-fn warn_on_plan_metadata(plan: &PlanFile) {
+/// Warn on a version mismatch, then check the plan's age once, here,
+/// before any Braze API call — so a
+/// rejected plan costs zero writes. Deliberately not re-checked per
+/// write: expiring mid-apply would leave a partial apply, which
+/// contradicts the applied/failed/not-attempted report.
+///
+/// With `--max-plan-age` this is fail-closed; without it, staleness stays
+/// the pre-existing warning.
+fn check_plan_metadata(plan: &PlanFile, args: &ApplyArgs) -> anyhow::Result<()> {
     let current = env!("CARGO_PKG_VERSION");
     if plan.braze_sync_version != current {
         eprintln!(
@@ -646,14 +668,28 @@ fn warn_on_plan_metadata(plan: &PlanFile) {
             plan.braze_sync_version, current,
         );
     }
-    let age = chrono::Utc::now().signed_duration_since(plan.generated_at);
+
+    let now = chrono::Utc::now();
+    if let Some(max_age) = args.max_plan_age {
+        let max_age = chrono::TimeDelta::from_std(max_age)
+            .map_err(|_| Error::Config(format!("--max-plan-age {max_age:?} is out of range")))?;
+        if let Err(outside) = plan::check_validity_window(plan.generated_at, now, max_age) {
+            eprintln!("✗ plan outside its validity window: {outside}");
+            eprintln!("  regenerate it with `diff --plan-out`.");
+            return Err(Error::PlanOutsideValidityWindow.into());
+        }
+        return Ok(());
+    }
+
+    let age = now.signed_duration_since(plan.generated_at);
     if age > plan::STALE_PLAN_WARN_THRESHOLD {
         eprintln!(
             "⚠ plan is {} hour(s) old — Braze may have drifted; consider \
-             regenerating with `diff --plan-out`.",
+             regenerating with `diff --plan-out` or enforcing `--max-plan-age`.",
             age.num_hours(),
         );
     }
+    Ok(())
 }
 
 /// Compare the saved plan against the freshly-computed summary: first the

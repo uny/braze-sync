@@ -22,6 +22,8 @@ path = "src/lib.rs"
 [dependencies]
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
+# Human-readable durations for `apply --max-plan-age` (e.g. `1h30m`).
+humantime = "2"
 
 # Async runtime
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "time", "sync", "io-util"] }
