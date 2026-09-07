@@ -352,15 +352,31 @@ impl PlanFile {
     /// or no plan, never a half-written one. The temporary file has to be
     /// a *sibling*: `rename` across filesystems fails with `EXDEV`.
     ///
+    /// *Atomic* is a claim about visibility, not about durability: the
+    /// `sync_all` below makes the plan's own bytes durable before the
+    /// rename, but the directory entry the rename creates is not synced,
+    /// so a machine that loses power just after a successful `write_to`
+    /// can come back holding the *previous* plan. That stays inside the
+    /// guarantee above — previous plan or no plan — and callers who need
+    /// the new plan to survive a power cut need more than this function.
+    ///
     /// A run killed between creating the temporary file and the rename
     /// leaves that sibling behind. It is never mistaken for a plan —
     /// nothing reads it and its name is not the one that was asked for —
-    /// but a job collecting `plan*` as an artifact will pick it up.
+    /// but nothing reaps it either, so N interrupted runs leave N of
+    /// them, and a job collecting `plan*` as an artifact picks them up.
     ///
     /// The plan is a fresh inode on every write, so it takes the
     /// umask-derived mode a newly created file gets rather than the mode
-    /// of a plan already at `path`, and a symlink at `path` is replaced
-    /// by the plan rather than followed.
+    /// of a plan already at `path` — which can *loosen* a plan that had
+    /// been chmod'd tighter — and a symlink at `path` is replaced by the
+    /// plan rather than followed.
+    ///
+    /// Creating a sibling also asks more of `path` than a plain write
+    /// did: the parent directory must be writable (a read-only directory
+    /// holding a writable plan no longer works), `path` must be a regular
+    /// file rather than a device node, FIFO or mount point, and its name
+    /// must leave ~29 bytes of headroom under `NAME_MAX` for the suffix.
     pub fn write_to(&self, path: &Path) -> std::io::Result<()> {
         let json = serde_json::to_vec_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -967,6 +983,68 @@ mod tests {
         assert_eq!(stray_siblings(dir.path()), Vec::<String>::new());
     }
 
+    /// `write_atomically` claims every path out of it either renames the
+    /// temp file into place or removes it. The removal is only reached
+    /// when the rename fails *after* the temp file exists, which nothing
+    /// else here exercises — a directory at `path` produces exactly that.
+    #[test]
+    fn write_to_removes_the_temp_file_when_the_rename_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plan.json");
+        std::fs::create_dir(&path).unwrap();
+
+        plan_with(vec![]).write_to(&path).unwrap_err();
+
+        assert_eq!(stray_siblings(dir.path()), Vec::<String>::new());
+    }
+
+    /// The rename replaces the directory entry rather than the bytes of
+    /// the inode already there — that substitution is what buys
+    /// atomicity, and it is the one thing the `std::fs::write` this
+    /// replaced could not do. A reader holding the old plan open goes on
+    /// reading the old plan; under `write` it would have seen the new
+    /// bytes, or a truncated prefix of them.
+    #[test]
+    fn write_to_leaves_a_reader_of_the_previous_plan_on_the_previous_plan() {
+        use std::io::Read;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plan.json");
+        std::fs::write(&path, b"the previous plan").unwrap();
+        let mut previous = File::open(&path).unwrap();
+
+        plan_with(vec![op(ResourceKind::CatalogSchema, "x", PlanOpType::Add)])
+            .write_to(&path)
+            .unwrap();
+
+        let mut held = String::new();
+        previous.read_to_string(&mut held).unwrap();
+        assert_eq!(held, "the previous plan");
+        assert_eq!(PlanFile::read_from(&path).unwrap().ops.len(), 1);
+    }
+
+    /// A symlink at `path` is replaced rather than written through. The
+    /// CHANGELOG states this as a consequence of the new write, so it is
+    /// pinned here rather than left to be discovered — under the old
+    /// `write` the target was overwritten and the symlink survived.
+    #[test]
+    #[cfg(unix)]
+    fn write_to_replaces_a_symlink_instead_of_following_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.json");
+        std::fs::write(&target, b"not a plan").unwrap();
+        let path = dir.path().join("plan.json");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+
+        plan_with(vec![]).write_to(&path).unwrap();
+
+        assert!(!std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read(&target).unwrap(), b"not a plan");
+    }
+
     /// The plan is a CI artifact other steps read, so the rename must not
     /// quietly tighten its mode the way a 0o600 temp file would.
     #[test]
@@ -979,6 +1057,31 @@ mod tests {
         std::fs::write(&reference, b"{}").unwrap();
 
         let path = dir.path().join("plan.json");
+        plan_with(vec![]).write_to(&path).unwrap();
+
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), mode(&reference));
+    }
+
+    /// The other half of the mode story, and the half that can *loosen*
+    /// permissions: the plan is a fresh inode, so it does not inherit the
+    /// mode of a plan already at `path`. A 0o600 plan replaced under the
+    /// usual 0o022 umask comes back 0o644. Under a 0o077 umask the two
+    /// modes coincide and this only re-pins the previous test, which is
+    /// why the loosening direction is spelled out in the CHANGELOG too.
+    #[test]
+    #[cfg(unix)]
+    fn write_to_does_not_inherit_the_mode_of_the_plan_it_replaces() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let reference = dir.path().join("reference");
+        std::fs::write(&reference, b"{}").unwrap();
+
+        let path = dir.path().join("plan.json");
+        std::fs::write(&path, b"{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
         plan_with(vec![]).write_to(&path).unwrap();
 
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
