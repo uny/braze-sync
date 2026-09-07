@@ -163,11 +163,15 @@ file formats, JSON output, exit codes) for the full v1.x line.
   rather than rewriting one in place means the *parent directory* must
   be writable: a read-only directory holding a writable `plan.json` used
   to work and now fails with `Permission denied`. For the same reason
-  the destination must be an ordinary file — `--plan-out /dev/null`,
-  `--plan-out /dev/stdout`, a FIFO, or a bind-mounted file all worked
-  before and now fail (as root, replacing a device node rather than
-  writing through it) — and its name needs ~29 bytes of headroom under
-  the filesystem's `NAME_MAX` for the temporary suffix.
+  the destination must be an ordinary file. `--plan-out /dev/null`,
+  `--plan-out /dev/stdout`, a FIFO and a bind-mounted file all worked
+  before; unprivileged, they now fail with `Permission denied`. **As
+  root the failure is worse than an error:** `/dev` is writable, so the
+  temp file is created and the rename *replaces the device node or
+  symlink with a regular file*, and every later writer to `/dev/null` on
+  that box appends to it instead. Finally, the destination's name needs
+  ~29 bytes of headroom under the filesystem's `NAME_MAX` for the
+  temporary suffix.
 
   Two further consequences: the plan takes the mode a newly created file
   gets instead of inheriting the mode of a plan already at that path —
