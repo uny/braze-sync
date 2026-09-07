@@ -50,8 +50,11 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
-# Jitter for 429 backoff. Tiny, zero-dep PRNG — the Braze client is the
-# only caller and only needs U(0, N) for jitter.
+# Tiny, zero-dep PRNG. Two callers, neither needing a CSPRNG: jitter for
+# the Braze client's 429 backoff, and the suffix on the temp file
+# `diff --plan-out` renames into place (`src/diff/plan.rs`). The latter
+# only has to miss a leftover sibling from a crashed run — `create_new`,
+# not the entropy, is what makes a collision safe.
 fastrand = "2"
 
 # File system

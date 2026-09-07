@@ -145,16 +145,35 @@ file formats, JSON output, exit codes) for the full v1.x line.
   artifact, and a job that dies while writing one should not take the
   previous one with it.
 
+  "Atomic" is a claim about visibility, not durability. The plan's own
+  bytes are flushed before the rename, but the directory entry the
+  rename creates is not, so a machine that loses power just after a
+  successful `diff --plan-out` can come back holding the previous plan.
+  That is still "the previous plan or no plan"; it is called out because
+  the success message does not distinguish the two.
+
   The temporary file is a sibling of the destination because `rename`
   across filesystems fails with `EXDEV`. A run killed in the window
   between creating it and the rename leaves that sibling behind — it is
-  never read as a plan, but a job collecting `plan*` as an artifact will
-  pick it up.
+  never read as a plan, but nothing reaps it either, so repeated
+  cancellations accumulate one file each, and a job collecting `plan*`
+  as an artifact will pick them all up.
 
-  Two other consequences of writing a new file rather than rewriting one
-  in place: the plan takes the mode a newly created file gets instead of
-  inheriting the mode of a plan already at that path, and a symlink at
-  that path is replaced by the plan rather than written through.
+  **`--plan-out` now asks more of its destination.** Writing a new file
+  rather than rewriting one in place means the *parent directory* must
+  be writable: a read-only directory holding a writable `plan.json` used
+  to work and now fails with `Permission denied`. For the same reason
+  the destination must be an ordinary file — `--plan-out /dev/null`,
+  `--plan-out /dev/stdout`, a FIFO, or a bind-mounted file all worked
+  before and now fail (as root, replacing a device node rather than
+  writing through it) — and its name needs ~29 bytes of headroom under
+  the filesystem's `NAME_MAX` for the temporary suffix.
+
+  Two further consequences: the plan takes the mode a newly created file
+  gets instead of inheriting the mode of a plan already at that path —
+  which can *loosen* one that had been chmod'd to `0o600` — and a
+  symlink at that path is replaced by the plan rather than written
+  through, so a symlinked artifact path silently stops being updated.
 
 ### Breaking
 
