@@ -65,7 +65,10 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::ffi::OsStr;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use crate::diff::custom_attribute::CustomAttributeOp;
 use crate::diff::{digest, DiffOp, DiffSummary, ResourceDiff};
@@ -342,10 +345,26 @@ impl PlanFile {
         serde_json::from_slice(&bytes).map_err(invalid)
     }
 
+    /// Serialize and replace `path` atomically.
+    ///
+    /// The bytes go to a sibling temporary file which is then `rename`d
+    /// over `path`, so an interrupted run leaves either the previous plan
+    /// or no plan, never a half-written one. The temporary file has to be
+    /// a *sibling*: `rename` across filesystems fails with `EXDEV`.
+    ///
+    /// A run killed between creating the temporary file and the rename
+    /// leaves that sibling behind. It is never mistaken for a plan —
+    /// nothing reads it and its name is not the one that was asked for —
+    /// but a job collecting `plan*` as an artifact will pick it up.
+    ///
+    /// The plan is a fresh inode on every write, so it takes the
+    /// umask-derived mode a newly created file gets rather than the mode
+    /// of a plan already at `path`, and a symlink at `path` is replaced
+    /// by the plan rather than followed.
     pub fn write_to(&self, path: &Path) -> std::io::Result<()> {
         let json = serde_json::to_vec_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        std::fs::write(path, json)
+        write_atomically(path, &json)
     }
 
     /// Compare saved ops against `fresh` as a multiset over
@@ -584,6 +603,94 @@ fn classify_orphanable<T>(
     }
 }
 
+/// Temp-name attempts before giving up. A collision needs a sibling
+/// carrying both this process's pid and the same random suffix, which in
+/// practice means a leftover from a crashed run rather than a live writer.
+const TEMP_NAME_ATTEMPTS: u32 = 8;
+
+fn invalid_path(msg: String) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidInput, msg)
+}
+
+/// The directory the temp file for `path` belongs in.
+///
+/// It must be `path`'s own directory: `rename` across filesystems fails
+/// with `EXDEV`.
+fn temp_sibling_dir(path: &Path) -> std::io::Result<&Path> {
+    match path.parent() {
+        // A bare file name (`plan.json`) parents to `""`, which nothing
+        // can be created in.
+        Some(parent) if parent.as_os_str().is_empty() => Ok(Path::new(".")),
+        Some(parent) => Ok(parent),
+        None => Err(invalid_path(format!(
+            "{} has no parent directory",
+            path.display()
+        ))),
+    }
+}
+
+/// Replace `path` with `bytes` via a sibling temp file and `rename`.
+///
+/// Hand-rolled rather than pulled from `tempfile`: that crate would add
+/// `rustix` / `errno` / `getrandom` to the binary for the create-flush-
+/// rename below, and it creates temp files 0o600, which would tighten the
+/// mode of a plan meant to be read as a CI artifact.
+fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let dir = temp_sibling_dir(path)?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| invalid_path(format!("{} does not name a file", path.display())))?;
+
+    let (mut file, temp_path) = create_temp_sibling(dir, file_name)?;
+
+    // The temp file exists from here on; every path out of this function
+    // either renames it into place or removes it.
+    let written = file.write_all(bytes).and_then(|()| {
+        // `rename` buys atomicity, not durability: without this a crash
+        // just after it can leave the plan present but empty, which is
+        // the same symptom by another route.
+        file.sync_all()
+    });
+    // Windows will not rename a file that is still open.
+    drop(file);
+
+    let result = written.and_then(|()| std::fs::rename(&temp_path, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    result
+}
+
+/// Create a new file in `dir` whose name is derived from `file_name`.
+///
+/// `create_new` is what keeps two concurrent writers off each other's
+/// temp file, so a name that is already taken is retried rather than
+/// truncated.
+fn create_temp_sibling(dir: &Path, file_name: &OsStr) -> std::io::Result<(File, PathBuf)> {
+    let pid = std::process::id();
+    for _ in 0..TEMP_NAME_ATTEMPTS {
+        let mut name = file_name.to_os_string();
+        name.push(format!(".tmp.{pid}.{:016x}", fastrand::u64(..)));
+        let candidate = dir.join(name);
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((file, candidate)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!(
+            "could not create a temporary file next to {} in {TEMP_NAME_ATTEMPTS} attempts",
+            dir.join(file_name).display()
+        ),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::TimeDelta;
@@ -784,6 +891,98 @@ mod tests {
             },
             ops,
         }
+    }
+
+    /// Entries in `dir` that are not `plan.json` — i.e. temp siblings
+    /// `write_atomically` failed to clean up.
+    fn stray_siblings(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "plan.json")
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn write_to_round_trips_through_read_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plan.json");
+        let plan = plan_with(vec![op(
+            ResourceKind::ContentBlock,
+            "a",
+            PlanOpType::Modify,
+        )]);
+
+        plan.write_to(&path).unwrap();
+        let read = PlanFile::read_from(&path).unwrap();
+
+        assert_eq!(read.ops, plan.ops);
+        assert_eq!(read.scope.environment, plan.scope.environment);
+        assert_eq!(stray_siblings(dir.path()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn write_to_replaces_an_existing_plan_and_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plan.json");
+        std::fs::write(&path, b"stale, and longer than the plan that replaces it").unwrap();
+
+        let plan = plan_with(vec![op(ResourceKind::CatalogSchema, "x", PlanOpType::Add)]);
+        plan.write_to(&path).unwrap();
+
+        assert_eq!(PlanFile::read_from(&path).unwrap().ops, plan.ops);
+        assert_eq!(stray_siblings(dir.path()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_bare_file_name_puts_the_temp_file_in_the_current_directory() {
+        // `Path::new("plan.json").parent()` is `Some("")`, which nothing
+        // can be created in — `diff --plan-out plan.json` reaches here.
+        assert_eq!(
+            temp_sibling_dir(Path::new("plan.json")).unwrap(),
+            Path::new(".")
+        );
+        assert_eq!(
+            temp_sibling_dir(Path::new("out/plan.json")).unwrap(),
+            Path::new("out")
+        );
+        temp_sibling_dir(Path::new("/")).unwrap_err();
+    }
+
+    #[test]
+    fn write_to_fails_without_creating_anything_when_the_directory_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("no-such-dir");
+        let plan = plan_with(vec![op(
+            ResourceKind::ContentBlock,
+            "a",
+            PlanOpType::Modify,
+        )]);
+
+        plan.write_to(&missing.join("plan.json")).unwrap_err();
+
+        assert!(!missing.exists());
+        assert_eq!(stray_siblings(dir.path()), Vec::<String>::new());
+    }
+
+    /// The plan is a CI artifact other steps read, so the rename must not
+    /// quietly tighten its mode the way a 0o600 temp file would.
+    #[test]
+    #[cfg(unix)]
+    fn write_to_gives_the_plan_the_mode_a_plain_write_would() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let reference = dir.path().join("reference");
+        std::fs::write(&reference, b"{}").unwrap();
+
+        let path = dir.path().join("plan.json");
+        plan_with(vec![]).write_to(&path).unwrap();
+
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), mode(&reference));
     }
 
     #[test]

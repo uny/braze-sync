@@ -128,6 +128,34 @@ file formats, JSON output, exit codes) for the full v1.x line.
   the check moved to the reachable one. The `--allow-destructive` gate
   itself was already correct; this aligns the plan's vocabulary with it.
 
+### Fixed
+
+- **`diff --plan-out` writes the plan atomically (#105).** The plan was
+  serialized and then handed straight to a single `write`, so a run
+  killed mid-write left a truncated plan on disk — and, when the path
+  already held a plan, destroyed the previous one on the way. The bytes
+  now go to a sibling temporary file which is flushed and then `rename`d
+  into place, so an interrupted run leaves either the previous plan or
+  no plan.
+
+  This was never a correctness hole in `apply`: a truncated plan fails
+  `read_from`'s JSON parse and is rejected as `InvalidData`, so a half
+  written plan could not be applied as if it were whole. What it cost
+  was the older, still-valid plan and a clear failure — the plan is a CI
+  artifact, and a job that dies while writing one should not take the
+  previous one with it.
+
+  The temporary file is a sibling of the destination because `rename`
+  across filesystems fails with `EXDEV`. A run killed in the window
+  between creating it and the rename leaves that sibling behind — it is
+  never read as a plan, but a job collecting `plan*` as an artifact will
+  pick it up.
+
+  Two other consequences of writing a new file rather than rewriting one
+  in place: the plan takes the mode a newly created file gets instead of
+  inheriting the mode of a plan already at that path, and a symlink at
+  that path is replaced by the plan rather than written through.
+
 ### Breaking
 
 - **Plan file version 2; version 1 files are rejected.** A v1 plan
