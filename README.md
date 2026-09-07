@@ -283,7 +283,7 @@ across all v1.x releases.
 | `4` | Authentication failed (invalid API key) |
 | `5` | Rate limit retries exhausted |
 | `6` | Destructive change blocked (pass `--allow-destructive`) |
-| `7` | Plan/apply mismatch (`apply --plan`: op set differs, or the remote moved since the plan) |
+| `7` | Plan/apply mismatch (`apply --plan`: op set differs, the remote moved since the plan, or the plan's scope — environment or endpoint — no longer matches) |
 | `8` | Fallback gate (unmatched placeholder + unconsumed remote lid). Unlike `2`, `diff` has no opt-in flag for this — it always exits `8` when the gate fires; `apply` requires `--allow-fallback` |
 
 ## Output formats

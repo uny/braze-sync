@@ -280,7 +280,12 @@ async fn apply_plan_endpoint_mismatch_exits_7_before_api_call() {
     // check did not fire first, apply would fail on a connection error,
     // not on exit 7.
     let repointed = write_config(tmp.path(), "http://127.0.0.1:1");
-    assert_eq!(repointed, config_path);
+    // `write_config` returns a path built from `dir` alone, so comparing
+    // paths would hold whether or not the rewrite landed. Read the file
+    // back instead — the repoint is this test's entire premise.
+    assert!(std::fs::read_to_string(&repointed)
+        .unwrap()
+        .contains("http://127.0.0.1:1"));
 
     let plan_in = format!("--plan={}", plan_path.display());
     tokio::task::spawn_blocking(move || {
@@ -292,7 +297,8 @@ async fn apply_plan_endpoint_mismatch_exits_7_before_api_call() {
             .assert()
             .failure()
             .code(7)
-            .stderr(predicates::str::contains("Braze endpoint"));
+            .stderr(predicates::str::contains("Braze endpoint"))
+            .stderr(predicates::str::contains("http://127.0.0.1:1"));
     })
     .await
     .unwrap();
@@ -627,7 +633,17 @@ async fn v1_plan_file_is_rejected() {
             // deliberately distinct from the 7 that means "the world
             // moved".
             .code(1)
-            .stderr(predicates::str::contains("diff --plan-out"));
+            // Name the version explicitly. The malformed-plan branch of
+            // `check_plan_scope` also exits 1 and also says "regenerate
+            // with `diff --plan-out`", and this fixture's op carries no
+            // precondition — so it would satisfy a looser assertion even
+            // if the version probe stopped running first, which is the
+            // one thing this test exists to prove.
+            .stderr(predicates::str::contains(
+                "plan file version 1 is not supported",
+            ))
+            .stderr(predicates::str::contains("diff --plan-out"))
+            .stderr(predicates::str::contains("malformed plan file").not());
     })
     .await
     .unwrap();
