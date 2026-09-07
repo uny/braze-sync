@@ -233,6 +233,45 @@ API keys never live in the config file. The config only references the
 held in `secrecy::SecretString` from the moment it leaves the OS so
 that `tracing` / `Debug` / panic messages cannot leak it.
 
+### Expiring an approval (`--max-plan-age`)
+
+A plan is only a snapshot of what `diff` saw. By default a plan older
+than 24 hours prints a warning and applies anyway; pass
+`apply --max-plan-age <DURATION>` to make that fail-closed instead:
+
+```bash
+braze-sync apply --confirm --plan plan.json --max-plan-age 1h30m
+```
+
+The duration is human-readable (`30m`, `2h`, `1h30m`, `7d`). Outside the
+window `apply` exits **9** before its first API call, so nothing is
+written and nothing is even read. It is checked once, at startup — not
+per write, which would abandon a run half-applied.
+
+This is an expiry on the *approval*, not another drift check: elapsed
+time is not by itself evidence that the remote moved, which is why it
+gets its own exit code rather than folding into **7**. The flag requires
+`--plan` and is opt-in, so existing pipelines are unaffected.
+
+A `generated_at` in the future is rejected the same way — it is the other
+edge of the same window. Up to 5 minutes ahead is tolerated as clock skew
+between the machine that ran `diff` and the one running `apply`; beyond
+that the plan's age cannot be established at all, and a generous
+`--max-plan-age` does not launder it.
+
+One caveat worth stating plainly, because this flag is the first check
+that rests on it: `generated_at` is written into the plan by `diff`, and
+it is the only field `apply` consults that nothing outside the file
+corroborates. The plan version is checked against the binary, the scope
+against your resolved config and endpoint, the op set against a freshly
+computed diff, and every remote precondition against a fresh fetch — so
+editing those is caught. Editing `generated_at` is not. Whoever can
+write the plan artifact between `diff --plan-out` and `apply --plan` can
+reset it to now and replay an approval of any age. `--max-plan-age`
+bounds elapsed time; it is not a defence against a tampered artifact, so
+keep the artifact store write-restricted the way you would any other
+build output that authorises a production write.
+
 ## Limitations
 
 These will be lifted across the v0.x → v1.0 milestones:
@@ -285,6 +324,7 @@ across all v1.x releases.
 | `6` | Destructive change blocked (pass `--allow-destructive`) |
 | `7` | Plan/apply mismatch (`apply --plan`: op set differs, the remote moved since the plan, or the plan's scope — environment or endpoint — no longer matches) |
 | `8` | Fallback gate (unmatched placeholder + unconsumed remote lid). Unlike `2`, `diff` has no opt-in flag for this — it always exits `8` when the gate fires; `apply` requires `--allow-fallback` |
+| `9` | Plan outside its validity window (`apply --max-plan-age`: the plan is older than the limit, or its `generated_at` is too far in the future) |
 
 ## Output formats
 

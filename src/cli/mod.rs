@@ -287,6 +287,7 @@ fn exit_code_for(err: &anyhow::Error) -> i32 {
                 Error::Api(_) => {}
                 Error::DestructiveBlocked => return 6,
                 Error::PlanDrift => return 7,
+                Error::PlanOutsideValidityWindow => return 9,
                 Error::DriftDetected { .. } => return 2,
                 Error::Config(_) | Error::MissingEnv(_) => return 3,
                 Error::RateLimitExhausted { .. } => return 5,
@@ -449,6 +450,14 @@ mod tests {
     fn exit_code_for_destructive_blocked() {
         let err = anyhow::Error::new(Error::DestructiveBlocked);
         assert_eq!(exit_code_for(&err), 6);
+    }
+
+    #[test]
+    fn exit_code_for_plan_outside_validity_window() {
+        // Deliberately not 7: elapsed time is not evidence the remote
+        // moved, so CI can tell an expired approval apart from drift.
+        let err = anyhow::Error::new(Error::PlanOutsideValidityWindow);
+        assert_eq!(exit_code_for(&err), 9);
     }
 
     #[test]
