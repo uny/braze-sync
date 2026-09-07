@@ -62,7 +62,7 @@ Map of environment name → settings. Pick the active one with
 
 | Field | Type | Required | Notes |
 |:---|:---|:---|:---|
-| `api_endpoint` | URL | yes | Braze REST endpoint for your instance (see [Braze API endpoints](https://www.braze.com/docs/api/basics/#endpoints)). The scaffold defaults to the EU `fra-02` cluster — change it if your instance lives elsewhere. |
+| `api_endpoint` | URL | yes | Braze REST endpoint for your instance (see [Braze API endpoints](https://www.braze.com/docs/api/basics/#endpoints)). The scaffold defaults to the EU `fra-02` cluster — change it if your instance lives elsewhere. Must be a bare `http`/`https` host: a `user:password@` prefix, a query string, or a fragment is rejected at load (exit `3`), because `diff --plan-out` writes this URL verbatim into the plan file it publishes. |
 | `api_key_env` | string | yes | Name of the **environment variable** holding the API key. The key itself must never appear in this file. |
 
 API keys are loaded into `secrecy::SecretString` at startup and never
