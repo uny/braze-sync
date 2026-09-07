@@ -159,19 +159,35 @@ file formats, JSON output, exit codes) for the full v1.x line.
   cancellations accumulate one file each, and a job collecting `plan*`
   as an artifact will pick them all up.
 
-  **`--plan-out` now asks more of its destination.** Writing a new file
-  rather than rewriting one in place means the *parent directory* must
-  be writable: a read-only directory holding a writable `plan.json` used
-  to work and now fails with `Permission denied`. For the same reason
-  the destination must be an ordinary file. `--plan-out /dev/null`,
-  `--plan-out /dev/stdout`, a FIFO and a bind-mounted file all worked
-  before; unprivileged, they now fail with `Permission denied`. **As
-  root the failure is worse than an error:** `/dev` is writable, so the
-  temp file is created and the rename *replaces the device node or
-  symlink with a regular file*, and every later writer to `/dev/null` on
-  that box appends to it instead. Finally, the destination's name needs
-  ~29 bytes of headroom under the filesystem's `NAME_MAX` for the
-  temporary suffix.
+  **A destination that cannot be replaced is written through instead.**
+  A device node, FIFO or socket is a stream with an identity of its own;
+  `rename` does not update one, it unlinks it and leaves a regular file
+  where it was. `--plan-out /dev/null` and `--plan-out /dev/stdout`
+  both worked before, and as root the rename would have replaced `/dev/null`
+  itself, so every later writer to it on that machine appended to a
+  growing file. These destinations therefore keep the plain write they
+  always had — and with it the absence of any atomicity, which is what
+  they had before and all that is meaningful for a stream.
+
+  **A symlink is followed, not replaced.** A link points *at* the
+  artifact rather than being it, so the rename targets the file it names
+  and the link survives — replacing the link would leave whatever reads
+  the target on a plan that silently stops being updated. Resolution is
+  the kernel's, not a `read_link` walk here: on Linux `/dev/stdout` is
+  `/proc/self/fd/1`, whose target for a piped stdout reads as
+  `pipe:[12345]`, a string that is not a path, and walking the chain
+  would take it for a destination and create a file by that name. The
+  one destination whose old behaviour is *not* preserved is a dangling
+  symlink: the plain write created its target, and the plan now replaces
+  the link instead.
+
+  **`--plan-out` still asks more of an ordinary destination.** Writing a
+  new file rather than rewriting one in place means the *parent
+  directory* must be writable: a read-only directory holding a writable
+  `plan.json` used to work and now fails with `Permission denied`. A
+  bind-mounted file is an ordinary file, so it takes the rename and
+  fails there. And the destination's name needs ~29 bytes of headroom
+  under the filesystem's `NAME_MAX` for the temporary suffix.
 
   Two further consequences: the plan takes the mode a newly created file
   gets instead of inheriting the mode of a plan already at that path —
