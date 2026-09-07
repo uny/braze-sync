@@ -31,16 +31,18 @@ file formats, JSON output, exit codes) for the full v1.x line.
   the key — same endpoint, a different workspace — is still not
   detected: the plan records where it looked, not whose data it saw.
 
-  For the same reason, `api_endpoint` must now be a bare host. `Url`
-  serializes a `user:password@` prefix, a query string and a fragment
-  all verbatim, so writing the endpoint into the plan would have put
-  any of them in the artifact — and since request building keeps the
+  For the same reason, `api_endpoint` may no longer carry userinfo, a
+  query string or a fragment. `Url` serializes all three verbatim, so
+  writing the endpoint into the plan would have put any of them in the
+  artifact — and since request building keeps the
   query, `https://proxy.example/?access_token=…` is a working config
   whose token would ship in every plan file. Config load now rejects
   all three (exit 3) rather than stripping them, which would leave the
   plan disagreeing with the endpoint `apply` calls. braze-sync has
   always authenticated with the API key from `api_key_env`, so none of
-  them was ever meaningful here.
+  them was ever meaningful here. A *path* is still accepted — request
+  building discards it — but it too is recorded in the plan verbatim,
+  so the endpoint is not the place to put anything secret.
 
 - **`apply --plan` now checks the remote, not just the op shape (#100).**
   The plan file's own doc comment promised a Terraform-style plan/apply

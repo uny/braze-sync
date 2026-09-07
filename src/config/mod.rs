@@ -135,8 +135,8 @@ impl ConfigFile {
                      — it is written verbatim into the plan file that \
                      `diff --plan-out` publishes, so a token there would be \
                      published with it. braze-sync reads its API key from the \
-                     '{}' environment variable; give api_endpoint as a bare \
-                     REST host.",
+                     '{}' environment variable; give api_endpoint as a plain \
+                     REST host without one.",
                     env.api_key_env,
                 )));
             }
