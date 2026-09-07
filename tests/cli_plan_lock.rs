@@ -282,7 +282,14 @@ async fn apply_plan_past_max_plan_age_exits_9_before_any_api_call() {
             .assert()
             .failure()
             .code(9)
-            .stderr(predicates::str::contains("validity window"));
+            // Discriminate the branch: both edges of the window print
+            // the same "validity window" prefix and both exit 9, so a
+            // substring test on the prefix alone would stay green if the
+            // call site returned the other variant — or if this fixture
+            // were read on a host whose clock predates it, which turns
+            // the plan into a *future* one and silently tests the edge
+            // this test is not named for.
+            .stderr(predicates::str::contains("ago, but --max-plan-age is 1h"));
     })
     .await
     .unwrap();
@@ -325,7 +332,14 @@ async fn apply_plan_generated_in_the_future_exits_9() {
             .assert()
             .failure()
             .code(9)
-            .stderr(predicates::str::contains("clock"));
+            .stderr(predicates::str::contains("in the future"))
+            // The top-level `error:` line is the one a log aggregator
+            // keeps, and it must not claim the 365d limit was exceeded
+            // when this rejection is the clock-skew edge.
+            .stderr(predicates::str::contains(
+                "Plan outside its validity window (`--max-plan-age`)",
+            ))
+            .stderr(predicates::str::contains("--max-plan-age was exceeded").not());
     })
     .await
     .unwrap();
@@ -490,6 +504,118 @@ async fn max_plan_age_rejects_an_unparseable_duration() {
             .assert()
             .failure()
             .code(3);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn max_plan_age_out_of_chrono_range_is_a_clean_config_error() {
+    // `humantime` happily parses a duration that `chrono::TimeDelta`
+    // cannot hold, so `TimeDelta::from_std` fails on user input. It must
+    // stay a clean exit 3 — rewriting that `map_err` as an `expect`
+    // would turn a typo into a panic and a stack trace.
+    let server = MockServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    let plan_path = tmp.path().join("plan.json");
+    // A *valid* plan: unlike an unparseable duration, this one clears
+    // clap and the plan is read before the range check is reached.
+    let plan_json = serde_json::json!({
+        "version": 2,
+        "generated_at": chrono::Utc::now().to_rfc3339(),
+        "braze_sync_version": env!("CARGO_PKG_VERSION"),
+        "scope": {"environment": "test", "api_endpoint": format!("{}/", server.uri())},
+        "ops": []
+    });
+    std::fs::write(&plan_path, serde_json::to_vec_pretty(&plan_json).unwrap()).unwrap();
+
+    let plan_in = format!("--plan={}", plan_path.display());
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args([
+                "apply",
+                "--confirm",
+                &plan_in,
+                "--max-plan-age",
+                "300000000y",
+            ])
+            .assert()
+            .failure()
+            .code(3)
+            .stderr(predicates::str::contains("out of range"));
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn max_plan_age_replaces_the_staleness_warning_rather_than_adding_to_it() {
+    // The early return in `check_plan_metadata` is a deliberate design
+    // decision — a window the operator set IS the staleness policy, so
+    // the 24-hour warning is not also printed inside it. Nothing pinned
+    // that in either direction, so deleting the `return Ok(())` (making
+    // an old-but-in-window plan warn again) passed the whole suite.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/catalogs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"catalogs": []})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/catalogs"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"message": "success"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_schema(tmp.path(), "newcat", &[("id", "string")]);
+    let plan_path = tmp.path().join("plan.json");
+
+    let plan_out = format!("--plan-out={}", plan_path.display());
+    let config_for_diff = config_path.clone();
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_for_diff.to_str().unwrap()])
+            .args(["diff", "--resource", "catalog_schema", &plan_out])
+            .assert()
+            .success();
+    })
+    .await
+    .unwrap();
+
+    // 25 hours old: past the warn threshold, inside a 48h window.
+    let mut plan: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&plan_path).unwrap()).unwrap();
+    let generated = chrono::Utc::now() - chrono::TimeDelta::hours(25);
+    plan["generated_at"] = serde_json::json!(generated.to_rfc3339());
+    std::fs::write(&plan_path, serde_json::to_vec_pretty(&plan).unwrap()).unwrap();
+
+    let plan_in = format!("--plan={}", plan_path.display());
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args([
+                "apply",
+                "--resource",
+                "catalog_schema",
+                "--confirm",
+                &plan_in,
+                "--max-plan-age",
+                "48h",
+            ])
+            .assert()
+            .success()
+            .stderr(predicates::str::contains("hour(s) old").not());
     })
     .await
     .unwrap();

@@ -54,7 +54,12 @@ pub enum Error {
     /// "the approval expired" apart from "the world changed". Which edge
     /// of the window was crossed is printed at the call site, as for
     /// [`Error::PlanDrift`].
-    #[error("Plan outside its validity window: --max-plan-age was exceeded")]
+    ///
+    /// The text names the *window*, not one of its edges: a plan whose
+    /// `generated_at` is in the future crosses the lower edge without
+    /// exceeding `--max-plan-age` at all, so saying it was exceeded
+    /// would contradict the call-site line printed just above it.
+    #[error("Plan outside its validity window (`--max-plan-age`)")]
     PlanOutsideValidityWindow,
 
     #[error("Rate limit exhausted after {retries} retries")]

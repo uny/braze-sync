@@ -36,6 +36,12 @@ file formats, JSON output, exit codes) for the full v1.x line.
   running `apply` is tolerated; past that the plan's age cannot be
   established, and a generous `--max-plan-age` does not launder it.
 
+  Note what the expiry rests on: `generated_at` is the only plan field
+  `apply` consults that nothing outside the file corroborates, so the
+  flag bounds elapsed time rather than defending against a tampered
+  artifact. Documented in the README and in `src/diff/plan.rs`'s "what
+  this does not promise" list.
+
 ### Changed
 
 - **The plan file now records the Braze endpoint it was generated

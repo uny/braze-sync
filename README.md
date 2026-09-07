@@ -259,6 +259,19 @@ between the machine that ran `diff` and the one running `apply`; beyond
 that the plan's age cannot be established at all, and a generous
 `--max-plan-age` does not launder it.
 
+One caveat worth stating plainly, because this flag is the first check
+that rests on it: `generated_at` is written into the plan by `diff`, and
+it is the only field `apply` consults that nothing outside the file
+corroborates. The plan version is checked against the binary, the scope
+against your resolved config and endpoint, the op set against a freshly
+computed diff, and every remote precondition against a fresh fetch — so
+editing those is caught. Editing `generated_at` is not. Whoever can
+write the plan artifact between `diff --plan-out` and `apply --plan` can
+reset it to now and replay an approval of any age. `--max-plan-age`
+bounds elapsed time; it is not a defence against a tampered artifact, so
+keep the artifact store write-restricted the way you would any other
+build output that authorises a production write.
+
 ## Limitations
 
 These will be lifted across the v0.x → v1.0 milestones:

@@ -61,6 +61,7 @@ Exit-code contract:
 | `5` | Rate limit retries exhausted | Retry the job |
 | `6` | Destructive change blocked (see `apply --allow-destructive`) | Fail the build / block merge |
 | `8` | Fallback gate: unmatched placeholder + unconsumed remote lid value (see `apply --allow-fallback`). Unlike code `2`, this fires unconditionally — plain `diff` has no opt-in flag for it | Fail the build / block merge |
+| `9` | Plan outside its validity window (`apply --max-plan-age`) — the approval expired, or the plan's `generated_at` is too far in the future | Regenerate the plan and re-approve; do not retry the same plan |
 
 ## Apply on merge
 
