@@ -128,6 +128,57 @@ file formats, JSON output, exit codes) for the full v1.x line.
   the check moved to the reachable one. The `--allow-destructive` gate
   itself was already correct; this aligns the plan's vocabulary with it.
 
+### Fixed
+
+- **`diff --plan-out` writes the plan atomically (#105).** The plan was
+  serialized and then handed straight to a single `write`, so a run
+  killed mid-write left a truncated plan on disk — and, when the path
+  already held a plan, destroyed the previous one on the way. The bytes
+  now go to a sibling temporary file which is flushed and then `rename`d
+  into place, so an interrupted run leaves either the previous plan or
+  no plan.
+
+  This was never a correctness hole in `apply`: a truncated plan fails
+  `read_from`'s JSON parse and is rejected as `InvalidData`, so a half
+  written plan could not be applied as if it were whole. What it cost
+  was the older, still-valid plan and a clear failure — the plan is a CI
+  artifact, and a job that dies while writing one should not take the
+  previous one with it.
+
+  "Atomic" is a claim about visibility, not durability. The plan's own
+  bytes are flushed before the rename, but the directory entry the
+  rename creates is not, so a machine that loses power just after a
+  successful `diff --plan-out` can come back holding the previous plan.
+  That is still "the previous plan or no plan"; it is called out because
+  the success message does not distinguish the two.
+
+  The temporary file is a sibling of the destination because `rename`
+  across filesystems fails with `EXDEV`. A run killed in the window
+  between creating it and the rename leaves that sibling behind — it is
+  never read as a plan, but nothing reaps it either, so repeated
+  cancellations accumulate one file each, and a job collecting `plan*`
+  as an artifact will pick them all up.
+
+  **`--plan-out` now asks more of its destination.** Writing a new file
+  rather than rewriting one in place means the *parent directory* must
+  be writable: a read-only directory holding a writable `plan.json` used
+  to work and now fails with `Permission denied`. For the same reason
+  the destination must be an ordinary file. `--plan-out /dev/null`,
+  `--plan-out /dev/stdout`, a FIFO and a bind-mounted file all worked
+  before; unprivileged, they now fail with `Permission denied`. **As
+  root the failure is worse than an error:** `/dev` is writable, so the
+  temp file is created and the rename *replaces the device node or
+  symlink with a regular file*, and every later writer to `/dev/null` on
+  that box appends to it instead. Finally, the destination's name needs
+  ~29 bytes of headroom under the filesystem's `NAME_MAX` for the
+  temporary suffix.
+
+  Two further consequences: the plan takes the mode a newly created file
+  gets instead of inheriting the mode of a plan already at that path —
+  which can *loosen* one that had been chmod'd to `0o600` — and a
+  symlink at that path is replaced by the plan rather than written
+  through, so a symlinked artifact path silently stops being updated.
+
 ### Breaking
 
 - **Plan file version 2; version 1 files are rejected.** A v1 plan
