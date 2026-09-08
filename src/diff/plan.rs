@@ -370,21 +370,36 @@ impl PlanFile {
     /// The plan is a fresh inode on every write, so it takes the
     /// umask-derived mode a newly created file gets rather than the mode
     /// of a plan already at `path` — which can *loosen* a plan that had
-    /// been chmod'd tighter.
+    /// been chmod'd tighter. That applies to a symlink's target as much
+    /// as to `path` itself.
     ///
     /// A symlink at `path` is followed and the file it points at is
-    /// replaced, so the link survives; a dangling one is the exception
-    /// and is replaced by the plan itself. See [`write_plan_bytes`].
+    /// replaced, so the link survives — which means the *target's*
+    /// inode and mode are what change, not the link's. A dangling one
+    /// is the exception and is replaced by the plan itself. A link the
+    /// destination of which exists but cannot be stat'd — `EACCES` on a
+    /// directory along the chain, `ELOOP`, `ENAMETOOLONG` — is an error
+    /// rather than a third case: replacing it would destroy a live link
+    /// and report success.
     ///
     /// Creating a sibling also asks more of `path` than a plain write
-    /// did: the parent directory must be writable — a read-only
-    /// directory holding a writable plan no longer works — and `path`'s
-    /// name must leave ~29 bytes of headroom under `NAME_MAX` for the
-    /// suffix. A destination that cannot be replaced at all, because it
-    /// is a device node, FIFO or socket, is written *through* instead
-    /// and keeps every guarantee it had before, which is none of the
-    /// above. A mount point is a regular file and so takes the rename
-    /// route, where it fails.
+    /// did: the parent directory must be writable — for a symlink, the
+    /// *target's* parent, so a read-only directory holding a writable
+    /// plan no longer works — and the resolved name must leave ~29 bytes
+    /// of headroom under `NAME_MAX` for the suffix. A destination that
+    /// cannot be replaced at all, because it is a device node, FIFO or
+    /// socket, is written *through* instead and keeps every guarantee it
+    /// had before, which is none of the above. A mount point is a
+    /// regular file and so takes the rename route, where it fails.
+    ///
+    /// `/dev/stdout` splits on what the shell did with fd 1. Piped or on
+    /// a tty it resolves to a stream and is written through. **Redirected
+    /// to a regular file it resolves to that file**, and where the kernel
+    /// and `realpath` agree on which file that is — Linux, via
+    /// `/proc/self/fd/1` — it takes the rename route, so the redirect
+    /// target is replaced by a new inode and fd 1 is left on the old one.
+    /// Where they do not agree, the plan is written through the name that
+    /// was asked for instead.
     pub fn write_to(&self, path: &Path) -> std::io::Result<()> {
         let json = serde_json::to_vec_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -685,6 +700,26 @@ fn is_stream_sink(_meta: &std::fs::Metadata) -> bool {
     false
 }
 
+/// Whether two `Metadata` describe the same file.
+///
+/// Used to check that `realpath` and the kernel agree about where a
+/// symlink leads before a `rename` acts on `realpath`'s answer.
+#[cfg(unix)]
+fn is_same_file(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+/// Windows exposes no stable file identity through `Metadata`
+/// (`file_index` is unstable behind `windows_by_handle`), so the check
+/// there is just that the canonical path still resolves — which the
+/// caller has already established by stat'ing it successfully.
+#[cfg(not(unix))]
+fn is_same_file(_a: &std::fs::Metadata, _b: &std::fs::Metadata) -> bool {
+    true
+}
+
 /// Write `bytes` to `path`, atomically where that means anything.
 ///
 /// Symlinks are resolved by the kernel rather than by walking
@@ -694,30 +729,60 @@ fn is_stream_sink(_meta: &std::fs::Metadata) -> bool {
 /// name. Walking the chain would take that for a destination and create
 /// a file called `pipe:[12345]`.
 fn write_plan_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    match std::fs::metadata(path) {
-        // Written through under the name that was asked for, so the
-        // kernel resolves the chain.
-        Ok(meta) if is_stream_sink(&meta) => std::fs::write(path, bytes),
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) => meta,
 
-        // A symlink to an ordinary file points *at* the artifact rather
-        // than being it: replacing the link would leave whatever reads
-        // the target reading a plan that silently stops being updated.
-        // So the rename targets what it points at, and the link
-        // survives. `canonicalize` cannot fail here — the `metadata`
-        // call above already resolved the whole chain.
-        Ok(_) if path.is_symlink() => replace_atomically(&std::fs::canonicalize(path)?, bytes),
+        // Nothing at `path` — a new plan, or a *dangling* symlink, which
+        // is replaced by the plan rather than having its target created
+        // the way the plain write did. It is the one destination whose
+        // old behaviour is deliberately not preserved; a plan is an
+        // output path, not a mailbox, so a link to a file nobody has
+        // created is not a workflow worth reconstructing.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return replace_atomically(path, bytes)
+        }
 
-        // An ordinary file, a directory (which fails in the rename, as
-        // it did in the write), or nothing there yet.
-        //
-        // A *dangling* symlink lands here too, and is replaced by the
-        // plan rather than having its target created the way the plain
-        // write did. It is the one destination whose old behaviour is
-        // not preserved; a plan is an output path, not a mailbox, so a
-        // link to a file nobody has created is not a workflow worth
-        // reconstructing.
-        _ => replace_atomically(path, bytes),
+        // Any *other* stat failure — `EACCES` on a directory along the
+        // target's chain, `ELOOP`, `ENAMETOOLONG` — says the destination
+        // exists but could not be classified. Falling through to the
+        // rename would replace a live symlink with a regular file and
+        // report success, which is the damage this routing exists to
+        // prevent, so the error is surfaced instead.
+        Err(e) => return Err(e),
+    };
+
+    // Written through under the name that was asked for, so the kernel
+    // resolves the chain.
+    if is_stream_sink(&meta) {
+        return std::fs::write(path, bytes);
     }
+
+    // A symlink to an ordinary file points *at* the artifact rather than
+    // being it: replacing the link would leave whatever reads the target
+    // reading a plan that silently stops being updated. So the rename
+    // targets what it points at, and the link survives.
+    //
+    // `canonicalize` is `realpath(3)`, an independent resolution rather
+    // than a reuse of the stat above, and the two can disagree: on macOS
+    // `canonicalize("/dev/stdout")` under `> plan.json` answers
+    // `/dev/fd/plan.json`, a name that does not exist, and on Linux it
+    // fails outright when fd 1 holds an unlinked file. Both would put
+    // the temp sibling somewhere the caller never named. So the answer
+    // is only used when a fresh stat says it is the same file the
+    // routing decision was made about; otherwise the plain write goes
+    // through the name that was asked for.
+    if path.is_symlink() {
+        if let Ok(real) = std::fs::canonicalize(path) {
+            if std::fs::metadata(&real).is_ok_and(|m| is_same_file(&meta, &m)) {
+                return replace_atomically(&real, bytes);
+            }
+        }
+        return std::fs::write(path, bytes);
+    }
+
+    // An ordinary file, or a directory (which fails in the rename, as it
+    // did in the write).
+    replace_atomically(path, bytes)
 }
 
 /// Replace `path` with `bytes` via a sibling temp file and `rename`.
@@ -1102,14 +1167,28 @@ mod tests {
     /// link survives and the file it names is what gets replaced.
     /// Replacing the link instead would leave whatever reads the target
     /// on a plan that silently stops being updated.
+    ///
+    /// The link is deliberately **relative and into a subdirectory**,
+    /// and the target's inode is asserted to have been replaced. That
+    /// combination is what makes this test able to fail: resolving with
+    /// `read_link` instead of `canonicalize` yields the bare
+    /// `sub/target.json`, which does not resolve from the process cwd,
+    /// so the write would fall back to writing *through* the link — the
+    /// target would hold the right bytes on the same inode, and every
+    /// other assertion here would still pass.
     #[test]
     #[cfg(unix)]
     fn write_to_replaces_what_a_symlink_points_at_and_keeps_the_link() {
+        use std::os::unix::fs::MetadataExt;
+
         let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("target.json");
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let target = sub.join("target.json");
         std::fs::write(&target, b"not a plan").unwrap();
+        let before = std::fs::metadata(&target).unwrap().ino();
         let path = dir.path().join("plan.json");
-        std::os::unix::fs::symlink(&target, &path).unwrap();
+        std::os::unix::fs::symlink("sub/target.json", &path).unwrap();
 
         let plan = plan_with(vec![op(ResourceKind::CatalogSchema, "x", PlanOpType::Add)]);
         plan.write_to(&path).unwrap();
@@ -1122,7 +1201,62 @@ mod tests {
             "the link must survive",
         );
         assert_eq!(PlanFile::read_from(&target).unwrap().ops, plan.ops);
-        assert_eq!(stray_siblings(dir.path()), vec!["target.json".to_string()]);
+        assert_ne!(
+            before,
+            std::fs::metadata(&target).unwrap().ino(),
+            "the target must be replaced by the rename, not written through",
+        );
+        // The temp sibling belongs next to the *target*, and nothing is
+        // left behind in either directory.
+        assert_eq!(stray_siblings(dir.path()), vec!["sub".to_string()]);
+        assert_eq!(stray_siblings(&sub), vec!["target.json".to_string()]);
+    }
+
+    /// A destination that exists but cannot be classified — here a link
+    /// whose target sits under a directory the caller may not search —
+    /// is an error, not an invitation to replace the link. Falling
+    /// through to the rename would destroy a live symlink and still
+    /// report success, which is the damage the routing exists to stop.
+    #[test]
+    #[cfg(unix)]
+    fn write_to_errors_rather_than_replacing_a_link_it_cannot_stat() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        let target = locked.join("target.json");
+        std::fs::write(&target, b"not a plan").unwrap();
+        let path = dir.path().join("plan.json");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Root searches a 0o000 directory regardless, so there is no
+        // unstattable destination to test with; skip rather than assert
+        // the opposite of what this pins.
+        let privileged = std::fs::metadata(&target).is_ok();
+
+        let result = plan_with(vec![]).write_to(&path);
+
+        // Restore before the tempdir is dropped, or the cleanup leaves
+        // the directory behind.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        if privileged {
+            return;
+        }
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied,
+        );
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link must survive a destination that could not be classified",
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"not a plan");
     }
 
     /// The one destination whose pre-atomic behaviour is not preserved:
@@ -1204,13 +1338,20 @@ mod tests {
         let regular = dir.path().join("plan.json");
         std::fs::write(&regular, b"{}").unwrap();
 
-        let sink = |path: &str| is_stream_sink(&std::fs::metadata(path).unwrap());
-        assert!(sink("/dev/null"), "character device");
-        assert!(!sink(regular.to_str().unwrap()), "regular file");
+        // A bound socket has a name other processes are connected to,
+        // exactly like the FIFO; the listener is held for the assertion
+        // so the socket is still bound when it is stat'd.
+        let socket_path = dir.path().join("plan.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+
+        let sink = |path: &Path| is_stream_sink(&std::fs::metadata(path).unwrap());
+        assert!(sink(Path::new("/dev/null")), "character device");
+        assert!(sink(&socket_path), "socket");
+        assert!(!sink(&regular), "regular file");
         // A directory has to keep taking the rename route: it is what
         // `write_to_removes_the_temp_file_when_the_rename_fails` uses to
         // reach the cleanup branch.
-        assert!(!sink(dir.path().to_str().unwrap()), "directory");
+        assert!(!sink(dir.path()), "directory");
     }
 
     /// End-to-end on a sink that can be created in a tempdir. Under the
