@@ -159,25 +159,58 @@ file formats, JSON output, exit codes) for the full v1.x line.
   cancellations accumulate one file each, and a job collecting `plan*`
   as an artifact will pick them all up.
 
-  **`--plan-out` now asks more of its destination.** Writing a new file
-  rather than rewriting one in place means the *parent directory* must
-  be writable: a read-only directory holding a writable `plan.json` used
-  to work and now fails with `Permission denied`. For the same reason
-  the destination must be an ordinary file. `--plan-out /dev/null`,
-  `--plan-out /dev/stdout`, a FIFO and a bind-mounted file all worked
-  before; unprivileged, they now fail with `Permission denied`. **As
-  root the failure is worse than an error:** `/dev` is writable, so the
-  temp file is created and the rename *replaces the device node or
-  symlink with a regular file*, and every later writer to `/dev/null` on
-  that box appends to it instead. Finally, the destination's name needs
-  ~29 bytes of headroom under the filesystem's `NAME_MAX` for the
-  temporary suffix.
+  **A destination that cannot be replaced is written through instead.**
+  A device node, FIFO or socket is a stream with an identity of its own;
+  `rename` does not update one, it unlinks it and leaves a regular file
+  where it was. `--plan-out /dev/null` worked before, and as root the
+  rename would have replaced `/dev/null` itself, so every later writer to
+  it on that machine appended to a growing file. These destinations
+  therefore keep the plain write they always had — and with it the
+  absence of any atomicity, which is what they had before and all that is
+  meaningful for a stream.
 
-  Two further consequences: the plan takes the mode a newly created file
+  **A symlink is followed, not replaced.** A link points *at* the
+  artifact rather than being it, so the rename targets the file it names
+  and the link survives — replacing the link would leave whatever reads
+  the target on a plan that silently stops being updated. Resolution is
+  the kernel's, not a `read_link` walk here: on Linux `/dev/stdout` is
+  `/proc/self/fd/1`, whose target for a piped stdout reads as
+  `pipe:[12345]`, a string that is not a path, and walking the chain
+  would take it for a destination and create a file by that name.
+
+  Following the link means the *target* is what gets replaced, so it is
+  the target's inode and mode that change: a target chmod'd `0o600` comes
+  back at the umask default. Two destinations do not keep their old
+  behaviour: a symlink whose target is **absent** is replaced by the
+  plan rather than having that target created. Every other way of
+  failing to stat the destination — `EACCES` on a directory along the
+  chain, `ELOOP`, `ENOTDIR`, `ENAMETOOLONG` — surfaces as the error it
+  always did.
+
+  **`--plan-out /dev/stdout` depends on what fd 1 is.** Piped or on a
+  tty it resolves to a stream and is written through, as before.
+  *Redirected to a regular file* it resolves to that file, and on Linux —
+  where `realpath` follows `/proc/self/fd/1` to the same file the kernel
+  did — it takes the rename route: the redirect target is replaced by a
+  new inode, so the shell's fd 1 is left on the old one and anything
+  written to that redirection afterwards goes to an unlinked file. Where
+  the two resolutions disagree the plan is written through the name that
+  was asked for, which is what keeps this working on macOS, where
+  `realpath` answers `/dev/fd/<basename>` — a name that does not
+  resolve.
+
+  **`--plan-out` still asks more of an ordinary destination.** Writing a
+  new file rather than rewriting one in place means the *parent
+  directory* must be writable — for a symlink, the **target's** parent,
+  not the link's: a read-only directory holding a writable `plan.json`
+  used to work and now fails with `Permission denied`. A bind-mounted
+  file is an ordinary file, so it takes the rename and fails there. And
+  the resolved name needs ~29 bytes of headroom under the filesystem's
+  `NAME_MAX` for the temporary suffix.
+
+  One further consequence: the plan takes the mode a newly created file
   gets instead of inheriting the mode of a plan already at that path —
-  which can *loosen* one that had been chmod'd to `0o600` — and a
-  symlink at that path is replaced by the plan rather than written
-  through, so a symlinked artifact path silently stops being updated.
+  which can *loosen* one that had been chmod'd to `0o600`.
 
 ### Breaking
 
