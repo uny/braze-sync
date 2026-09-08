@@ -181,11 +181,11 @@ file formats, JSON output, exit codes) for the full v1.x line.
   Following the link means the *target* is what gets replaced, so it is
   the target's inode and mode that change: a target chmod'd `0o600` comes
   back at the umask default. Two destinations do not keep their old
-  behaviour. A **dangling** symlink is replaced by the plan rather than
-  having its target created. And a link whose destination exists but
-  cannot be stat'd — `EACCES` on a directory along the chain, `ELOOP`,
-  `ENAMETOOLONG` — is now an **error**; letting it fall through to the
-  rename destroyed a live link and reported success.
+  behaviour: a symlink whose target is **absent** is replaced by the
+  plan rather than having that target created. Every other way of
+  failing to stat the destination — `EACCES` on a directory along the
+  chain, `ELOOP`, `ENOTDIR`, `ENAMETOOLONG` — surfaces as the error it
+  always did.
 
   **`--plan-out /dev/stdout` depends on what fd 1 is.** Piped or on a
   tty it resolves to a stream and is written through, as before.
@@ -194,10 +194,10 @@ file formats, JSON output, exit codes) for the full v1.x line.
   did — it takes the rename route: the redirect target is replaced by a
   new inode, so the shell's fd 1 is left on the old one and anything
   written to that redirection afterwards goes to an unlinked file. Where
-  the two resolutions disagree, the plan is written through the name that
-  was asked for; on macOS `realpath` answers `/dev/fd/<basename>`, which
-  does not exist, and before that check the run failed with `No such file
-  or directory` without writing a plan.
+  the two resolutions disagree the plan is written through the name that
+  was asked for, which is what keeps this working on macOS, where
+  `realpath` answers `/dev/fd/<basename>` — a name that does not
+  resolve.
 
   **`--plan-out` still asks more of an ordinary destination.** Writing a
   new file rather than rewriting one in place means the *parent

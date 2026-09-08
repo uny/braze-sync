@@ -375,12 +375,13 @@ impl PlanFile {
     ///
     /// A symlink at `path` is followed and the file it points at is
     /// replaced, so the link survives — which means the *target's*
-    /// inode and mode are what change, not the link's. A dangling one
-    /// is the exception and is replaced by the plan itself. A link the
-    /// destination of which exists but cannot be stat'd — `EACCES` on a
-    /// directory along the chain, `ELOOP`, `ENAMETOOLONG` — is an error
-    /// rather than a third case: replacing it would destroy a live link
-    /// and report success.
+    /// inode and mode are what change, not the link's. A link whose
+    /// target is simply absent (`ENOENT`) is the exception and is
+    /// replaced by the plan itself. Every *other* way of failing to
+    /// stat the destination — `EACCES` on a directory along the chain,
+    /// `ELOOP`, `ENOTDIR`, `ENAMETOOLONG` — is surfaced as the error it
+    /// is, exactly as the plain write surfaced it: replacing the link
+    /// there would destroy a live link and report success.
     ///
     /// Creating a sibling also asks more of `path` than a plain write
     /// did: the parent directory must be writable — for a symlink, the
@@ -732,22 +733,25 @@ fn write_plan_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let meta = match std::fs::metadata(path) {
         Ok(meta) => meta,
 
-        // Nothing at `path` — a new plan, or a *dangling* symlink, which
-        // is replaced by the plan rather than having its target created
-        // the way the plain write did. It is the one destination whose
-        // old behaviour is deliberately not preserved; a plan is an
-        // output path, not a mailbox, so a link to a file nobody has
-        // created is not a workflow worth reconstructing.
+        // Nothing at `path` — a new plan, or a symlink whose target is
+        // absent, which is replaced by the plan rather than having that
+        // target created the way the plain write did. It is the one
+        // destination whose old behaviour is deliberately not preserved;
+        // a plan is an output path, not a mailbox, so a link to a file
+        // nobody has created is not a workflow worth reconstructing.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return replace_atomically(path, bytes)
         }
 
         // Any *other* stat failure — `EACCES` on a directory along the
-        // target's chain, `ELOOP`, `ENAMETOOLONG` — says the destination
-        // exists but could not be classified. Falling through to the
-        // rename would replace a live symlink with a regular file and
-        // report success, which is the damage this routing exists to
-        // prevent, so the error is surfaced instead.
+        // target's chain, `ELOOP`, `ENOTDIR`, `ENAMETOOLONG` — leaves
+        // the destination unclassified. Note that this covers links that
+        // dangle for a reason other than a missing final component, so
+        // "a dangling link is replaced" holds for `ENOENT` alone. The
+        // error is surfaced, as the plain write surfaced it: falling
+        // through to the rename would replace a live symlink with a
+        // regular file and report success, which is the damage this
+        // routing exists to prevent.
         Err(e) => return Err(e),
     };
 
