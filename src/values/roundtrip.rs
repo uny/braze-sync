@@ -25,13 +25,17 @@
 //! recovery asserted here. This table is breadth over those two, not a
 //! replacement for them.
 //!
-//! The table also turned up two boundaries, pinned here rather than fixed
-//! because each changes correlation semantics and wants its own
-//! regression cases — a test that states a boundary is what stops it
+//! The table also turned up two boundaries, both since fixed. Each was
+//! pinned first, because a test that states a boundary is what stops it
 //! being rediscovered as a bug:
 //!
-//! - #84, an asymmetry in which elements each side accepts as an anchor.
-//!   Fails safe (fatal `UnresolvedLid`).
+//! - #84 / #87 (fixed): the two sides disagreed on which element carries
+//!   an anchor and on which anchor owns a given lid. `#84` fell on the
+//!   safe side of that (a fatal `UnresolvedLid`), `#87` on the silent
+//!   one — a live identifier overwritten by a generated slug with no
+//!   error at all. `braze_managed::lid_anchor_for` now shares
+//!   `correlation`'s scans rather than restating them. See
+//!   `both_sides_agree_on_which_element_carries_an_anchor`.
 //! - #85 (fixed): an include whose `${NAME}` contains whitespace is still
 //!   left unmanaged by `templatize` — Braze forbids whitespace in a real
 //!   content block name, so such an include can never be templatized —
@@ -197,9 +201,10 @@ fn identity_round_trip_across_shapes() {
             r#"<a href="https://x.com/{{content_blocks.${cta} | id: 'cb1'}}/p">go</a>{{x | lid: 'liveaaaaaaaa1'}}"#,
             FieldKind::ContentBlock,
         ),
-        // Non-anchor element: VML / SVG CTAs route through the same path,
-        // for the shape where the lid sits inside the href — see
-        // `lid_in_a_non_anchor_element_body_has_no_template_side_anchor`.
+        // Non-anchor element: VML / SVG CTAs route through the same path.
+        // The sibling shape, where the lid sits in the element *body*
+        // rather than the href, is
+        // `both_sides_agree_on_which_element_carries_an_anchor`.
         (
             r#"<v:roundrect href="https://x.com/p?lid={{x | lid: 'liveaaaaaaaa1'}}">go</v:roundrect>"#,
             FieldKind::EmailHtmlBody,
@@ -224,6 +229,18 @@ fn identity_round_trip_across_shapes() {
         (
             "https://x.com/one{{x | lid: 'liveaaaaaaaa1'}}https://x.com/two{{y | lid: 'liveaaaaaaaa2'}}",
             FieldKind::EmailPlainBody,
+        ),
+        // #87: a second URL-carrying element between the `<a href>` and
+        // the lid. Whichever element the two sides pick, they have to
+        // pick the same one.
+        (
+            r#"<a href="https://x.com/sale"><img src="https://x.com/hero.png">{{x | lid: 'liveaaaaaaaa1'}}</a>"#,
+            FieldKind::EmailHtmlBody,
+        ),
+        // #84: the lid in a non-anchor element's body.
+        (
+            r#"<v:rect href="https://x.com/sale">{{x | lid: 'liveaaaaaaaa1'}}</v:rect>"#,
+            FieldKind::EmailHtmlBody,
         ),
         // No anchor exists; resolution is positional.
         (
@@ -498,53 +515,56 @@ fn blank_named_include_no_longer_corrupts_a_live_lid() {
 }
 
 #[test]
-fn lid_in_a_non_anchor_element_body_has_no_template_side_anchor() {
-    // Second known boundary (#84), found by the table above. The two sides
-    // do not agree on which elements can carry an anchor:
+fn both_sides_agree_on_which_element_carries_an_anchor() {
+    // #84 / #87, the two halves of one asymmetry, kept as one test
+    // because one fix closed both. The sides used to disagree twice
+    // over:
     //
-    // - remote: `correlation::href_re` takes `href` / `src` / `action` on
-    //   *any* element, so it extracts a pair here;
-    // - template: once the lid sits past the `>`, `lid_anchor_for` falls
-    //   through to `braze_managed::anchor_href_re`, which is `<a>`-only.
+    // - *element set*: remote `correlation::href_re` took `href` / `src`
+    //   / `action` on any element, template `anchor_href_re` only `<a>`;
+    // - *selection rule*: remote took the nearest preceding URL,
+    //   template the enclosing open tag, falling back to the nearest
+    //   preceding `<a>`.
     //
-    // A VML CTA whose lid is inside the href is supported (that shape stays
-    // within the open tag and goes through `url_attr_re`); one whose lid is
-    // in the element *body* is not.
-    //
-    // Pinned rather than fixed because it fails in the safe direction: the
-    // result is a fatal `UnresolvedLid`, so the operator is stopped rather
-    // than having a live identifier quietly overwritten by a slug. Widening
-    // `anchor_href_re` to match `href_re` would resolve it, but that changes
-    // which element encloses an anchor and so is a correlation-semantics
-    // change, not a test fix.
-    let body = r#"<v:rect href="https://x.com/sale">{{x | lid: 'liveaaaaaaaa1'}}</v:rect>"#;
-    let t = templatize_body(body, FieldKind::EmailHtmlBody);
-    assert_eq!(t.lid_rewrites, 1);
+    // `lid_anchor_for` now shares `correlation::html_url_anchors`
+    // outright, so there is one rule and no copy to drift. What this
+    // test adds over the table above is the cross-check that the remote
+    // side really does extract the pair — a template-side regression
+    // that lost the anchor *and* a remote side that never had one would
+    // agree vacuously, and the table cannot tell those apart.
+    let cases: &[(&str, &str)] = &[
+        // #84: the lid sits in a non-anchor element's body. Failed
+        // safe, as a fatal `UnresolvedLid` — the operator was stopped
+        // rather than shipping a slug.
+        (
+            r#"<v:rect href="https://x.com/sale">{{x | lid: 'liveaaaaaaaa1'}}</v:rect>"#,
+            "liveaaaaaaaa1",
+        ),
+        // #87: an `<img src>` between the `<a href>` and the lid. This
+        // is the half that failed *silently*: the remote side keyed the
+        // pair to the `<img src>` while the template still asked for the
+        // `<a href>`, so the bucket came back empty, `p.errors` stayed
+        // empty, and a generated slug was POSTed over a live identifier.
+        (
+            r#"<a href="https://x.com/sale"><img src="https://x.com/hero.png">{{x | lid: 'liveaaaaaaaa1'}}</a>"#,
+            "liveaaaaaaaa1",
+        ),
+    ];
 
-    // The remote side does find the pair.
-    assert_eq!(
-        crate::values::correlation::extract_html_lid_values(body)
-            .into_iter()
-            .map(|c| c.value)
-            .collect::<Vec<_>>(),
-        vec!["liveaaaaaaaa1".to_string()],
-    );
-
-    // The template side does not, and says so loudly.
-    let p = prepare_field(&t.new_body, Some(body), FieldKind::EmailHtmlBody);
-    assert!(
-        p.errors.iter().any(|e| matches!(
-            e,
-            crate::values::placeholder::ResolutionError::UnresolvedLid { .. }
-        )),
-        "expected a fatal UnresolvedLid, got: {:?}",
-        p.errors
-    );
-    assert!(
-        p.fallbacks.is_empty(),
-        "must not POST a slug: {:?}",
-        p.fallbacks
-    );
+    for (body, live) in cases {
+        // The remote side finds the pair.
+        assert_eq!(
+            crate::values::correlation::extract_html_lid_values(body)
+                .into_iter()
+                .map(|c| c.value)
+                .collect::<Vec<_>>(),
+            vec![live.to_string()],
+            "remote-side extraction found no pair, so the round trip below \
+             would agree vacuously: {body}"
+        );
+        // And so does the template side, on the same anchor.
+        assert_survives_reformat(body, body, FieldKind::EmailHtmlBody);
+    }
 }
 
 #[test]

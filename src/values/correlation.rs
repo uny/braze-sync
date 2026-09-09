@@ -348,11 +348,15 @@ fn href_re() -> &'static Regex {
     RE.get_or_init(|| {
         // Tolerant of attribute order and either quote style. Matches
         // `href`, `src`, `action` — with an optional namespace prefix
-        // like `xlink:` or `v:` — on any element, not just `<a>`. This
-        // mirrors templatize::url_attr_re so VML / SVG CTAs whose lid
-        // sits inside a non-anchor element's href round-trip through
-        // apply/diff resolution. Leading `\s` (not `\b`) prevents
-        // `data-href`-style custom attributes from tail-matching.
+        // like `xlink:` or `v:` — on any element, not just `<a>`, so VML
+        // / SVG CTAs round-trip through apply/diff resolution. Leading
+        // `\s` (not `\b`) prevents `data-href`-style custom attributes
+        // from tail-matching.
+        //
+        // This is the *only* statement of which elements carry an anchor.
+        // The template side reaches it through `html_url_anchors` rather
+        // than restating it; #87 / #84 were the two halves of what a
+        // second, `<a>`-only copy cost.
         Regex::new(
             r#"(?i)<[a-z][a-z0-9_.:-]*\b[^>]*?\s(?:[a-z][a-z0-9_-]*:)?(?:href|src|action)\s*=\s*(?:"([^"]*)"|'([^']*)')"#,
         )
@@ -474,16 +478,17 @@ pub struct LidCorrelation {
     pub url: Anchor,
     /// The lid value extracted from `| lid: '…'`.
     pub value: String,
-    /// Byte offset where the `<a href>` (HTML) or raw URL (plaintext)
-    /// begins. Useful for ordering and ambiguity reporting.
+    /// Byte offset where the URL-carrying element (HTML) or raw URL
+    /// (plaintext) begins. Useful for ordering and ambiguity reporting.
     pub url_offset: usize,
 }
 
 /// Extract `(url, lid_value)` pairs from an HTML field by pairing each
-/// `<a href="…">` with the next `| lid: '…'` that follows it before
-/// the next `<a href>` or end of string. Unpaired anchors are skipped.
+/// URL-carrying attribute (see [`html_url_anchors`]) with every
+/// `| lid: '…'` that follows it before the next such attribute or the
+/// end of the string. Unpaired anchors are skipped.
 pub fn extract_html_lid_values(body: &str) -> Vec<LidCorrelation> {
-    pair_urls_with_lids(href_iter(body), body)
+    pair_urls_with_lids(html_url_anchors(body), body)
 }
 
 /// Extract `(url, lid_value)` pairs from a plaintext field. Same
@@ -502,7 +507,20 @@ pub fn extract_lid_values_unanchored(body: &str) -> Vec<String> {
         .collect()
 }
 
-fn href_iter(body: &str) -> Vec<(usize, Anchor)> {
+/// Scan `body` for URL-carrying attributes, returning `(byte offset of
+/// the element's `<`, anchor key)` in appearance order.
+///
+/// Shared by remote-side extraction and template-side anchor lookup, the
+/// same way [`plaintext_url_anchors`] is: `braze_managed::lid_anchor_for`
+/// calls this and takes the last entry starting at or before the
+/// placeholder, which is precisely the bucket [`pair_urls_with_lids`]
+/// would drop a remote lid into. Any divergence between the two — a
+/// different element set, or a different way of deciding which URL owns
+/// a lid — makes correlation impossible for the shapes where they
+/// disagree, and the failure is silent: the template asks for a bucket
+/// the remote side never filled, so a generated slug is POSTed over a
+/// live identifier (#87).
+pub(crate) fn html_url_anchors(body: &str) -> Vec<(usize, Anchor)> {
     href_re()
         .captures_iter(body)
         .filter_map(|cap| {

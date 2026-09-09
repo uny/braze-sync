@@ -16,7 +16,7 @@ use regex_lite::Regex;
 
 use crate::values::correlation::{
     extract_cb_id_values, extract_html_lid_values, extract_lid_values_unanchored,
-    extract_plaintext_lid_values, normalize_url, plaintext_url_anchors, slug_for_lid, Anchor,
+    extract_plaintext_lid_values, html_url_anchors, plaintext_url_anchors, slug_for_lid, Anchor,
     CbIdCorrelation, LidCorrelation,
 };
 use crate::values::placeholder::{
@@ -541,85 +541,51 @@ fn cb_id_template_re() -> &'static Regex {
 }
 
 fn lid_anchor_for(body: &str, offset: usize, field: FieldKind) -> Option<Anchor> {
-    if field.supports_html_anchor() {
-        if let Some(tag) = enclosing_open_tag(body, offset) {
-            if let Some(url) = url_attr_re()
-                .captures(tag)
-                .and_then(|c| c.get(1).or(c.get(2)))
-            {
-                return Some(normalize_url(url.as_str()));
-            }
-            return None;
-        }
-        let prefix = &body[..offset];
-        anchor_href_re()
-            .captures_iter(prefix)
-            .last()
-            .and_then(|cap| cap.get(1).or(cap.get(2)))
-            .map(|m| normalize_url(m.as_str()))
+    // Both field shapes resolve an anchor the same way: take the last URL
+    // that starts at or before the placeholder. That is not a convenience
+    // — it is the remote side's rule, restated. `pair_urls_with_lids`
+    // drops each remote lid into the bucket of the nearest URL preceding
+    // it, so a template that keyed any other way asks for a bucket the
+    // remote side never filled, and the miss is silent: a generated slug
+    // is POSTed over the live identifier.
+    //
+    // Both anchor scans are therefore *shared* with correlation rather
+    // than mirrored (`html_url_anchors`, `plaintext_url_anchors`). The
+    // HTML side used to keep its own `<a>`-only pattern plus a separate
+    // "enclosing open tag" rule, and #87 / #84 are the two halves of what
+    // that cost: an `<img src>` between an `<a href>` and the lid took
+    // the remote bucket while the template still asked for the `<a>`
+    // (#87, silent), and a lid in a `<v:rect>`'s body found no
+    // template-side anchor at all (#84, fatal). Widening the element set
+    // alone would have fixed #84 only; the selection rule had to converge
+    // too. The enclosing-tag branch is subsumed rather than dropped — for
+    // a lid inside an open tag, the tag's own `<` is the last URL match
+    // starting before it, so the shared scan returns the same attribute.
+    //
+    // Scanning the whole body — rather than `body[..offset]` — is
+    // load-bearing for plaintext: `plaintext_url_re` spans a whole
+    // `{{…}}`, so for a URL assembled from Liquid the run *contains* the
+    // placeholder. Truncating at `offset` would cut the tag in half,
+    // leaving a partial filter that no longer masks, and the key would go
+    // back to depending on where the quote happens to fall.
+    let anchors = if field.supports_html_anchor() {
+        html_url_anchors(body)
     } else if field.supports_plaintext_anchor() {
-        // The load-bearing part is `plaintext_url_anchors`: the remote
-        // side keys through the same trim + normalize, and any asymmetry
-        // there makes correlation impossible (see its doc comment).
-        //
-        // Scanning the whole body — rather than `body[..offset]` — is
-        // load-bearing: `plaintext_url_re` spans a whole `{{…}}`, so for a
-        // URL assembled from Liquid the run *contains* the placeholder.
-        // Truncating at `offset` would cut the tag in half, leaving a
-        // partial filter that no longer masks, and the key would go back
-        // to depending on where the quote happens to fall. Taking the last
-        // URL starting at or before `offset` covers both that case and the
-        // usual "URL, then lid tag after it" shape.
         plaintext_url_anchors(body)
-            .into_iter()
-            .take_while(|(start, _)| *start <= offset)
-            .last()
-            .map(|(_, url)| url)
     } else {
-        None
-    }
-}
-
-fn enclosing_open_tag(body: &str, offset: usize) -> Option<&str> {
-    for m in element_open_tag_re().find_iter(body) {
-        if m.start() > offset {
-            break;
-        }
-        if m.end() > offset {
-            return Some(&body[m.start()..m.end()]);
-        }
-    }
-    None
-}
-
-fn anchor_href_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r#"(?i)<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')"#)
-            .expect("anchor href regex is valid")
-    })
-}
-
-fn url_attr_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r#"(?i)\s(?:[a-z][a-z0-9_-]*:)?(?:href|src|action)\s*=\s*(?:"([^"]*)"|'([^']*)')"#,
-        )
-        .expect("url attr regex is valid")
-    })
-}
-
-fn element_open_tag_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r#"(?i)<[a-z][a-z0-9_.:-]*\b[^>]*>"#).expect("element open tag regex is valid")
-    })
+        return None;
+    };
+    anchors
+        .into_iter()
+        .take_while(|(start, _)| *start <= offset)
+        .last()
+        .map(|(_, url)| url)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::values::correlation::normalize_url;
     use crate::values::templatize::templatize_body;
 
     #[test]

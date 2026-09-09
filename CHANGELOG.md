@@ -130,6 +130,39 @@ file formats, JSON output, exit codes) for the full v1.x line.
 
 ### Fixed
 
+- **A live Braze link identifier is no longer overwritten by a generated
+  slug when a second URL-carrying element sits between the link and its
+  `lid` (#87), and a `lid` in a non-anchor element's body now resolves
+  (#84).** Both come from one asymmetry: the two sides of `lid`
+  correlation disagreed about which element carries an anchor. The
+  remote side accepted `href` / `src` / `action` on *any* element and
+  paired each `lid` with the nearest URL preceding it; the template side
+  looked only at `<a href>`, and only at the tag enclosing the `lid` or
+  the nearest `<a>` before it.
+
+  For `<a href="…"><img src="…">{{x | lid: '…'}}</a>` — an image CTA,
+  the ordinary shape — the remote side filed the live identifier under
+  the `<img src>` while the template asked for the `<a href>`. The
+  lookup missed, no error was raised, and `apply` POSTed a generated
+  slug over a live identifier that Braze was still counting clicks
+  against. **This failed silently and could affect correct input, so
+  re-check any link whose identifier changed unexpectedly.** #84 is the
+  same disagreement falling the other way: a `lid` inside a `<v:rect>`
+  or other non-anchor element's body found no template-side anchor at
+  all and stopped the run with a fatal `UnresolvedLid`.
+
+  The template side now shares the remote side's anchor scans outright
+  instead of restating them, so there is a single rule — the last URL
+  starting at or before the placeholder — and no second copy to drift.
+  This is a correlation-semantics change, not a widened pattern: for the
+  affected shapes the anchor was already decided by the remote rule, and
+  the template is what had to converge. Anchors are computed fresh from
+  both bodies on every run and never persisted, so no stored state
+  changes. One visible consequence: where no remote match exists and a
+  fallback slug is generated, it is now derived from the same URL the
+  remote side would have used, so an unmatched link of this shape gets a
+  different generated identifier than before.
+
 - **`diff --plan-out` writes the plan atomically (#105).** The plan was
   serialized and then handed straight to a single `write`, so a run
   killed mid-write left a truncated plan on disk — and, when the path
