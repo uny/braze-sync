@@ -234,7 +234,7 @@ fn identity_round_trip_across_shapes() {
         // the lid. Whichever element the two sides pick, they have to
         // pick the same one.
         (
-            r#"<a href="https://x.com/sale"><img src="https://x.com/hero.png">{{x | lid: 'liveaaaaaaaa1'}}</a>"#,
+            r#"<a href="https://x.com/sale"><img src="https://cdn.example.com/hero.png">{{x | lid: 'liveaaaaaaaa1'}}</a>"#,
             FieldKind::EmailHtmlBody,
         ),
         // #84: the lid in a non-anchor element's body.
@@ -546,7 +546,7 @@ fn both_sides_agree_on_which_element_carries_an_anchor() {
         // `<a href>`, so the bucket came back empty, `p.errors` stayed
         // empty, and a generated slug was POSTed over a live identifier.
         (
-            r#"<a href="https://x.com/sale"><img src="https://x.com/hero.png">{{x | lid: 'liveaaaaaaaa1'}}</a>"#,
+            r#"<a href="https://x.com/sale"><img src="https://cdn.example.com/hero.png">{{x | lid: 'liveaaaaaaaa1'}}</a>"#,
             "liveaaaaaaaa1",
         ),
     ];
@@ -587,4 +587,49 @@ fn the_vacuity_guard_is_not_itself_vacuous() {
     assert_eq!(lids(body).len(), 1, "the correlation regex misses it too");
     assert_eq!(lid_filters(&t.new_body), 2, "got: {}", t.new_body);
     assert_eq!(t.new_body.matches("lid: '__BRAZESYNC__'").count(), 1);
+}
+
+#[test]
+fn two_ctas_sharing_one_button_image_share_one_anchor() {
+    // The cost of the #87 fix, stated rather than discovered later. Two
+    // CTAs whose lids both sit after the *same* button image now key to
+    // that image on both sides, so one bucket holds both live values and
+    // `resolve_lid_batch` falls back to its positional FIFO — with the
+    // warning that says so.
+    //
+    // This is not new behavior on the remote side: `pair_urls_with_lids`
+    // has always filed both lids under the shared `<img src>`. What
+    // changed is that the template now asks for that bucket instead of
+    // for the two `<a href>`s, which no remote occurrence ever filled.
+    // Before the fix this shape POSTed *two* generated slugs over two
+    // live identifiers, silently. A FIFO that is right under identity
+    // and warns when it might not be is strictly the better failure.
+    //
+    // Kept out of `identity_round_trip_across_shapes` deliberately:
+    // `assert_survives_reformat` asserts `warnings.is_empty()`, and the
+    // warning here is the point.
+    let body = r#"<a href="https://x.com/a"><img src="https://cdn.example.com/btn.png">{{x | lid: 'liveaaaaaaaa1'}}</a><a href="https://x.com/b"><img src="https://cdn.example.com/btn.png">{{y | lid: 'liveaaaaaaaa2'}}</a>"#;
+    let t = templatize_body(body, FieldKind::EmailHtmlBody);
+    let p = prepare_field(&t.new_body, Some(body), FieldKind::EmailHtmlBody);
+
+    assert!(p.errors.is_empty(), "{:?}", p.errors);
+    assert!(
+        p.fallbacks.is_empty(),
+        "neither live identifier may be replaced by a slug: {:?}",
+        p.fallbacks
+    );
+    assert_eq!(
+        lids(&p.body),
+        vec!["liveaaaaaaaa1".to_string(), "liveaaaaaaaa2".to_string()],
+        "under identity the FIFO must hand each link back its own lid: {}",
+        p.body
+    );
+    assert!(
+        p.warnings
+            .iter()
+            .any(|w| w.contains("btn.png") && w.contains("positional FIFO")),
+        "the shared bucket must be reported, since a reorder in Braze \
+         would transpose the two: {:?}",
+        p.warnings
+    );
 }
