@@ -52,9 +52,12 @@ For every `apply` and `diff`:
 
 1. braze-sync `GET`s the live remote body for the resource.
 2. For each `__BRAZESYNC__` in a `| lid:` argument, it identifies the
-   **URL anchor** (the surrounding `<a href>`, VML/SVG `href`, or
-   bare URL in plaintext) and pairs it with the matching anchor in
-   the remote body to lift the live `lid` value. Multiple
+   **URL anchor** — in HTML, the last `href` / `src` / `action`
+   attribute (on any element, with or without a namespace prefix like
+   `v:` or `xlink:`) that starts at or before the placeholder; in
+   plaintext, the last bare URL run at or before it — and pairs it
+   with the matching anchor in the remote body to lift the live `lid`
+   value. Multiple
    placeholders sharing one URL consume distinct remote values in
    template appearance order. The anchor is compared with its query
    string and fragment dropped, and with any `| lid:` / `| id:` filter
@@ -100,7 +103,9 @@ structure changes show up.
 When a resource doesn't exist in Braze yet, there is no remote body to
 correlate against. braze-sync applies a controlled fallback:
 
-- **`lid`**: derived from the URL path tail of the surrounding anchor,
+- **`lid`**: derived from the URL path tail of that placeholder's
+  anchor — the same one the resolution path above would use, so for an
+  image CTA it is the `<img src>`, not the enclosing `<a href>` —
   slug-normalized (e.g. `https://example.com/spring-sale` →
   `spring_sale`). Repeated slugs are disambiguated with `_2`, `_3`, …
   URL-less placeholders fall back to positional `lid_1`, `lid_2`, …
@@ -152,8 +157,16 @@ braze-sync templatize               # rewrite to __BRAZESYNC__
   placeholders, the resolver emits an ambiguity warning so a
   dashboard-side link reorder cannot silently miscorrelate.
 - **Structural drift between local and remote** (e.g. the dashboard
-  removed a tracked link your template still references) aborts the
-  apply with a clear error pointing at the unresolvable placeholder.
+  removed a tracked link your template still references) is stopped,
+  but by one of two different mechanisms. A placeholder with no URL
+  anchor at all in the template aborts with a clear error pointing at
+  it. A placeholder whose anchor simply finds no match in the remote
+  gets a fallback slug instead — and because a slug POSTed over a live
+  `lid` would sever click attribution, that outcome trips the fallback
+  gate (exit `8`; `apply` needs `--allow-fallback`) whenever the remote
+  still carries a `lid` value this run did not consume. Only when the
+  remote holds no unconsumed `lid` — an ordinary new link — does the
+  fallback pass without gating.
 
 All resolve-time warnings are written to stderr scoped by resource
 (and field for email_template), so `URL anchor 'X' not found in remote

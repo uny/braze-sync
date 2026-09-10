@@ -566,8 +566,10 @@ fn lid_anchor_for(body: &str, offset: usize, field: FieldKind) -> Option<Anchor>
     // — it is the remote side's rule, restated. `pair_urls_with_lids`
     // drops each remote lid into the bucket of the nearest URL preceding
     // it, so a template that keyed any other way asks for a bucket the
-    // remote side never filled, and the miss is silent: a generated slug
-    // is POSTed over the live identifier.
+    // remote side never filled. The miss surfaces as a warning and a
+    // gated fallback rather than an error, so it reads as a routine new
+    // link — and under `--allow-fallback` a generated slug goes out over
+    // the live identifier.
     //
     // Both anchor scans are therefore *shared* with correlation rather
     // than mirrored (`html_url_anchors`, `plaintext_url_anchors`). The
@@ -575,12 +577,17 @@ fn lid_anchor_for(body: &str, offset: usize, field: FieldKind) -> Option<Anchor>
     // "enclosing open tag" rule, and #87 / #84 are the two halves of what
     // that cost: an `<img src>` between an `<a href>` and the lid took
     // the remote bucket while the template still asked for the `<a>`
-    // (#87, silent), and a lid in a `<v:rect>`'s body found no
-    // template-side anchor at all (#84, fatal). Widening the element set
+    // (#87, a gated fallback that reads as a new link), and a lid in a
+    // `<v:rect>`'s body found no template-side anchor at all (#84,
+    // fatal). Widening the element set
     // alone would have fixed #84 only; the selection rule had to converge
     // too. The enclosing-tag branch is subsumed rather than dropped — for
-    // a lid inside an open tag, the tag's own `<` is the last URL match
-    // starting before it, so the shared scan returns the same attribute.
+    // a lid inside an open tag that carries a URL attribute, the tag's
+    // own `<` is the last URL match starting before it, so the shared
+    // scan returns the same attribute. Where the enclosing tag carries
+    // no URL attribute the old branch returned `None` outright and the
+    // run aborted; that case now resolves to the preceding anchor, which
+    // is the #84 generalization and a real behavior change.
     //
     // Scanning the whole body — rather than `body[..offset]` — is
     // load-bearing for plaintext: `plaintext_url_re` spans a whole

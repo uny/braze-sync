@@ -3,8 +3,10 @@
 //! Extract lid / cb_id values from a remote body together with the
 //! anchor used to pair them with template placeholders.
 //!
-//! - HTML lid: anchor = the URL attribute of the enclosing element.
-//!   Same-URL occurrences are matched by appearance order.
+//! - HTML lid: anchor = the last `href` / `src` / `action` attribute
+//!   starting at or before the lid, on any element — so it may be
+//!   carried by a preceding sibling rather than by an enclosing
+//!   element. Same-URL occurrences are matched by appearance order.
 //! - Plaintext lid: anchor = the raw `https?://…` run at or before the
 //!   lid. The run spans whole Liquid tags, so a URL built from Liquid
 //!   can enclose the lid rather than merely precede it.
@@ -517,9 +519,11 @@ pub fn extract_lid_values_unanchored(body: &str) -> Vec<String> {
 /// would drop a remote lid into. Any divergence between the two — a
 /// different element set, or a different way of deciding which URL owns
 /// a lid — makes correlation impossible for the shapes where they
-/// disagree, and the failure is silent: the template asks for a bucket
-/// the remote side never filled, so a generated slug is POSTed over a
-/// live identifier (#87).
+/// disagree: the template asks for a bucket the remote side never
+/// filled, so it mints a slug for a link whose live identifier is
+/// sitting right there in the remote (#87). That surfaces as a warning
+/// and a gated fallback, never as an error, so it reads as a routine
+/// new link.
 pub(crate) fn html_url_anchors(body: &str) -> Vec<(usize, Anchor)> {
     href_re()
         .captures_iter(body)
@@ -1176,7 +1180,7 @@ mod tests {
         // inertness is a property of the input shape, not of the code.
         // Reached from both directions — `plaintext_url_re` atomizes the
         // shape here, and an HTML `href` carrying it goes through
-        // `href_iter` -> `normalize_url` -> `query_or_fragment_start`
+        // `html_url_anchors` -> `normalize_url` -> `query_or_fragment_start`
         // regardless of the plaintext run.
         let anchors = plaintext_url_anchors("Go https://x.com/{{content_blocks.${cta}}}?u=1 end");
         assert_eq!(

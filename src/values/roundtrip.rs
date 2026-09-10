@@ -31,9 +31,10 @@
 //!
 //! - #84 / #87 (fixed): the two sides disagreed on which element carries
 //!   an anchor and on which anchor owns a given lid. `#84` fell on the
-//!   safe side of that (a fatal `UnresolvedLid`), `#87` on the silent
+//!   safe side of that (a fatal `UnresolvedLid`), `#87` on the quiet
 //!   one — a live identifier overwritten by a generated slug with no
-//!   error at all. `braze_managed::lid_anchor_for` now shares
+//!   error, though a warning and the fallback gate did fire.
+//!   `braze_managed::lid_anchor_for` now shares
 //!   `correlation`'s scans rather than restating them. See
 //!   `both_sides_agree_on_which_element_carries_an_anchor`.
 //! - #85 (fixed): an include whose `${NAME}` contains whitespace is still
@@ -329,8 +330,10 @@ fn survives_every_respelling_the_dashboard_can_introduce() {
 
 #[test]
 fn respelling_never_merges_two_distinct_links() {
-    // The negative half, and the one that matters more: a merge is silent
-    // and hands each link the other's live identifier. Every row differs
+    // The negative half, and the one that matters more: a merge hands
+    // each link the other's live identifier, and nothing stops it — the
+    // shared bucket does raise the positional-FIFO warning, but no error
+    // and no gate, so the transposed values ship. Every row differs
     // in exactly one byte-level detail that the normalizer must treat as
     // identity rather than formatting, and every remote lists the links in
     // reverse order so a merged FIFO bucket transposes rather than
@@ -725,8 +728,10 @@ fn two_ctas_sharing_one_button_image_share_one_anchor() {
     // changed is that the template now asks for that bucket instead of
     // for the two `<a href>`s, which no remote occurrence ever filled.
     // Before the fix this shape POSTed *two* generated slugs over two
-    // live identifiers, silently. A FIFO that is right under identity
-    // and warns when it might not be is strictly the better failure.
+    // live identifiers — warned about and gated, but wrong. A FIFO that
+    // is right under identity is the better failure for the ordinary
+    // case; under a reorder it is not, and the assertions below pin
+    // both halves of that trade rather than only the flattering one.
     //
     // Kept out of `identity_round_trip_across_shapes` deliberately:
     // `assert_survives_reformat` asserts `warnings.is_empty()`, and the

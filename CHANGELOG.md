@@ -143,10 +143,15 @@ file formats, JSON output, exit codes) for the full v1.x line.
   For `<a href="…"><img src="…">{{x | lid: '…'}}</a>` — an image CTA,
   the ordinary shape — the remote side filed the live identifier under
   the `<img src>` while the template asked for the `<a href>`. The
-  lookup missed, no error was raised, and `apply` POSTed a generated
-  slug over a live identifier that Braze was still counting clicks
-  against. **This failed silently and could affect correct input, so
-  re-check any link whose identifier changed unexpectedly.** #84 is the
+  lookup missed and a generated slug was written over a live identifier
+  that Braze was still counting clicks against. It was not raised as an
+  error: `errors` stayed empty and the run read as a routine new link.
+  It was not silent either — a warning named the missing anchor, the
+  slug was listed as a fallback, and the fallback gate fired, so `diff`
+  exited `8` and `apply` refused without `--allow-fallback`. **The
+  identifier was therefore only lost on a run that passed
+  `--allow-fallback` for some other link, so re-check any link whose
+  identifier changed unexpectedly on such a run.** #84 is the
   same disagreement falling the other way: a `lid` inside a `<v:rect>`
   or other non-anchor element's body found no template-side anchor at
   all and stopped the run with a fatal `UnresolvedLid`.
@@ -158,10 +163,16 @@ file formats, JSON output, exit codes) for the full v1.x line.
   affected shapes the anchor was already decided by the remote rule, and
   the template is what had to converge. Anchors are computed fresh from
   both bodies on every run and never persisted, so no stored state
-  changes. One visible consequence: where no remote match exists and a
+  changes. Two visible consequences. Where no remote match exists and a
   fallback slug is generated, it is now derived from the same URL the
   remote side would have used, so an unmatched link of this shape gets a
-  different generated identifier than before.
+  different generated identifier than before — and the same applies on
+  the new-resource path, where an image CTA's slug now names the image
+  rather than the destination (two CTAs sharing one button image get
+  `btn_png` and `btn_png_2`). And two CTAs sharing one button image now
+  share one anchor on both sides: under identity each still gets its own
+  `lid`, but a dashboard-side reorder transposes them, reported by the
+  existing positional-FIFO warning.
 
 - **`diff --plan-out` writes the plan atomically (#105).** The plan was
   serialized and then handed straight to a single `write`, so a run
