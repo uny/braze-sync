@@ -359,6 +359,30 @@ fn respelling_never_merges_two_distinct_links() {
                 "{{sep|default:'-'}}{{x| lid: 'liveaaaaaaaa2'}}",
             ],
         ),
+        // #88, the over-normalizing direction of the delimiter fold, which
+        // the positive half cannot see. Canonicalizing the *kind* of quote
+        // is safe only while the quote bytes themselves stay in the key:
+        // drop them instead, and a string literal keys the same as a Liquid
+        // *variable* of that name — two links that render differently.
+        //
+        // The fold's other guard, the `'`-in-content exception, has no row
+        // here on purpose. Re-delimiting `"a'b"` yields `'a'b'`, which does
+        // NOT collide with the link whose argument is `a` (that keys as
+        // `'a'`; the trailing `b'` keeps them apart) — only with a
+        // *malformed* `{{sep|default:'a'b'}}`, and a malformed tag takes the
+        // unterminated-quote path, whose key is spacing-sensitive by design.
+        // So it is pinned by value in `correlation`'s unit half instead.
+        (
+            "https://x.com/{{segment|default:'a'}}{{x|lid:'liveaaaaaaaa1'}} \
+             https://x.com/{{segment|default:a}}{{x|lid:'liveaaaaaaaa2'}}",
+            "https://x.com/{{ segment | default: a }}{{ x | lid: 'liveaaaaaaaa2' }} \
+             https://x.com/{{ segment | default: 'a' }}{{ x | lid: 'liveaaaaaaaa1' }}",
+            FieldKind::EmailPlainBody,
+            &[
+                "{{segment|default:'a'}}{{x| lid: 'liveaaaaaaaa1'}}",
+                "{{segment|default:a}}{{x| lid: 'liveaaaaaaaa2'}}",
+            ],
+        ),
         // Whitespace *between* the bytes of a `${NAME}` is part of the name.
         (
             "https://x.com/{{custom_attribute.${first name}}}{{x|lid:'liveaaaaaaaa1'}} \
