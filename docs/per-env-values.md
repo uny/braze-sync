@@ -156,17 +156,25 @@ braze-sync templatize               # rewrite to __BRAZESYNC__
   has multiple remote occurrences *and* multiple template
   placeholders, the resolver emits an ambiguity warning so a
   dashboard-side link reorder cannot silently miscorrelate.
-- **Structural drift between local and remote** (e.g. the dashboard
-  removed a tracked link your template still references) is stopped,
-  but by one of two different mechanisms. A placeholder with no URL
-  anchor at all in the template aborts with a clear error pointing at
-  it. A placeholder whose anchor simply finds no match in the remote
-  gets a fallback slug instead — and because a slug POSTed over a live
-  `lid` would sever click attribution, that outcome trips the fallback
-  gate (exit `8`; `apply` needs `--allow-fallback`) whenever the remote
-  still carries a `lid` value this run did not consume. Only when the
-  remote holds no unconsumed `lid` — an ordinary new link — does the
-  fallback pass without gating.
+- **Structural drift between local and remote** is handled three
+  different ways, and only one of them stops the run outright. A
+  placeholder with **no URL anchor at all** in the template aborts with
+  a clear error pointing at it. A placeholder whose anchor finds no
+  match in the remote gets a **fallback slug**; whether that is gated
+  depends on what the remote still holds:
+  - If the remote carries a `lid` value this run did not consume, the
+    fallback gate fires — exit `8`, and `apply` needs
+    `--allow-fallback`. This is the case worth stopping: a live
+    identifier is sitting unused in the remote while a generated slug
+    is about to be written, and POSTing it would sever click
+    attribution.
+  - If every remote `lid` was consumed, the fallback passes ungated.
+    That covers the ordinary new link, and it also covers the case
+    where the dashboard **removed** a tracked link your template still
+    references: the removed link took its `lid` with it, so there is no
+    live value left to protect and a fresh slug is the correct outcome.
+    braze-sync warns, but does not stop, and Braze reassigns on the
+    first dashboard save.
 
 All resolve-time warnings are written to stderr scoped by resource
 (and field for email_template), so `URL anchor 'X' not found in remote

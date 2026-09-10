@@ -294,7 +294,8 @@ fn resolve_lid_batch(
     // remote, unpaired. Counting only buckets makes `fallback_gated` false
     // for exactly that case, and `apply` then POSTs a generated slug over a
     // live identifier with no `--allow-fallback` and no non-zero `diff` exit
-    // — which is the drift that `docs/per-env-values.md` promises aborts.
+    // — the structural drift `docs/per-env-values.md` says this gate is
+    // what catches.
     let unpaired_remote_lid = extract_lid_values_unanchored(remote)
         .len()
         .saturating_sub(remote_pairs.len());
@@ -748,6 +749,14 @@ mod tests {
         assert!(p.body.contains("'remoteval1a'"));
         assert!(p.body.contains("'b'"), "got: {}", p.body);
         assert!(p.body.contains("'c'"), "got: {}", p.body);
+        // The realistic must-not-gate shape: the remote *does* carry a
+        // lid, it is fully consumed, and the template adds links on top.
+        // The other two `!fallback_gated` assertions cover a lid-free
+        // remote and a run with no fallback at all, so neither would
+        // catch an over-broad unconsumed count — one that counted every
+        // remote lid rather than the unconsumed ones would gate every
+        // ordinary new link and still leave the suite green.
+        assert!(!p.fallback_gated, "an ordinary new link must not gate");
     }
 
     #[test]

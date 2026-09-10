@@ -766,18 +766,19 @@ fn two_ctas_sharing_one_button_image_share_one_anchor() {
     // link the other's live identifier — with `errors` and `fallbacks`
     // both empty, so nothing gates it and the only signal is the same
     // warning that fires under identity. Pinned because it is the cost
-    // this test exists to state: if a later change makes this case gate,
-    // error, or correlate correctly, that is a behavior change and this
-    // assertion should be the thing that says so.
+    // this test exists to state: if a later change makes this case
+    // error or correlate correctly, that is a behavior change and these
+    // assertions should be the thing that says so.
+    //
+    // No `fallback_gated` assertion here: with `fallbacks` empty the
+    // gate is false by definition, so asserting it would read as a
+    // tripwire while being incapable of firing. The empty `fallbacks`
+    // above is the real statement — both live values were consumed,
+    // just onto the wrong links, which is exactly why nothing gates.
     let reordered = r#"<a href="https://x.com/b"><img src="https://cdn.example.com/btn.png">{{y | lid: 'liveaaaaaaaa2'}}</a><a href="https://x.com/a"><img src="https://cdn.example.com/btn.png">{{x | lid: 'liveaaaaaaaa1'}}</a>"#;
     let q = prepare_field(&t.new_body, Some(reordered), FieldKind::EmailHtmlBody);
     assert!(q.errors.is_empty(), "{:?}", q.errors);
     assert!(q.fallbacks.is_empty(), "{:?}", q.fallbacks);
-    assert!(
-        !q.fallback_gated,
-        "documenting that nothing gates this; if it now gates, update the \
-         comment above rather than deleting this line"
-    );
     assert_eq!(
         lids(&q.body),
         vec!["liveaaaaaaaa2".to_string(), "liveaaaaaaaa1".to_string()],
