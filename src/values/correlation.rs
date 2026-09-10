@@ -3,8 +3,10 @@
 //! Extract lid / cb_id values from a remote body together with the
 //! anchor used to pair them with template placeholders.
 //!
-//! - HTML lid: anchor = the URL attribute of the enclosing element.
-//!   Same-URL occurrences are matched by appearance order.
+//! - HTML lid: anchor = the last `href` / `src` / `action` attribute
+//!   starting at or before the lid, on any element — so it may be
+//!   carried by a preceding sibling rather than by an enclosing
+//!   element. Same-URL occurrences are matched by appearance order.
 //! - Plaintext lid: anchor = the raw `https?://…` run at or before the
 //!   lid. The run spans whole Liquid tags, so a URL built from Liquid
 //!   can enclose the lid rather than merely precede it.
@@ -348,11 +350,15 @@ fn href_re() -> &'static Regex {
     RE.get_or_init(|| {
         // Tolerant of attribute order and either quote style. Matches
         // `href`, `src`, `action` — with an optional namespace prefix
-        // like `xlink:` or `v:` — on any element, not just `<a>`. This
-        // mirrors templatize::url_attr_re so VML / SVG CTAs whose lid
-        // sits inside a non-anchor element's href round-trip through
-        // apply/diff resolution. Leading `\s` (not `\b`) prevents
-        // `data-href`-style custom attributes from tail-matching.
+        // like `xlink:` or `v:` — on any element, not just `<a>`, so VML
+        // / SVG CTAs round-trip through apply/diff resolution. Leading
+        // `\s` (not `\b`) prevents `data-href`-style custom attributes
+        // from tail-matching.
+        //
+        // This is the *only* statement of which elements carry an anchor.
+        // The template side reaches it through `html_url_anchors` rather
+        // than restating it; #87 / #84 were the two halves of what a
+        // second, `<a>`-only copy cost.
         Regex::new(
             r#"(?i)<[a-z][a-z0-9_.:-]*\b[^>]*?\s(?:[a-z][a-z0-9_-]*:)?(?:href|src|action)\s*=\s*(?:"([^"]*)"|'([^']*)')"#,
         )
@@ -474,16 +480,17 @@ pub struct LidCorrelation {
     pub url: Anchor,
     /// The lid value extracted from `| lid: '…'`.
     pub value: String,
-    /// Byte offset where the `<a href>` (HTML) or raw URL (plaintext)
-    /// begins. Useful for ordering and ambiguity reporting.
+    /// Byte offset where the URL-carrying element (HTML) or raw URL
+    /// (plaintext) begins. Useful for ordering and ambiguity reporting.
     pub url_offset: usize,
 }
 
 /// Extract `(url, lid_value)` pairs from an HTML field by pairing each
-/// `<a href="…">` with the next `| lid: '…'` that follows it before
-/// the next `<a href>` or end of string. Unpaired anchors are skipped.
+/// URL-carrying attribute (see [`html_url_anchors`]) with every
+/// `| lid: '…'` that follows it before the next such attribute or the
+/// end of the string. Unpaired anchors are skipped.
 pub fn extract_html_lid_values(body: &str) -> Vec<LidCorrelation> {
-    pair_urls_with_lids(href_iter(body), body)
+    pair_urls_with_lids(html_url_anchors(body), body)
 }
 
 /// Extract `(url, lid_value)` pairs from a plaintext field. Same
@@ -502,7 +509,22 @@ pub fn extract_lid_values_unanchored(body: &str) -> Vec<String> {
         .collect()
 }
 
-fn href_iter(body: &str) -> Vec<(usize, Anchor)> {
+/// Scan `body` for URL-carrying attributes, returning `(byte offset of
+/// the element's `<`, anchor key)` in appearance order.
+///
+/// Shared by remote-side extraction and template-side anchor lookup, the
+/// same way [`plaintext_url_anchors`] is: `braze_managed::lid_anchor_for`
+/// calls this and takes the last entry starting at or before the
+/// placeholder, which is precisely the bucket [`pair_urls_with_lids`]
+/// would drop a remote lid into. Any divergence between the two — a
+/// different element set, or a different way of deciding which URL owns
+/// a lid — makes correlation impossible for the shapes where they
+/// disagree: the template asks for a bucket the remote side never
+/// filled, so it mints a slug for a link whose live identifier is
+/// sitting right there in the remote (#87). That surfaces as a warning
+/// and a gated fallback, never as an error, so it reads as a routine
+/// new link.
+pub(crate) fn html_url_anchors(body: &str) -> Vec<(usize, Anchor)> {
     href_re()
         .captures_iter(body)
         .filter_map(|cap| {
@@ -1158,7 +1180,7 @@ mod tests {
         // inertness is a property of the input shape, not of the code.
         // Reached from both directions — `plaintext_url_re` atomizes the
         // shape here, and an HTML `href` carrying it goes through
-        // `href_iter` -> `normalize_url` -> `query_or_fragment_start`
+        // `html_url_anchors` -> `normalize_url` -> `query_or_fragment_start`
         // regardless of the plaintext run.
         let anchors = plaintext_url_anchors("Go https://x.com/{{content_blocks.${cta}}}?u=1 end");
         assert_eq!(

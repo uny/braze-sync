@@ -16,7 +16,7 @@ use regex_lite::Regex;
 
 use crate::values::correlation::{
     extract_cb_id_values, extract_html_lid_values, extract_lid_values_unanchored,
-    extract_plaintext_lid_values, normalize_url, plaintext_url_anchors, slug_for_lid, Anchor,
+    extract_plaintext_lid_values, html_url_anchors, plaintext_url_anchors, slug_for_lid, Anchor,
     CbIdCorrelation, LidCorrelation,
 };
 use crate::values::placeholder::{
@@ -179,9 +179,11 @@ pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> 
 
 /// Resolve lid placeholders against `remote`. Returns one entry per
 /// lid placeholder in template-appearance order, plus the count of
-/// remote lid values left in the URL buckets after matching — the
-/// other half of the fallback gate's condition (see
-/// `PreparedTemplate::fallback_gated`).
+/// remote lid values this run did not consume — the other half of the
+/// fallback gate's condition (see `PreparedTemplate::fallback_gated`).
+/// That count covers both the values left in the URL buckets and the
+/// ones `pair_urls_with_lids` never bucketed; see the comment at its
+/// computation for why the second half cannot be dropped.
 fn resolve_lid_batch(
     body: &str,
     placeholders: &[crate::values::placeholder::Placeholder],
@@ -279,7 +281,26 @@ fn resolve_lid_batch(
             }
         }
     }
-    let unconsumed_remote_lid = by_url.values().map(|b| b.len()).sum();
+    // Leftover bucket entries are not the whole of "the remote still holds a
+    // live value we did not use". A remote lid that `pair_urls_with_lids`
+    // never bucketed at all — because it precedes every URL element, or
+    // because `href_re` matched no element in that body — is just as
+    // unconsumed, and it is invisible here: `remote_pairs` is empty, so the
+    // buckets are empty, so the sum is zero and the gate stays shut.
+    //
+    // That is the shape where the gate matters most. The template side
+    // resolves an anchor from its *own* body, so it can produce a fallback
+    // for a placeholder whose live value is sitting right there in the
+    // remote, unpaired. Counting only buckets makes `fallback_gated` false
+    // for exactly that case, and `apply` then POSTs a generated slug over a
+    // live identifier with no `--allow-fallback` and no non-zero `diff` exit
+    // — the structural drift `docs/per-env-values.md` says this gate is
+    // what catches.
+    let unpaired_remote_lid = extract_lid_values_unanchored(remote)
+        .len()
+        .saturating_sub(remote_pairs.len());
+    let unconsumed_remote_lid =
+        by_url.values().map(|b| b.len()).sum::<usize>() + unpaired_remote_lid;
     (out, unconsumed_remote_lid)
 }
 
@@ -541,85 +562,57 @@ fn cb_id_template_re() -> &'static Regex {
 }
 
 fn lid_anchor_for(body: &str, offset: usize, field: FieldKind) -> Option<Anchor> {
-    if field.supports_html_anchor() {
-        if let Some(tag) = enclosing_open_tag(body, offset) {
-            if let Some(url) = url_attr_re()
-                .captures(tag)
-                .and_then(|c| c.get(1).or(c.get(2)))
-            {
-                return Some(normalize_url(url.as_str()));
-            }
-            return None;
-        }
-        let prefix = &body[..offset];
-        anchor_href_re()
-            .captures_iter(prefix)
-            .last()
-            .and_then(|cap| cap.get(1).or(cap.get(2)))
-            .map(|m| normalize_url(m.as_str()))
+    // Both field shapes resolve an anchor the same way: take the last URL
+    // that starts at or before the placeholder. That is not a convenience
+    // — it is the remote side's rule, restated. `pair_urls_with_lids`
+    // drops each remote lid into the bucket of the nearest URL preceding
+    // it, so a template that keyed any other way asks for a bucket the
+    // remote side never filled. The miss surfaces as a warning and a
+    // gated fallback rather than an error, so it reads as a routine new
+    // link — and under `--allow-fallback` a generated slug goes out over
+    // the live identifier.
+    //
+    // Both anchor scans are therefore *shared* with correlation rather
+    // than mirrored (`html_url_anchors`, `plaintext_url_anchors`). The
+    // HTML side used to keep its own `<a>`-only pattern plus a separate
+    // "enclosing open tag" rule, and #87 / #84 are the two halves of what
+    // that cost: an `<img src>` between an `<a href>` and the lid took
+    // the remote bucket while the template still asked for the `<a>`
+    // (#87, a gated fallback that reads as a new link), and a lid in a
+    // `<v:rect>`'s body found no template-side anchor at all (#84,
+    // fatal). Widening the element set alone would have fixed #84 only;
+    // the selection rule had to converge too. The enclosing-tag branch is subsumed rather than dropped — for
+    // a lid inside an open tag that carries a URL attribute, the tag's
+    // own `<` is the last URL match starting before it, so the shared
+    // scan returns the same attribute. Where the enclosing tag carries
+    // no URL attribute the old branch returned `None` outright and the
+    // run aborted; that case now resolves to the preceding anchor, which
+    // is the #84 generalization and a real behavior change.
+    //
+    // Scanning the whole body — rather than `body[..offset]` — is
+    // load-bearing for plaintext: `plaintext_url_re` spans a whole
+    // `{{…}}`, so for a URL assembled from Liquid the run *contains* the
+    // placeholder. Truncating at `offset` would cut the tag in half,
+    // leaving a partial filter that no longer masks, and the key would go
+    // back to depending on where the quote happens to fall.
+    let anchors = if field.supports_html_anchor() {
+        html_url_anchors(body)
     } else if field.supports_plaintext_anchor() {
-        // The load-bearing part is `plaintext_url_anchors`: the remote
-        // side keys through the same trim + normalize, and any asymmetry
-        // there makes correlation impossible (see its doc comment).
-        //
-        // Scanning the whole body — rather than `body[..offset]` — is
-        // load-bearing: `plaintext_url_re` spans a whole `{{…}}`, so for a
-        // URL assembled from Liquid the run *contains* the placeholder.
-        // Truncating at `offset` would cut the tag in half, leaving a
-        // partial filter that no longer masks, and the key would go back
-        // to depending on where the quote happens to fall. Taking the last
-        // URL starting at or before `offset` covers both that case and the
-        // usual "URL, then lid tag after it" shape.
         plaintext_url_anchors(body)
-            .into_iter()
-            .take_while(|(start, _)| *start <= offset)
-            .last()
-            .map(|(_, url)| url)
     } else {
-        None
-    }
-}
-
-fn enclosing_open_tag(body: &str, offset: usize) -> Option<&str> {
-    for m in element_open_tag_re().find_iter(body) {
-        if m.start() > offset {
-            break;
-        }
-        if m.end() > offset {
-            return Some(&body[m.start()..m.end()]);
-        }
-    }
-    None
-}
-
-fn anchor_href_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r#"(?i)<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')"#)
-            .expect("anchor href regex is valid")
-    })
-}
-
-fn url_attr_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r#"(?i)\s(?:[a-z][a-z0-9_-]*:)?(?:href|src|action)\s*=\s*(?:"([^"]*)"|'([^']*)')"#,
-        )
-        .expect("url attr regex is valid")
-    })
-}
-
-fn element_open_tag_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r#"(?i)<[a-z][a-z0-9_.:-]*\b[^>]*>"#).expect("element open tag regex is valid")
-    })
+        return None;
+    };
+    anchors
+        .into_iter()
+        .take_while(|(start, _)| *start <= offset)
+        .last()
+        .map(|(_, url)| url)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::values::correlation::normalize_url;
     use crate::values::templatize::templatize_body;
 
     #[test]
@@ -755,6 +748,14 @@ mod tests {
         assert!(p.body.contains("'remoteval1a'"));
         assert!(p.body.contains("'b'"), "got: {}", p.body);
         assert!(p.body.contains("'c'"), "got: {}", p.body);
+        // The realistic must-not-gate shape: the remote *does* carry a
+        // lid, it is fully consumed, and the template adds links on top.
+        // The other two `!fallback_gated` assertions cover a lid-free
+        // remote and a run with no fallback at all, so neither would
+        // catch an over-broad unconsumed count — one that counted every
+        // remote lid rather than the unconsumed ones would gate every
+        // ordinary new link and still leave the suite green.
+        assert!(!p.fallback_gated, "an ordinary new link must not gate");
     }
 
     #[test]

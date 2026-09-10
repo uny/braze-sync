@@ -130,6 +130,78 @@ file formats, JSON output, exit codes) for the full v1.x line.
 
 ### Fixed
 
+- **A live Braze link identifier is no longer overwritten by a generated
+  slug when a second URL-carrying element sits between the link and its
+  `lid` (#87), and a `lid` in a non-anchor element's body now resolves
+  (#84).** Both come from one asymmetry: the two sides of `lid`
+  correlation disagreed about which element carries an anchor. The
+  remote side accepted `href` / `src` / `action` on *any* element and
+  paired each `lid` with the nearest URL preceding it; the template side
+  looked only at `<a href>`, and only at the tag enclosing the `lid` or
+  the nearest `<a>` before it.
+
+  For `<a href="…"><img src="…">{{x | lid: '…'}}</a>` — an image CTA,
+  the ordinary shape — the remote side filed the live identifier under
+  the `<img src>` while the template asked for the `<a href>`. The
+  lookup missed and a generated slug was written over a live identifier
+  that Braze was still counting clicks against. It was not raised as an
+  error: `errors` stayed empty and the run read as a routine new link.
+  It was not silent either — a warning named the missing anchor, the
+  slug was listed as a fallback, and the fallback gate fired, so `diff`
+  exited `8` and `apply` refused without `--allow-fallback`. **The loss
+  therefore needed a run carrying `--allow-fallback` — but the warning
+  invited exactly that, since it calls the link "new" and says Braze
+  will reassign on first save. Re-check any link whose identifier
+  changed unexpectedly on a run that passed the flag.** #84 is the
+  same disagreement falling the other way: a `lid` inside a `<v:rect>`
+  or other non-anchor element's body found no template-side anchor at
+  all and stopped the run with a fatal `UnresolvedLid`.
+
+  The template side now shares the remote side's anchor scans outright
+  instead of restating them, so there is a single rule — the last URL
+  starting at or before the placeholder — and no second copy to drift.
+  This is a correlation-semantics change, not a widened pattern: for the
+  affected shapes the anchor was already decided by the remote rule, and
+  the template is what had to converge. Anchors are computed fresh from
+  both bodies on every run and never persisted, so no stored state
+  changes. Two visible consequences. Where no remote match exists and a
+  fallback slug is generated, it is now derived from the same URL the
+  remote side would have used, so an unmatched link of this shape gets a
+  different generated identifier than before — and the same applies on
+  the new-resource path, where an image CTA's slug now names the image
+  rather than the destination (two CTAs sharing one button image get
+  `btn_png` and `btn_png_2`). And two CTAs sharing one button image now
+  share one anchor on both sides: under identity each still gets its own
+  `lid`, but a dashboard-side reorder transposes them, reported by the
+  existing positional-FIFO warning.
+
+- **The fallback gate now counts live `lid` values the anchor scan never
+  paired.** `fallback_gated` asks whether the remote still holds a value
+  this run did not use, and answered it by summing the leftover URL
+  buckets. A remote `lid` that `pair_urls_with_lids` never bucketed —
+  one preceding every URL element, or one in a body where the attribute
+  scan matched no element at all — was invisible to that sum: no pairs
+  means no buckets, so the count was zero and the gate stayed shut while
+  the live value sat unused. `apply` would then POST a generated slug
+  over it with no `--allow-fallback`, and `diff` would exit `0`.
+
+  This predates the anchor unification above and is reachable in
+  `0.20.0`, but that change widened what lands on it: a placeholder
+  whose nearest URL element is an `<img src>`, `<v:rect href>` or
+  `<form action>` used to resolve no template-side anchor at all and
+  abort with `UnresolvedLid`, so the fail-safe covered what the gate
+  missed. Removing the abort without widening the gate would have put
+  both lines of defence down at once.
+
+  A remote carrying no unconsumed `lid` still does not gate — an
+  ordinary new link has nothing to protect — so the exit code for the
+  common new-link run is unchanged. What does change: a field whose
+  remote `lid`s were never bucketed and which generates any fallback now
+  gates where `0.20.0` let it through. That is the point of the fix, but
+  it is an exit-code change (`0` → `8`) for anyone whose bodies hit that
+  shape, so expect `apply` to ask for `--allow-fallback` on runs that
+  previously passed.
+
 - **`diff --plan-out` writes the plan atomically (#105).** The plan was
   serialized and then handed straight to a single `write`, so a run
   killed mid-write left a truncated plan on disk — and, when the path
