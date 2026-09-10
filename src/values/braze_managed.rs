@@ -580,9 +580,8 @@ fn lid_anchor_for(body: &str, offset: usize, field: FieldKind) -> Option<Anchor>
     // the remote bucket while the template still asked for the `<a>`
     // (#87, a gated fallback that reads as a new link), and a lid in a
     // `<v:rect>`'s body found no template-side anchor at all (#84,
-    // fatal). Widening the element set
-    // alone would have fixed #84 only; the selection rule had to converge
-    // too. The enclosing-tag branch is subsumed rather than dropped — for
+    // fatal). Widening the element set alone would have fixed #84 only;
+    // the selection rule had to converge too. The enclosing-tag branch is subsumed rather than dropped — for
     // a lid inside an open tag that carries a URL attribute, the tag's
     // own `<` is the last URL match starting before it, so the shared
     // scan returns the same attribute. Where the enclosing tag carries

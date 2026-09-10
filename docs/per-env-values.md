@@ -57,9 +57,8 @@ For every `apply` and `diff`:
    `v:` or `xlink:`) that starts at or before the placeholder; in
    plaintext, the last bare URL run at or before it — and pairs it
    with the matching anchor in the remote body to lift the live `lid`
-   value. Multiple
-   placeholders sharing one URL consume distinct remote values in
-   template appearance order. The anchor is compared with its query
+   value. Multiple placeholders sharing one URL consume distinct remote
+   values in template appearance order. The anchor is compared with its query
    string and fragment dropped, and with any `| lid:` / `| id:` filter
    inside it masked out — so a URL assembled from Liquid (e.g.
    `href="{{ item.url }}{{ sep }}lid={{ x | lid: '…' }}"`, which has no

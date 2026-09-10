@@ -673,10 +673,11 @@ fn a_remote_lid_the_anchor_scan_never_paired_still_gates_the_fallback() {
     // Both rows below are that shape. The template resolves an anchor
     // from its own body and finds no match in the remote, so it mints a
     // slug — and before the fix `apply` would POST it over the live
-    // identifier with no `--allow-fallback` and `diff` would exit zero,
-    // contradicting `docs/per-env-values.md`'s promise that structural
-    // drift aborts. What is asserted is the gate, not the fallback: a
-    // fallback here is legitimate, shipping it unannounced is not.
+    // identifier with no `--allow-fallback` and `diff` would exit zero.
+    // What is asserted is the gate, not the fallback: minting a slug
+    // here is legitimate, shipping it unannounced over a live value the
+    // remote still holds is not. That distinction is what
+    // `docs/per-env-values.md` now spells out.
     let cases: &[(&str, &str)] = &[
         // Every remote lid precedes the first URL element, so the
         // anchored extractor pairs none of them.
