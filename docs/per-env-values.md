@@ -73,11 +73,26 @@ For every `apply` and `diff`:
    `${Plan (US)}` vs `${Plan(US)}`) stay distinct anchors, as they must.
    The padding *around* a name is formatting, though, so `${ plan }` and
    `${plan}` are one anchor.
-   Two narrower cases still key on their spacing, and a reformat there
-   falls back to a generated `lid`: an *unclosed* `{{`, whose extent is
-   unknown, and a tag carrying a literal `}}` inside a quoted argument,
-   which ends the tag early. Both are rare enough that widening the rule
-   was judged not worth the risk of merging two distinct links.
+   A quoted argument's *delimiter* is formatting rather than identity, so
+   `{{ segment | default: 'sale' }}` and `{{ segment | default: "sale" }}`
+   are one anchor: they denote the same string in Liquid, and a dashboard
+   quote flip on a filter this tool does not manage must not cost the link
+   its live `lid`. Only the delimiter moves — the bytes *between* the
+   quotes stay identity, which is what keeps `' - '` and `'-'` apart. A
+   value containing a `'` keeps its `"` delimiters, since Liquid has no
+   string escapes and that is the only way such a value can be written.
+   Two narrower cases still key on their exact spelling — spacing *and*
+   quote style alike — and a reformat there falls back to a generated
+   `lid`: an *unclosed* `{{`, whose extent is unknown, and a tag carrying
+   a literal `}}` inside a quoted argument, which ends the tag early (so
+   the quote that follows it never closes, and the rest of the tag is kept
+   verbatim). Both are rare enough that widening the rule was judged not
+   worth the risk of merging two distinct links.
+   One region is merged rather than kept apart: literal `{{…}}` text
+   inside a `{% raw %}` block is normalized like a real tag, even though
+   `raw` makes those bytes the rendered output. Two raw literals differing
+   only in spacing or quote style therefore share one anchor. Reaching it
+   needs a raw block *and* a Liquid-shaped literal inside a URL.
    Separately, a content block whose *name* contains a space
    (`{{content_blocks.${Plan (US)} | id: '…'}}`) does not correlate at
    all — no `${NAME}` pattern in braze-sync accepts one — so its `cb_id`

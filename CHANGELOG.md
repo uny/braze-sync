@@ -151,12 +151,20 @@ file formats, JSON output, exit codes) for the full v1.x line.
   The canonical delimiter is `'`, except for a value containing a `'`:
   Liquid has no string escapes, so such a value can only ever be written
   with `"`, and both sides therefore already agree on its spelling.
-  Re-quoting it anyway would turn `"a'b"` into `'a'b'`, which denotes
-  something else.
+  Re-quoting it anyway would turn `"a'b"` into `'a'b'`, a key that
+  transcribes no value anyone wrote.
 
   Unlike the four preceding normalization fixes (#68 / #70 / #73 / #77),
-  this closes an axis rather than approximating one: Liquid has exactly
-  two quote characters, so there is no next spelling behind this one.
+  this closes an axis rather than approximating one for the ordinary
+  case: Liquid has exactly two quote characters, so there is no next
+  spelling behind this one. Two documented residuals are unchanged and
+  still key on their exact spelling, quote style included — an unclosed
+  `{{`, and a tag carrying a literal `}}` inside a quoted argument, which
+  ends the tag early and leaves the quote after it unterminated. In the
+  other direction, literal `{{…}}` inside a `{% raw %}` block is
+  normalized like a real tag, so the fold merges two raw literals that
+  differ only in quote style — one more axis on a region the whitespace
+  pass already merged. See `docs/per-env-values.md`.
 
 - **A live Braze link identifier is no longer overwritten by a generated
   slug when a second URL-carrying element sits between the link and its
