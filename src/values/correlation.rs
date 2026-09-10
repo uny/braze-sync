@@ -141,6 +141,24 @@ pub fn normalize_url(url: &str) -> Anchor {
 /// copied verbatim. Liquid has no string escapes, so a quote of the
 /// opening kind always closes the run.
 ///
+/// The *delimiter* is not content, though, and is normalized (#88):
+/// `'sale'` and `"sale"` denote the same string, so leaving both spellings
+/// in the key let a dashboard-side quote flip on an unrelated filter
+/// argument cost the link its live `lid`. Unlike whitespace, this is a
+/// closed axis — Liquid has exactly two quote characters — so re-emitting
+/// one canonical kind closes it rather than approximating it.
+///
+/// The canonical kind is `'`, which is what `templatize` writes. The one
+/// exception is a content holding a `'`: with no escapes it can only be
+/// delimited by `"`, so it is already spelled one way on both sides and is
+/// re-emitted as it stands. Rewriting it to `'` regardless would turn
+/// `"a'b"` into `'a'b'`, whose leading literal is `a` and whose `b'` is
+/// trailing junk — a key that transcribes no value anyone wrote. Note the
+/// hazard is *not* a collision with the link whose argument really is `a`:
+/// that keys as `'a'`, and the trailing `b'` keeps the two apart. Keeping
+/// the `"` is the conservative choice — the key stays a faithful
+/// transcription of the only spelling the value has.
+///
 /// Scope is deliberately narrow:
 ///
 /// - Only `{{…}}`. A `{%…%}` tag has statement syntax where a space can
@@ -157,10 +175,15 @@ pub fn normalize_url(url: &str) -> Anchor {
 ///   spacing, so `{{ u | append: '}}' }}` still keys differently from
 ///   `{{u|append:'}}'}}`. Both sides missed before this pass too, so it
 ///   is an uncovered case, not a regression.
-/// - Literal `{{…}}` text inside a `{% raw %}` block is despaced like
-///   any other tag. Reaching that needs a raw block *and* a literal
-///   space inside a URL, so the pass does not carry the cost of tracking
-///   raw spans.
+/// - Literal `{{…}}` text inside a `{% raw %}` block is despaced — and,
+///   since #88, re-delimited — like any other tag. Inside `raw` those
+///   bytes are the rendered output, so unlike everywhere else the two
+///   spellings really are two different URLs, and the pass merges them.
+///   It already did so on whitespace, which is the wider axis of the two;
+///   the delimiter adds one more to a region that was never distinguished
+///   in the first place. Reaching it needs a raw block *and* a Liquid-
+///   shaped literal inside a URL, so the pass still does not carry the
+///   cost of tracking raw spans.
 ///
 /// A quoted string is not the only literal region inside a tag, so
 /// `${…}` is treated as a second one. Braze addresses a personalization
@@ -199,8 +222,9 @@ fn strip_liquid_tag_whitespace(url: &str) -> Cow<'_, str> {
     if !bytes.windows(2).any(|w| w == b"{{") {
         return Cow::Borrowed(url);
     }
-    // Byte-oriented, but UTF-8 safe: only ASCII whitespace is dropped,
-    // and no byte of a multi-byte sequence is ASCII.
+    // Byte-oriented, but UTF-8 safe: only ASCII whitespace is dropped and
+    // only an ASCII quote is rewritten, and no byte of a multi-byte
+    // sequence is ASCII.
     let mut out: Vec<u8> = Vec::with_capacity(url.len());
     let mut i = 0;
     while i < bytes.len() {
@@ -218,20 +242,34 @@ fn strip_liquid_tag_whitespace(url: &str) -> Cow<'_, str> {
         };
         let interior = &bytes[i + "{{".len()..end - "}}".len()];
         out.extend_from_slice(b"{{");
-        let mut quote: Option<u8> = None;
         let mut j = 0;
         while j < interior.len() {
             let byte = interior[j];
-            if let Some(open) = quote {
-                if byte == open {
-                    quote = None;
-                }
-                out.push(byte);
-                j += 1;
-            } else if byte == b'\'' || byte == b'"' {
-                quote = Some(byte);
-                out.push(byte);
-                j += 1;
+            if byte == b'\'' || byte == b'"' {
+                let start = j + 1;
+                let Some(close) = interior[start..].iter().position(|&b| b == byte) else {
+                    // Unterminated quote: the rest of the tag is kept
+                    // verbatim, delimiter included — its extent is unknown,
+                    // so there is nothing to re-emit a canonical form of.
+                    out.extend_from_slice(&interior[j..]);
+                    break;
+                };
+                let content = &interior[start..start + close];
+                // The content is the value and is copied verbatim; the
+                // delimiter is spelling, and the two sides may differ on
+                // it (#88). `'` is the canonical kind — it is what
+                // `templatize` writes — except for a content holding a
+                // `'`, which without escapes can only ever be delimited
+                // by `"` and so is already spelled one way on both sides.
+                let delim = if content.contains(&b'\'') {
+                    b'"'
+                } else {
+                    b'\''
+                };
+                out.push(delim);
+                out.extend_from_slice(content);
+                out.push(delim);
+                j = start + close + 1;
             } else if interior[j..].starts_with(b"${") {
                 let start = j + "${".len();
                 let Some(close) = interior[start..].iter().position(|&b| b == b'}') else {
@@ -259,7 +297,7 @@ fn strip_liquid_tag_whitespace(url: &str) -> Cow<'_, str> {
         out.extend_from_slice(b"}}");
         i = end;
     }
-    Cow::Owned(String::from_utf8(out).expect("only ASCII whitespace was dropped"))
+    Cow::Owned(String::from_utf8(out).expect("only ASCII bytes were dropped or rewritten"))
 }
 
 /// If a Liquid output tag opens at `i`, the index just past its `}}`.
@@ -950,7 +988,9 @@ mod tests {
             "https://x.com/{{sep|default:' - '}}/a"
         );
         // Double quotes delimit just the same, and a quote of the other
-        // kind inside is ordinary text.
+        // kind inside is ordinary text. A content holding a `'` keeps its
+        // `"` delimiters: with no escapes that is the only way to write
+        // it, so both sides already agree on the spelling.
         assert_eq!(
             normalize_url(r#"https://x.com/{{ sep | default: " it's here " }}"#),
             r#"https://x.com/{{sep|default:" it's here "}}"#
@@ -960,6 +1000,55 @@ mod tests {
         assert_eq!(
             normalize_url("https://x.com/{{ sep | default: ' oops }}/a"),
             "https://x.com/{{sep|default:' oops }}/a"
+        );
+    }
+
+    #[test]
+    fn normalize_folds_quote_style_on_an_unrelated_filter_argument() {
+        // The delimiter is spelling, not value (#88). A dashboard flipping
+        // `'sale'` to `"sale"` on a filter this repo does not manage used
+        // to change the anchor key, and the link lost its live lid to a
+        // generated slug.
+        assert_eq!(
+            normalize_url("https://x.com/{{segment|default:'sale'}}/p"),
+            normalize_url(r#"https://x.com/{{ segment | default: "sale" }}/p"#)
+        );
+        // `'` is the canonical kind, so a `"`-spelled argument is what
+        // moves.
+        assert_eq!(
+            normalize_url(r#"https://x.com/{{ segment | default: "sale" }}/p"#),
+            "https://x.com/{{segment|default:'sale'}}/p"
+        );
+        // Folding the delimiter must not fold the content with it: the
+        // spaces inside still separate two different links.
+        assert_ne!(
+            normalize_url(r#"https://x.com/{{ sep | default: " - " }}/a"#),
+            normalize_url("https://x.com/{{ sep | default: '-' }}/a")
+        );
+        assert_eq!(
+            normalize_url(r#"https://x.com/{{ sep | default: " - " }}/a"#),
+            "https://x.com/{{sep|default:' - '}}/a"
+        );
+        // A content that holds a `'` keeps its `"` delimiters: with no
+        // escapes that is the only way Liquid can spell it, so both sides
+        // already agree, and re-delimiting would emit `'a'b'` — a byte
+        // sequence that denotes `a` followed by trailing junk rather than
+        // the value that was written.
+        //
+        // Pinned by value, not by inequality. An `assert_ne!` against the
+        // link whose argument really is `a` would hold under *every*
+        // implementation of this function — content is copied verbatim in
+        // all of them, so `'a'b'` and `'a'` can never be equal — and so
+        // would say nothing about the exception. Only the exact expected
+        // key fails when the exception is dropped.
+        assert_eq!(
+            normalize_url(r#"https://x.com/{{ sep | default: "a'b" }}/p"#),
+            r#"https://x.com/{{sep|default:"a'b"}}/p"#
+        );
+        // A `"` inside is ordinary text and does not block the fold.
+        assert_eq!(
+            normalize_url(r#"https://x.com/{{ sep | default: 'a"b' }}/p"#),
+            r#"https://x.com/{{sep|default:'a"b'}}/p"#
         );
     }
 

@@ -130,6 +130,42 @@ file formats, JSON output, exit codes) for the full v1.x line.
 
 ### Fixed
 
+- **Quote style on an unrelated Liquid filter argument no longer costs a
+  link its live `lid` (#88).** `{{ segment | default: 'sale' }}` and
+  `{{ segment | default: "sale" }}` denote the same string in Liquid, but
+  the anchor key kept the delimiter bytes as written, so a dashboard-side
+  quote flip on a filter this tool does not manage made the two sides key
+  the link differently. The live identifier was then replaced by a
+  generated slug. As in #87 this was recorded rather than silent — a
+  warning named the anchor, the slug was listed as a fallback and the
+  fallback gate fired (`diff` exits `8`, `apply` refuses without
+  `--allow-fallback`) — so the loss needed a run carrying that flag.
+
+  Quoted regions are now re-emitted with a canonical delimiter while
+  their **contents stay verbatim**. The spaces in
+  `{{ sep | default: ' - ' }}` are the value, and collapsing them would
+  merge two genuinely different links onto one anchor — a strictly worse
+  failure, since the FIFO pairing would then hand each link the other's
+  live identifier. Only the delimiter moves.
+
+  The canonical delimiter is `'`, except for a value containing a `'`:
+  Liquid has no string escapes, so such a value can only ever be written
+  with `"`, and both sides therefore already agree on its spelling.
+  Re-quoting it anyway would turn `"a'b"` into `'a'b'`, a key that
+  transcribes no value anyone wrote.
+
+  Unlike the four preceding normalization fixes (#68 / #70 / #73 / #77),
+  this closes an axis rather than approximating one for the ordinary
+  case: Liquid has exactly two quote characters, so there is no next
+  spelling behind this one. Two documented residuals are unchanged and
+  still key on their exact spelling, quote style included — an unclosed
+  `{{`, and a tag carrying a literal `}}` inside a quoted argument, which
+  ends the tag early and leaves the quote after it unterminated. In the
+  other direction, literal `{{…}}` inside a `{% raw %}` block is
+  normalized like a real tag, so the fold merges two raw literals that
+  differ only in quote style — one more axis on a region the whitespace
+  pass already merged. See `docs/per-env-values.md`.
+
 - **A live Braze link identifier is no longer overwritten by a generated
   slug when a second URL-carrying element sits between the link and its
   `lid` (#87), and a `lid` in a non-anchor element's body now resolves

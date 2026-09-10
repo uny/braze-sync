@@ -301,6 +301,14 @@ fn survives_every_respelling_the_dashboard_can_introduce() {
             r#"<a href="https://x.com/sale">{{x | lid: "liveaaaaaaaa1"}}</a>"#,
             FieldKind::ContentBlock,
         ),
+        // #88: quote style on a filter argument this repo does not
+        // manage. Semantically identical in Liquid, and the one axis the
+        // despacing pass used to leave byte-distinct.
+        (
+            "https://x.com/{{segment|default:'sale'}}{{x|lid:'liveaaaaaaaa1'}}",
+            r#"https://x.com/{{ segment | default: "sale" }}{{ x | lid: 'liveaaaaaaaa1' }}"#,
+            FieldKind::EmailPlainBody,
+        ),
         // The include respaced. `templatize` rebuilds it canonically, so
         // the key has to be derived from the name rather than the bytes.
         (
@@ -349,6 +357,30 @@ fn respelling_never_merges_two_distinct_links() {
             &[
                 "{{sep|default:' - '}}{{x| lid: 'liveaaaaaaaa1'}}",
                 "{{sep|default:'-'}}{{x| lid: 'liveaaaaaaaa2'}}",
+            ],
+        ),
+        // #88, the over-normalizing direction of the delimiter fold, which
+        // the positive half cannot see. Canonicalizing the *kind* of quote
+        // is safe only while the quote bytes themselves stay in the key:
+        // drop them instead, and a string literal keys the same as a Liquid
+        // *variable* of that name — two links that render differently.
+        //
+        // The fold's other guard, the `'`-in-content exception, has no row
+        // here on purpose. Re-delimiting `"a'b"` yields `'a'b'`, which does
+        // NOT collide with the link whose argument is `a` (that keys as
+        // `'a'`; the trailing `b'` keeps them apart) — only with a
+        // *malformed* `{{sep|default:'a'b'}}`, and a malformed tag takes the
+        // unterminated-quote path, whose key is spacing-sensitive by design.
+        // So it is pinned by value in `correlation`'s unit half instead.
+        (
+            "https://x.com/{{segment|default:'a'}}{{x|lid:'liveaaaaaaaa1'}} \
+             https://x.com/{{segment|default:a}}{{x|lid:'liveaaaaaaaa2'}}",
+            "https://x.com/{{ segment | default: a }}{{ x | lid: 'liveaaaaaaaa2' }} \
+             https://x.com/{{ segment | default: 'a' }}{{ x | lid: 'liveaaaaaaaa1' }}",
+            FieldKind::EmailPlainBody,
+            &[
+                "{{segment|default:'a'}}{{x| lid: 'liveaaaaaaaa1'}}",
+                "{{segment|default:a}}{{x| lid: 'liveaaaaaaaa2'}}",
             ],
         ),
         // Whitespace *between* the bytes of a `${NAME}` is part of the name.
