@@ -152,8 +152,12 @@ pub fn normalize_url(url: &str) -> Anchor {
 /// exception is a content holding a `'`: with no escapes it can only be
 /// delimited by `"`, so it is already spelled one way on both sides and is
 /// re-emitted as it stands. Rewriting it to `'` regardless would turn
-/// `"a'b"` into `'a'b'`, which denotes `a` — a different value, and one
-/// another link may legitimately carry.
+/// `"a'b"` into `'a'b'`, whose leading literal is `a` and whose `b'` is
+/// trailing junk — a key that transcribes no value anyone wrote. Note the
+/// hazard is *not* a collision with the link whose argument really is `a`:
+/// that keys as `'a'`, and the trailing `b'` keeps the two apart. Keeping
+/// the `"` is the conservative choice — the key stays a faithful
+/// transcription of the only spelling the value has.
 ///
 /// Scope is deliberately narrow:
 ///
@@ -171,10 +175,15 @@ pub fn normalize_url(url: &str) -> Anchor {
 ///   spacing, so `{{ u | append: '}}' }}` still keys differently from
 ///   `{{u|append:'}}'}}`. Both sides missed before this pass too, so it
 ///   is an uncovered case, not a regression.
-/// - Literal `{{…}}` text inside a `{% raw %}` block is despaced like
-///   any other tag. Reaching that needs a raw block *and* a literal
-///   space inside a URL, so the pass does not carry the cost of tracking
-///   raw spans.
+/// - Literal `{{…}}` text inside a `{% raw %}` block is despaced — and,
+///   since #88, re-delimited — like any other tag. Inside `raw` those
+///   bytes are the rendered output, so unlike everywhere else the two
+///   spellings really are two different URLs, and the pass merges them.
+///   It already did so on whitespace, which is the wider axis of the two;
+///   the delimiter adds one more to a region that was never distinguished
+///   in the first place. Reaching it needs a raw block *and* a Liquid-
+///   shaped literal inside a URL, so the pass still does not carry the
+///   cost of tracking raw spans.
 ///
 /// A quoted string is not the only literal region inside a tag, so
 /// `${…}` is treated as a second one. Braze addresses a personalization
@@ -1020,17 +1029,21 @@ mod tests {
             normalize_url(r#"https://x.com/{{ sep | default: " - " }}/a"#),
             "https://x.com/{{sep|default:' - '}}/a"
         );
-        // A content that holds a `'` cannot be re-delimited: `'a'b'` would
-        // denote `a`. It stays `"`-quoted — which is also the only way
-        // Liquid can spell it, so both sides already agree — and so stays
-        // distinct from the link whose argument really is `a`.
+        // A content that holds a `'` keeps its `"` delimiters: with no
+        // escapes that is the only way Liquid can spell it, so both sides
+        // already agree, and re-delimiting would emit `'a'b'` — a byte
+        // sequence that denotes `a` followed by trailing junk rather than
+        // the value that was written.
+        //
+        // Pinned by value, not by inequality. An `assert_ne!` against the
+        // link whose argument really is `a` would hold under *every*
+        // implementation of this function — content is copied verbatim in
+        // all of them, so `'a'b'` and `'a'` can never be equal — and so
+        // would say nothing about the exception. Only the exact expected
+        // key fails when the exception is dropped.
         assert_eq!(
             normalize_url(r#"https://x.com/{{ sep | default: "a'b" }}/p"#),
             r#"https://x.com/{{sep|default:"a'b"}}/p"#
-        );
-        assert_ne!(
-            normalize_url(r#"https://x.com/{{ sep | default: "a'b" }}/p"#),
-            normalize_url("https://x.com/{{ sep | default: 'a' }}/p")
         );
         // A `"` inside is ordinary text and does not block the fold.
         assert_eq!(
