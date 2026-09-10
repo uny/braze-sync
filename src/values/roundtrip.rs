@@ -44,7 +44,9 @@
 //!   instability. See `whitespace_named_include_no_longer_corrupts_a_live_lid`.
 
 use crate::values::braze_managed::prepare_field;
-use crate::values::correlation::{extract_cb_id_values, extract_lid_values_unanchored};
+use crate::values::correlation::{
+    extract_cb_id_values, extract_lid_values_unanchored, normalize_url,
+};
 use crate::values::placeholder::TOKEN;
 use crate::values::templatize::{templatize_body, FieldKind};
 
@@ -414,6 +416,24 @@ fn respelling_never_merges_two_distinct_links() {
                 r#"https://x.com/beta">{{x | lid: 'liveaaaaaaaa2'}}"#,
             ],
         ),
+        // The element set widened past `<a href>`, so the negative half
+        // has to follow it there. Each CTA carries its *own* `<img src>`,
+        // which is the element both sides now key to — the `<a href>`s
+        // are deliberately identical, so nothing but the image tells the
+        // two links apart. If `href_re` or `normalize_url` ever collapses
+        // two distinct `src` values, this reversed remote transposes the
+        // live identifiers rather than failing.
+        (
+            r#"<a href="https://x.com/go"><img src="https://cdn.example.com/alpha.png">{{x | lid: 'liveaaaaaaaa1'}}</a>
+               <a href="https://x.com/go"><img src="https://cdn.example.com/beta.png">{{y | lid: 'liveaaaaaaaa2'}}</a>"#,
+            r#"<a href="https://x.com/go"><img src="https://cdn.example.com/beta.png">{{y | lid: 'liveaaaaaaaa2'}}</a>
+               <a href="https://x.com/go"><img src="https://cdn.example.com/alpha.png">{{x | lid: 'liveaaaaaaaa1'}}</a>"#,
+            FieldKind::EmailHtmlBody,
+            &[
+                r#"alpha.png">{{x | lid: 'liveaaaaaaaa1'}}"#,
+                r#"beta.png">{{y | lid: 'liveaaaaaaaa2'}}"#,
+            ],
+        ),
     ];
     for (authored, remote, field, expected) in cases {
         assert_keeps_pairing(authored, remote, *field, expected);
@@ -532,35 +552,49 @@ fn both_sides_agree_on_which_element_carries_an_anchor() {
     // side really does extract the pair — a template-side regression
     // that lost the anchor *and* a remote side that never had one would
     // agree vacuously, and the table cannot tell those apart.
-    let cases: &[(&str, &str)] = &[
+    // The anchor URL is asserted, not just the lid value. Comparing only
+    // values passes for *any* choice of anchor, so a regression narrowing
+    // `href_re` back to `<a>`-only would keep both sides agreeing — on the
+    // wrong element — and identity would hide it. Naming the element is
+    // what makes this a test of the rule rather than of the round trip.
+    let cases: &[(&str, &str, &str)] = &[
         // #84: the lid sits in a non-anchor element's body. Failed
         // safe, as a fatal `UnresolvedLid` — the operator was stopped
         // rather than shipping a slug.
         (
             r#"<v:rect href="https://x.com/sale">{{x | lid: 'liveaaaaaaaa1'}}</v:rect>"#,
             "liveaaaaaaaa1",
+            "https://x.com/sale",
         ),
-        // #87: an `<img src>` between the `<a href>` and the lid. This
-        // is the half that failed *silently*: the remote side keyed the
-        // pair to the `<img src>` while the template still asked for the
-        // `<a href>`, so the bucket came back empty, `p.errors` stayed
-        // empty, and a generated slug was POSTed over a live identifier.
+        // #87: an `<img src>` between the `<a href>` and the lid. The
+        // remote side keyed the pair to the `<img src>` while the
+        // template still asked for the `<a href>`, so the bucket came
+        // back empty, `p.errors` stayed empty, and a generated slug was
+        // written over a live identifier. It did not pass unannounced —
+        // a warning fired and `fallback_gated` was set — but nothing in
+        // `errors` marked it, and under `--allow-fallback` it shipped.
         (
             r#"<a href="https://x.com/sale"><img src="https://cdn.example.com/hero.png">{{x | lid: 'liveaaaaaaaa1'}}</a>"#,
             "liveaaaaaaaa1",
+            "https://cdn.example.com/hero.png",
         ),
     ];
 
-    for (body, live) in cases {
-        // The remote side finds the pair.
+    for (body, live, anchor) in cases {
+        // The remote side finds the pair, and keys it to the element
+        // this test is about.
+        let pairs = crate::values::correlation::extract_html_lid_values(body);
         assert_eq!(
-            crate::values::correlation::extract_html_lid_values(body)
-                .into_iter()
-                .map(|c| c.value)
-                .collect::<Vec<_>>(),
+            pairs.iter().map(|c| c.value.clone()).collect::<Vec<_>>(),
             vec![live.to_string()],
             "remote-side extraction found no pair, so the round trip below \
              would agree vacuously: {body}"
+        );
+        assert_eq!(
+            pairs.iter().map(|c| c.url.clone()).collect::<Vec<_>>(),
+            vec![normalize_url(anchor)],
+            "the remote side keyed to a different element than this test \
+             claims, so it no longer pins the shared rule: {body}"
         );
         // And so does the template side, on the same anchor.
         assert_survives_reformat(body, body, FieldKind::EmailHtmlBody);
@@ -587,6 +621,95 @@ fn the_vacuity_guard_is_not_itself_vacuous() {
     assert_eq!(lids(body).len(), 1, "the correlation regex misses it too");
     assert_eq!(lid_filters(&t.new_body), 2, "got: {}", t.new_body);
     assert_eq!(t.new_body.matches("lid: '__BRAZESYNC__'").count(), 1);
+}
+
+#[test]
+fn a_lid_with_no_anchor_at_all_still_fails_fatally() {
+    // Restores the assertion the #84 pin carried before it became a
+    // positive test. Nothing else in the tree asserts that
+    // `UnresolvedLid` is ever *produced*, or that the anchor-less
+    // warning fires — so without this, a change letting a `None` anchor
+    // fall through to `fallback_lid_for_url` would ship a generated slug
+    // over the operator's body with the whole suite green.
+    //
+    // The shape is the one `lid_anchor_for` genuinely cannot key: no
+    // URL-carrying element starts at or before the placeholder.
+    let body = r#"<p>{{x | lid: 'liveaaaaaaaa1'}}</p><a href="https://x.com/sale">go</a>"#;
+    let t = templatize_body(body, FieldKind::EmailHtmlBody);
+    let p = prepare_field(&t.new_body, Some(body), FieldKind::EmailHtmlBody);
+
+    assert!(
+        p.errors.iter().any(|e| matches!(
+            e,
+            crate::values::placeholder::ResolutionError::UnresolvedLid { .. }
+        )),
+        "expected a fatal UnresolvedLid, got: {:?}",
+        p.errors
+    );
+    assert!(
+        p.fallbacks.is_empty(),
+        "must not POST a slug for an anchor-less lid: {:?}",
+        p.fallbacks
+    );
+    assert!(
+        p.warnings.iter().any(|w| w.contains("no URL anchor")),
+        "the operator must be told why: {:?}",
+        p.warnings
+    );
+}
+
+#[test]
+fn a_remote_lid_the_anchor_scan_never_paired_still_gates_the_fallback() {
+    // `fallback_gated` asks whether the remote still holds a live value
+    // this run did not use. Counting only the leftover URL buckets
+    // answered that question wrong whenever `pair_urls_with_lids`
+    // bucketed *nothing*: `remote_pairs` empty means every bucket is
+    // empty, so the sum was zero and the gate stayed shut even though
+    // the live value was plainly there in the remote.
+    //
+    // Both rows below are that shape. The template resolves an anchor
+    // from its own body and finds no match in the remote, so it mints a
+    // slug — and before the fix `apply` would POST it over the live
+    // identifier with no `--allow-fallback` and `diff` would exit zero,
+    // contradicting `docs/per-env-values.md`'s promise that structural
+    // drift aborts. What is asserted is the gate, not the fallback: a
+    // fallback here is legitimate, shipping it unannounced is not.
+    let cases: &[(&str, &str)] = &[
+        // Every remote lid precedes the first URL element, so the
+        // anchored extractor pairs none of them.
+        (
+            r#"<img src="https://cdn.example.com/hero.png">Hi {{x | lid: 'liveaaaaaaaa1'}} <a href="https://x.com/sale">go</a>"#,
+            r#"Hi {{x | lid: 'liveaaaaaaaa1'}} <a href="https://x.com/sale">go</a>"#,
+        ),
+        // `href_re` matches nothing in the remote at all: the `>` inside
+        // the quoted attribute value stops its `[^>]*?` run before it
+        // reaches `href`.
+        (
+            r#"<img src="https://cdn.example.com/hero.png"><a title="a > b" href="https://x.com/sale">go{{x | lid: 'liveaaaaaaaa1'}}</a>"#,
+            r#"<a title="a > b" href="https://x.com/sale">go{{x | lid: 'liveaaaaaaaa1'}}</a>"#,
+        ),
+    ];
+
+    for (authored, remote) in cases {
+        // Precondition: this row only tests the gate if the remote side
+        // really did bucket nothing. Otherwise the assertion below would
+        // hold through the ordinary leftover-bucket path and prove
+        // nothing about unpaired values.
+        assert!(
+            crate::values::correlation::extract_html_lid_values(remote).is_empty(),
+            "row no longer exercises the unpaired path: {remote}"
+        );
+
+        let t = templatize_body(authored, FieldKind::EmailHtmlBody);
+        let p = prepare_field(&t.new_body, Some(remote), FieldKind::EmailHtmlBody);
+
+        assert!(!p.fallbacks.is_empty(), "row minted no slug: {authored}");
+        assert!(
+            p.fallback_gated,
+            "a slug is about to be POSTed over the live lid still sitting \
+             in the remote, and nothing would stop it: {authored}"
+        );
+    }
 }
 
 #[test]
@@ -631,5 +754,29 @@ fn two_ctas_sharing_one_button_image_share_one_anchor() {
         "the shared bucket must be reported, since a reorder in Braze \
          would transpose the two: {:?}",
         p.warnings
+    );
+
+    // And the transposition itself, which the paragraph above only
+    // asserted in prose. Under a reordered remote the FIFO hands each
+    // link the other's live identifier — with `errors` and `fallbacks`
+    // both empty, so nothing gates it and the only signal is the same
+    // warning that fires under identity. Pinned because it is the cost
+    // this test exists to state: if a later change makes this case gate,
+    // error, or correlate correctly, that is a behavior change and this
+    // assertion should be the thing that says so.
+    let reordered = r#"<a href="https://x.com/b"><img src="https://cdn.example.com/btn.png">{{y | lid: 'liveaaaaaaaa2'}}</a><a href="https://x.com/a"><img src="https://cdn.example.com/btn.png">{{x | lid: 'liveaaaaaaaa1'}}</a>"#;
+    let q = prepare_field(&t.new_body, Some(reordered), FieldKind::EmailHtmlBody);
+    assert!(q.errors.is_empty(), "{:?}", q.errors);
+    assert!(q.fallbacks.is_empty(), "{:?}", q.fallbacks);
+    assert!(
+        !q.fallback_gated,
+        "documenting that nothing gates this; if it now gates, update the \
+         comment above rather than deleting this line"
+    );
+    assert_eq!(
+        lids(&q.body),
+        vec!["liveaaaaaaaa2".to_string(), "liveaaaaaaaa1".to_string()],
+        "the shared bucket transposes the two live identifiers: {}",
+        q.body
     );
 }

@@ -179,9 +179,11 @@ pub fn prepare_field(template: &str, remote: Option<&str>, field: FieldKind) -> 
 
 /// Resolve lid placeholders against `remote`. Returns one entry per
 /// lid placeholder in template-appearance order, plus the count of
-/// remote lid values left in the URL buckets after matching — the
-/// other half of the fallback gate's condition (see
-/// `PreparedTemplate::fallback_gated`).
+/// remote lid values this run did not consume — the other half of the
+/// fallback gate's condition (see `PreparedTemplate::fallback_gated`).
+/// That count covers both the values left in the URL buckets and the
+/// ones `pair_urls_with_lids` never bucketed; see the comment at its
+/// computation for why the second half cannot be dropped.
 fn resolve_lid_batch(
     body: &str,
     placeholders: &[crate::values::placeholder::Placeholder],
@@ -279,7 +281,25 @@ fn resolve_lid_batch(
             }
         }
     }
-    let unconsumed_remote_lid = by_url.values().map(|b| b.len()).sum();
+    // Leftover bucket entries are not the whole of "the remote still holds a
+    // live value we did not use". A remote lid that `pair_urls_with_lids`
+    // never bucketed at all — because it precedes every URL element, or
+    // because `href_re` matched no element in that body — is just as
+    // unconsumed, and it is invisible here: `remote_pairs` is empty, so the
+    // buckets are empty, so the sum is zero and the gate stays shut.
+    //
+    // That is the shape where the gate matters most. The template side
+    // resolves an anchor from its *own* body, so it can produce a fallback
+    // for a placeholder whose live value is sitting right there in the
+    // remote, unpaired. Counting only buckets makes `fallback_gated` false
+    // for exactly that case, and `apply` then POSTs a generated slug over a
+    // live identifier with no `--allow-fallback` and no non-zero `diff` exit
+    // — which is the drift that `docs/per-env-values.md` promises aborts.
+    let unpaired_remote_lid = extract_lid_values_unanchored(remote)
+        .len()
+        .saturating_sub(remote_pairs.len());
+    let unconsumed_remote_lid =
+        by_url.values().map(|b| b.len()).sum::<usize>() + unpaired_remote_lid;
     (out, unconsumed_remote_lid)
 }
 
