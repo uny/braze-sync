@@ -301,6 +301,14 @@ fn survives_every_respelling_the_dashboard_can_introduce() {
             r#"<a href="https://x.com/sale">{{x | lid: "liveaaaaaaaa1"}}</a>"#,
             FieldKind::ContentBlock,
         ),
+        // #88: quote style on a filter argument this repo does not
+        // manage. Semantically identical in Liquid, and the one axis the
+        // despacing pass used to leave byte-distinct.
+        (
+            "https://x.com/{{segment|default:'sale'}}{{x|lid:'liveaaaaaaaa1'}}",
+            r#"https://x.com/{{ segment | default: "sale" }}{{ x | lid: 'liveaaaaaaaa1' }}"#,
+            FieldKind::EmailPlainBody,
+        ),
         // The include respaced. `templatize` rebuilds it canonically, so
         // the key has to be derived from the name rather than the bytes.
         (
