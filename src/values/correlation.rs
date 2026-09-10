@@ -1020,9 +1020,14 @@ mod tests {
             normalize_url(r#"https://x.com/{{ sep | default: " - " }}/a"#),
             "https://x.com/{{sep|default:' - '}}/a"
         );
-        // A content that holds a `'` cannot be re-delimited — `'a'b'`
-        // would denote `a` — so it stays `"`-quoted and stays distinct
-        // from the link whose argument really is `a`.
+        // A content that holds a `'` cannot be re-delimited: `'a'b'` would
+        // denote `a`. It stays `"`-quoted — which is also the only way
+        // Liquid can spell it, so both sides already agree — and so stays
+        // distinct from the link whose argument really is `a`.
+        assert_eq!(
+            normalize_url(r#"https://x.com/{{ sep | default: "a'b" }}/p"#),
+            r#"https://x.com/{{sep|default:"a'b"}}/p"#
+        );
         assert_ne!(
             normalize_url(r#"https://x.com/{{ sep | default: "a'b" }}/p"#),
             normalize_url("https://x.com/{{ sep | default: 'a' }}/p")
