@@ -528,8 +528,10 @@ resources:
         let f = write_config(TWO_ENVS_WITH_SCOPED_EXCLUDE);
         let cfg = ConfigFile::load(f.path()).unwrap();
         assert_eq!(cfg.environment_name(None).unwrap(), "a");
-        let ex = cfg.excludes_for_environment("b").unwrap();
-        assert!(!is_excluded("foo", &ex[&ResourceKind::ContentBlock]));
+        let a = cfg.excludes_for_environment("a").unwrap();
+        assert!(is_excluded("foo", &a[&ResourceKind::ContentBlock]));
+        let b = cfg.excludes_for_environment("b").unwrap();
+        assert!(!is_excluded("foo", &b[&ResourceKind::ContentBlock]));
     }
 
     #[test]
