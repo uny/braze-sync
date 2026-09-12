@@ -38,9 +38,17 @@ pub struct ExportArgs {
     /// keeps the rest: an attribute materializes on first `/users/track`
     /// traffic, so its absence from one workspace is not evidence the
     /// registry entry is wrong. Pass `--prune` when you do mean "the
-    /// remote is the truth, rewrite the file" — and note that it is also
-    /// the recovery path for a `registry.yaml` that no longer parses,
-    /// because it is the one mode that does not read the existing file.
+    /// remote is the truth, rewrite the file".
+    ///
+    /// Entries matching `exclude_patterns` are kept even here — excluded
+    /// means the remote is not consulted about them, so the remote's
+    /// silence is not evidence either.
+    ///
+    /// `--prune` is also the recovery path for a `registry.yaml` that no
+    /// longer parses: it is the one mode that tolerates a parse error.
+    /// It still reads the file when it can, to report how many entries
+    /// it dropped — so when the read fails it reports that the count is
+    /// unknown rather than reporting zero.
     ///
     /// Affects `custom_attribute` only; no other resource kind replaces
     /// local state on export.
@@ -411,41 +419,61 @@ struct RegistryExport {
     refreshed: usize,
     /// Entries kept because the queried workspace does not have them.
     /// Zero under `--prune`.
-    kept: usize,
+    kept_registry_only: usize,
+    /// Entries kept because they match `exclude_patterns`. Kept under
+    /// `--prune` too: "managed out of band" is not a statement about
+    /// which workspace happens to hold them.
+    kept_excluded: usize,
     /// Entries dropped because the queried workspace does not have them.
-    /// Non-zero only under `--prune`.
-    removed: usize,
+    /// `Some(0)` outside `--prune`. `None` means `--prune` could not read
+    /// the file it replaced, so the number is genuinely unknown — which
+    /// has to be said rather than reported as zero.
+    removed: Option<usize>,
 }
 
 impl RegistryExport {
     /// Entries actually in the file afterwards.
     fn written(&self) -> usize {
-        self.refreshed + self.kept
+        self.refreshed + self.kept_registry_only + self.kept_excluded
     }
 
     fn summary_line(&self) -> String {
-        if self.removed > 0 {
-            format!(
-                "✓ custom_attribute: refreshed {} from Braze, removed {} \
-                 registry entr{} this workspace does not have (--prune)",
-                self.refreshed,
-                self.removed,
-                if self.removed == 1 { "y" } else { "ies" },
-            )
-        } else if self.kept > 0 {
-            format!(
-                "✓ custom_attribute: refreshed {} from Braze, kept {} \
-                 registry-only entr{}",
-                self.refreshed,
-                self.kept,
-                if self.kept == 1 { "y" } else { "ies" },
-            )
-        } else {
-            format!(
-                "✓ custom_attribute: exported {} attribute(s)",
-                self.refreshed
-            )
+        let mut parts = vec![format!("refreshed {} from Braze", self.refreshed)];
+        match self.removed {
+            // An unreadable file that `--prune` replaced anyway. How much
+            // it replaced cannot be established, and reporting 0 would be
+            // the same silent destructive write this function was changed
+            // to stop making.
+            None => parts.push("replaced an unreadable registry, entries removed: unknown".into()),
+            Some(n) if n > 0 => parts.push(format!(
+                "removed {n} registry entr{} this workspace does not have",
+                plural_y(n)
+            )),
+            Some(_) => {}
         }
+        if self.kept_registry_only > 0 {
+            parts.push(format!(
+                "kept {} registry-only entr{}",
+                self.kept_registry_only,
+                plural_y(self.kept_registry_only)
+            ));
+        }
+        if self.kept_excluded > 0 {
+            parts.push(format!(
+                "kept {} excluded entr{}",
+                self.kept_excluded,
+                plural_y(self.kept_excluded)
+            ));
+        }
+        format!("✓ custom_attribute: {}", parts.join(", "))
+    }
+}
+
+fn plural_y(n: usize) -> &'static str {
+    if n == 1 {
+        "y"
+    } else {
+        "ies"
     }
 }
 
@@ -470,53 +498,84 @@ impl RegistryExport {
 /// keeps that hint's promise: a stale `type` (or `description`, or
 /// `deprecated`) is corrected here. Only membership is preserved.
 ///
-/// `--prune` restores the "the remote is the truth" rebuild.
+/// `--prune` restores the "the remote is the truth" rebuild — for the
+/// entries whose truth the remote actually speaks to. An entry matching
+/// `exclude_patterns` is kept either way: excluded means the remote is
+/// not consulted about it, so the remote's silence says nothing.
 async fn export_custom_attributes(
     client: &BrazeClient,
     registry_path: &Path,
     excludes: &[Regex],
     prune: bool,
 ) -> anyhow::Result<RegistryExport> {
-    let remote: Vec<CustomAttribute> = client
-        .list_custom_attributes()
-        .await?
+    // Classification needs the *unfiltered* names: an excluded attribute
+    // Braze returned is still an attribute Braze returned. Filtering
+    // before this point is what made `--prune` delete an excluded entry
+    // while reporting that the workspace did not have it.
+    let remote_all = client.list_custom_attributes().await?;
+    let remote_names: BTreeSet<String> = remote_all.iter().map(|a| a.name.clone()).collect();
+    let remote: Vec<CustomAttribute> = remote_all
         .into_iter()
         .filter(|a| !is_excluded(&a.name, excludes))
         .collect();
 
-    // `--prune` must not fail on an unparseable registry: it is the
-    // documented way to replace one, so reading it can only be
-    // best-effort there — the load feeds the "removed N" count and
-    // nothing else. Without `--prune` the error propagates: merging
-    // requires knowing what is in the file, and silently falling back to
-    // a full replacement would restore the data loss this function
-    // exists to prevent, on precisely the input (a one-character YAML
-    // slip) where it is least expected.
-    let local = if prune {
-        custom_attribute_io::load_registry(registry_path).unwrap_or(None)
-    } else {
-        custom_attribute_io::load_registry(registry_path)?
+    // `--prune` must not fail on an unparseable registry: replacing one
+    // is what the flag is for, so a parse error there is expected input
+    // rather than an error — but the entry count it replaced is then
+    // unknowable, and `None` says so. Every *other* error still
+    // propagates, `--prune` included: a registry that cannot be read
+    // because of a permission or I/O fault is not a registry anyone
+    // asked to replace, and swallowing that would be a silent
+    // destructive write of exactly the kind this function exists to
+    // prevent. Without `--prune` even the parse error propagates, since
+    // merging cannot proceed without knowing what is in the file.
+    let mut count_unknown = false;
+    let local = match custom_attribute_io::load_registry(registry_path) {
+        Ok(local) => local,
+        Err(crate::error::Error::YamlParse { .. }) if prune => {
+            count_unknown = true;
+            None
+        }
+        Err(e) => return Err(e.into()),
     };
 
-    let remote_names: BTreeSet<&str> = remote.iter().map(|a| a.name.as_str()).collect();
-
-    // Collapse duplicate local names last-wins, matching
-    // `diff::custom_attribute::diff`. Disagreeing would leave the two
-    // commands unable to converge: whichever entry `export` kept, `diff`
-    // would keep reporting the other one as drift.
-    let local_only: BTreeMap<&str, &CustomAttribute> = local
-        .iter()
-        .flat_map(|r| r.attributes.iter())
-        .filter(|a| !remote_names.contains(a.name.as_str()))
-        .map(|a| (a.name.as_str(), a))
-        .collect();
+    // Three buckets, keyed so duplicate local names collapse last-wins,
+    // matching `diff::custom_attribute::diff`. Disagreeing would leave
+    // the two commands unable to converge: whichever entry `export`
+    // kept, `diff` would keep reporting the other one as drift.
+    let mut excluded: BTreeMap<&str, &CustomAttribute> = BTreeMap::new();
+    let mut registry_only: BTreeMap<&str, &CustomAttribute> = BTreeMap::new();
+    let mut duplicates = 0usize;
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for a in local.iter().flat_map(|r| r.attributes.iter()) {
+        let name = a.name.as_str();
+        if !seen.insert(name) {
+            duplicates += 1;
+        }
+        if is_excluded(name, excludes) {
+            excluded.insert(name, a);
+        } else if !remote_names.contains(name) {
+            registry_only.insert(name, a);
+        }
+    }
+    if duplicates > 0 {
+        // `diff` warns on the same input; staying silent here would make
+        // the command that actually drops the losing entry the quiet one.
+        tracing::warn!(
+            count = duplicates,
+            "duplicate custom attribute name(s) in local registry; \
+             last entry wins (run `validate` to catch this)"
+        );
+    }
 
     let refreshed = remote.len();
-    let local_only_count = local_only.len();
+    let kept_excluded = excluded.len();
+    let registry_only_count = registry_only.len();
 
     let mut attributes = remote;
+    attributes.extend(excluded.into_values().cloned());
     if !prune {
-        attributes.extend(local_only.into_values().cloned());
+        attributes.extend(registry_only.into_values().cloned());
     }
 
     // `save_registry` normalizes (sorts by name), so the merged order
@@ -526,7 +585,14 @@ async fn export_custom_attributes(
 
     Ok(RegistryExport {
         refreshed,
-        kept: if prune { 0 } else { local_only_count },
-        removed: if prune { local_only_count } else { 0 },
+        kept_registry_only: if prune { 0 } else { registry_only_count },
+        kept_excluded,
+        removed: if !prune {
+            Some(0)
+        } else if count_unknown {
+            None
+        } else {
+            Some(registry_only_count)
+        },
     })
 }

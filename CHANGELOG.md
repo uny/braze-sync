@@ -38,12 +38,23 @@ file formats, JSON output, exit codes) for the full v1.x line.
   The registry is a single file, so the same behaviour had to be
   written down rather than falling out of the layout.
 
-  **What this does not fix.** The registry still cannot tell you
-  *which* workspace an entry belongs to, so a genuinely stale entry —
-  a typo, or an attribute retired everywhere — now survives `export`
-  and has to be removed by hand or with `--prune`. Trading a silent
-  deletion for a surviving typo is deliberate: a typo is visible in the
-  file and in `diff`, and a deleted entry is visible nowhere.
+  **What this does not fix, and what it costs.** The registry still
+  cannot tell you *which* workspace an entry belongs to, so a genuinely
+  stale entry — a typo, or an attribute retired everywhere — now
+  survives `export` and has to be removed by hand or with `--prune`.
+  Trading a silent deletion for a surviving typo is deliberate: a typo
+  is visible in the file and in `diff`, and a deleted entry is visible
+  nowhere.
+
+  The direct cost is that **`diff --fail-on-drift` now stays red.** A
+  kept entry is `PresentInGitOnly`, which counts toward
+  `changed_count()`, so the gate exits 2 — and `apply` cannot clear it,
+  because there is no create-attribute endpoint. That gate went green
+  before this change only because `export` had deleted the entry; the
+  red is existing disagreement stopping being papered over by data
+  loss, not new information. Until kind-aware drift severity lands
+  (#115), the way to keep such a gate green is
+  `custom_attribute.exclude_patterns`.
 
 ### Added
 
@@ -52,9 +63,20 @@ file formats, JSON output, exit codes) for the full v1.x line.
   queried workspace does not return, and report how many. It affects
   `custom_attribute` only; no other kind replaces local state on export.
 
+  Entries matching `exclude_patterns` are kept even under `--prune`.
+  Excluded means the remote is not consulted about them, so the
+  remote's silence is not evidence about them either — pruning on that
+  basis would delete out-of-band state while reporting that the
+  workspace did not have it.
+
   `--prune` is also the recovery path for a `registry.yaml` that no
-  longer parses, because it is the one mode that does not read the
-  existing file.
+  longer parses: it is the one mode that tolerates a parse error. It
+  still reads the file when it can, so it can report how many entries
+  it dropped; when that read fails it says the count is **unknown**
+  rather than reporting zero. A read that fails for any other reason —
+  a permission fault, an unreadable inode — aborts instead. Swallowing
+  those would be a silent destructive write of exactly the kind this
+  release set out to stop.
 
 ### Changed
 
@@ -69,6 +91,14 @@ file formats, JSON output, exit codes) for the full v1.x line.
   matching what `diff` already does. Disagreeing left the two commands
   unable to converge: whichever of two same-named entries `export`
   kept, `diff` would keep reporting the other as drift.
+
+- **`export`'s `custom_attribute` stderr line changed.** It now reads
+  `✓ custom_attribute: refreshed N from Braze, kept M registry-only
+  entries` (the `kept`/`removed`/`excluded` clauses appear only when
+  non-zero). The old `exported N attribute(s)` wording is gone. Nothing
+  in this repo greps it and `--format` is inert for `export`, so this
+  human line is export's only output surface — noted because the v1.0
+  freeze is near and an external consumer could be matching on it.
 
 - The `registry.yaml` header comment now states that `export` keeps
   entries it did not fetch. The file is no longer purely a dump of one

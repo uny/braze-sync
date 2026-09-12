@@ -999,7 +999,11 @@ attributes:
 
 fn run_export(config_path: std::path::PathBuf, extra: &[&str]) -> String {
     let mut cmd = Command::cargo_bin("braze-sync").unwrap();
+    // Pin the log level: the binary defaults to `warn` on stderr, but
+    // `EnvFilter::try_from_default_env` would honour a RUST_LOG inherited
+    // from the developer's shell and silence the warnings asserted below.
     cmd.env("BRAZE_API_KEY", "test-key")
+        .env("RUST_LOG", "warn")
         .args(["--config", config_path.to_str().unwrap()])
         .args(["export", "--resource", "custom_attribute"]);
     for a in extra {
@@ -1060,18 +1064,57 @@ async fn export_ca_still_corrects_a_stale_type() {
         .unwrap();
 
     let content = fs::read_to_string(&registry_path).unwrap();
-    let shared = content
-        .split("- name: shared")
-        .nth(1)
-        .expect("shared entry present");
-    assert!(
-        shared.contains("type: string"),
+    // Assert structurally, not by string position: `shared` is the last
+    // entry only by alphabetical luck, so a `split(…).nth(1)` slice would
+    // start spanning the next entry's fields the moment the mock gained
+    // an attribute sorting after it — and would then pass on a file where
+    // `shared` kept its stale type.
+    assert_eq!(
+        entry_field(&content, "shared", "type").as_deref(),
+        Some("string"),
         "local `number` should have been corrected to Braze's `string`:\n{content}"
     );
-    assert!(
-        !shared.starts_with("\n    type: number"),
-        "stale type survived:\n{content}"
+    // Pin the neighbours too. `entry_field` is only worth more than a
+    // positional slice if it actually isolates one entry, and these two
+    // would come out wrong if it bled across entry boundaries —
+    // `remote_only` is legitimately `number` here, which is why a
+    // file-wide `!contains("type: number")` is the wrong assertion and
+    // not a stronger one.
+    assert_eq!(
+        entry_field(&content, "remote_only", "type").as_deref(),
+        Some("number"),
+        "content:\n{content}"
     );
+    assert_eq!(
+        entry_field(&content, "registry_only", "type").as_deref(),
+        Some("boolean"),
+        "a kept entry's own type must not be touched:\n{content}"
+    );
+}
+
+/// One field of one entry in a written `registry.yaml`, located by
+/// walking entries rather than by substring position.
+///
+/// Deliberately not a YAML parse: `serde_norway` is a dependency of the
+/// crate, not a dev-dependency, so it is not linkable from an
+/// integration test. The written format is `save_registry`'s own output,
+/// so the shape is fixed — `- name: x` opening an entry, fields at two
+/// spaces — and relying on that is what makes the 2-vs-4-space fact
+/// above visible in the test rather than buried.
+fn entry_field(yaml: &str, name: &str, field: &str) -> Option<String> {
+    let mut in_entry = false;
+    for line in yaml.lines() {
+        if let Some(rest) = line.strip_prefix("- name: ") {
+            in_entry = rest.trim() == name;
+            continue;
+        }
+        if in_entry {
+            if let Some(rest) = line.strip_prefix(&format!("  {field}: ")) {
+                return Some(rest.trim().to_string());
+            }
+        }
+    }
+    None
 }
 
 /// `exclude_patterns` means "managed out of band" — the docs say such
@@ -1104,6 +1147,13 @@ async fn export_ca_keeps_excluded_entry_already_in_registry() {
     assert!(
         content.contains("managed out of band"),
         "excluded entry was refreshed from Braze:\n{content}"
+    );
+    // Without this, a merge that assembled the file from local buckets
+    // alone — never writing the remote list — would pass: the fixture
+    // already contains everything the assertions above look for.
+    assert!(
+        content.contains("shared"),
+        "the remote list was never written:\n{content}"
     );
 }
 
@@ -1147,17 +1197,28 @@ async fn export_ca_fails_loudly_on_unparseable_registry() {
     let registry_path = tmp.path().join("custom_attributes/registry.yaml");
     let before = fs::read_to_string(&registry_path).unwrap();
 
-    tokio::task::spawn_blocking(move || {
-        Command::cargo_bin("braze-sync")
+    let stderr = tokio::task::spawn_blocking(move || {
+        let out = Command::cargo_bin("braze-sync")
             .unwrap()
             .env("BRAZE_API_KEY", "test-key")
             .args(["--config", config_path.to_str().unwrap()])
             .args(["export", "--resource", "custom_attribute"])
             .assert()
-            .failure();
+            .failure()
+            .get_output()
+            .clone();
+        String::from_utf8_lossy(&out.stderr).into_owned()
     })
     .await
     .unwrap();
+
+    // A bare `.failure()` also accepts a credential error, or a panic
+    // raised before the registry is ever read — it would pass with the
+    // fail-loud guarantee gone.
+    assert!(
+        stderr.contains("registry.yaml"),
+        "the failure must name the file it could not parse:\n{stderr}"
+    );
 
     assert_eq!(
         fs::read_to_string(&registry_path).unwrap(),
@@ -1216,4 +1277,191 @@ async fn export_ca_collapses_duplicate_registry_names_last_wins() {
         "content:\n{content}"
     );
     assert!(stderr.contains("kept 1"), "stderr:\n{stderr}");
+    // `diff` warns on this same input. Collapsing is the intended rule,
+    // but doing it silently would leave the command that performs the
+    // deletion as the quiet one of the two.
+    assert!(
+        stderr.contains("duplicate custom attribute name"),
+        "export must warn about the collapsed duplicate:\n{stderr}"
+    );
+}
+
+/// The rule that makes `--prune` safe to hand an operator: excluded
+/// means the remote is not consulted about that name, so the remote's
+/// silence is not evidence about it either. Without this test, moving
+/// the `excluded` extend inside the `if !prune` block passes every
+/// other test while `--prune` deletes out-of-band state and reports
+/// that the workspace did not have it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_ca_prune_keeps_excluded_entry() {
+    let server = mock_ca_server().await;
+    let tmp = tempfile::tempdir().unwrap();
+    // `shared` is returned by Braze *and* excluded — the quadrant that
+    // made the pre-review implementation misclassify it as registry-only.
+    let config_path =
+        common::write_config_with_ca_excludes(tmp.path(), &server.uri(), &["^shared$"]);
+    common::write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  - name: shared\n    type: number\n    description: out of band\n",
+    );
+    let registry_path = tmp.path().join("custom_attributes/registry.yaml");
+
+    let stderr = tokio::task::spawn_blocking(move || run_export(config_path, &["--prune"]))
+        .await
+        .unwrap();
+
+    let content = fs::read_to_string(&registry_path).unwrap();
+    assert!(
+        content.contains("shared"),
+        "--prune deleted an excluded entry:\n{content}"
+    );
+    assert!(
+        content.contains("out of band"),
+        "excluded entry was refreshed despite being excluded:\n{content}"
+    );
+    assert!(
+        stderr.contains("kept 1 excluded entr"),
+        "the excluded entry must be reported as excluded, not as removed \
+         or as registry-only:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("removed"),
+        "nothing was removable here:\n{stderr}"
+    );
+}
+
+/// `--prune` on a registry it could not read replaced an unknown number
+/// of entries. Reporting `0` there would be the same silent destructive
+/// write this change set out to stop, so the count says `unknown`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_ca_prune_reports_unknown_removal_count_on_unparseable_registry() {
+    let server = mock_ca_server().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    common::write_local_custom_attribute_registry(tmp.path(), "attributes:\n  - name: [oops\n");
+
+    let stderr = tokio::task::spawn_blocking(move || run_export(config_path, &["--prune"]))
+        .await
+        .unwrap();
+
+    assert!(
+        stderr.contains("entries removed: unknown"),
+        "a replacement of unknown size must say so:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("removed 0"),
+        "must not report zero removals for a file it could not read:\n{stderr}"
+    );
+}
+
+/// The `done: N resource(s) written` trailer is the only observable of
+/// `RegistryExport::written()`. Returning `refreshed` alone, or adding
+/// the pruned entries, both compile and leave every other test green.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_ca_written_count_covers_kept_entries() {
+    let server = mock_ca_server().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    common::write_local_custom_attribute_registry(tmp.path(), EXISTING_REGISTRY);
+
+    let stderr = tokio::task::spawn_blocking(move || run_export(config_path, &[]))
+        .await
+        .unwrap();
+
+    // 2 refreshed (`shared`, `remote_only`) + 1 kept (`registry_only`).
+    assert!(
+        stderr.contains("done: 3 resource(s) written"),
+        "the written count must include kept entries — they are in the \
+         file:\n{stderr}"
+    );
+}
+
+/// …and under `--prune` the dropped entry must not be counted as
+/// written, since it is not in the file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_ca_written_count_excludes_pruned_entries() {
+    let server = mock_ca_server().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    common::write_local_custom_attribute_registry(tmp.path(), EXISTING_REGISTRY);
+
+    let stderr = tokio::task::spawn_blocking(move || run_export(config_path, &["--prune"]))
+        .await
+        .unwrap();
+
+    assert!(
+        stderr.contains("done: 2 resource(s) written"),
+        "a pruned entry is not in the file and must not be counted:\n{stderr}"
+    );
+}
+
+/// Both directions of the inert-`--prune` warning. Inverting its
+/// condition would print "has no effect" on the one kind it does affect,
+/// and stay silent on the kinds where it genuinely does nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_prune_warns_only_when_it_cannot_apply() {
+    let server = mock_ca_server().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content_blocks": [],
+            "message": "success"
+        })))
+        .mount(&server)
+        .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    let for_cb = config_path.clone();
+
+    let cb_stderr = tokio::task::spawn_blocking(move || {
+        let out = Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .env("RUST_LOG", "warn")
+            .args(["--config", for_cb.to_str().unwrap()])
+            .args(["export", "--resource", "content_block", "--prune"])
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    })
+    .await
+    .unwrap();
+    assert!(
+        cb_stderr.contains("--prune affects custom_attribute only"),
+        "an inert --prune must say so:\n{cb_stderr}"
+    );
+
+    let ca_stderr = tokio::task::spawn_blocking(move || run_export(config_path, &["--prune"]))
+        .await
+        .unwrap();
+    assert!(
+        !ca_stderr.contains("no effect"),
+        "--prune does apply here; the warning must not fire:\n{ca_stderr}"
+    );
+}
+
+/// The plural arm of the count wording. Every other test happens to use
+/// exactly one entry, so `plural_y` could return "y" unconditionally.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_ca_kept_count_pluralizes() {
+    let server = mock_ca_server().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    common::write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n\
+         \x20 - name: registry_only_a\n    type: string\n\
+         \x20 - name: registry_only_b\n    type: string\n",
+    );
+
+    let stderr = tokio::task::spawn_blocking(move || run_export(config_path, &[]))
+        .await
+        .unwrap();
+
+    assert!(
+        stderr.contains("kept 2 registry-only entries"),
+        "stderr:\n{stderr}"
+    );
 }
