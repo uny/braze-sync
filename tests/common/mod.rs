@@ -114,6 +114,32 @@ pub fn write_local_custom_attribute_registry(dir: &Path, yaml_body: &str) {
     fs::write(ca_dir.join("registry.yaml"), yaml_body).unwrap();
 }
 
+/// Write a config whose `custom_attribute` kind carries
+/// `exclude_patterns`. Used to assert that an excluded name already in
+/// the registry survives `export` rather than being dropped with the
+/// rest of the non-remote entries.
+pub fn write_config_with_ca_excludes(dir: &Path, server_uri: &str, patterns: &[&str]) -> PathBuf {
+    let config_path = dir.join("braze-sync.config.yaml");
+    let mut yaml = format!(
+        "version: 1
+default_environment: test
+environments:
+  test:
+    api_endpoint: {server_uri}
+    api_key_env: BRAZE_API_KEY
+resources:
+  custom_attribute:
+    path: custom_attributes/registry.yaml
+    exclude_patterns:
+"
+    );
+    for p in patterns {
+        yaml.push_str(&format!("      - '{p}'\n"));
+    }
+    fs::write(&config_path, yaml).unwrap();
+    config_path
+}
+
 /// Write a local tag registry to `<dir>/tags/registry.yaml`.
 pub fn write_local_tag_registry(dir: &Path, yaml_body: &str) {
     let t_dir = dir.join("tags");

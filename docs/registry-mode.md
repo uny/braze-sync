@@ -90,7 +90,9 @@ pretends to be more powerful than it is.
 
    This pulls every attribute Braze currently knows about into
    `custom_attributes/registry.yaml`, writing `description` fields as
-   empty strings you can then fill in by hand.
+   empty strings you can then fill in by hand. Re-running it later
+   refreshes those entries and keeps any the workspace no longer
+   returns — see [What `export` writes](#what-export-writes).
 
 2. **Treat the registry as documentation**. The `description` field is
    the main reason the registry exists: it gives engineers a
@@ -106,6 +108,57 @@ pretends to be more powerful than it is.
 4. **Deprecate deliberately**. When an attribute is truly retired, mark
    it `deprecated: true` in the registry and run `apply --confirm`.
    Braze will stop surfacing it in the segment-builder UI.
+
+## What `export` writes
+
+`export` refreshes the entries Braze returned and **keeps the rest**.
+
+That distinction only exists for this resource kind. Every other kind is
+directory-backed — one file per catalog, content block, or template — so
+`export` writing the resources Braze returned leaves a local-only
+resource untouched for free. The registry is a single file, so a write
+here decides membership for the whole set, and the same behaviour has to
+be spelled out rather than falling out of the layout.
+
+Keeping is the correct default because absence is not evidence. Braze
+creates an attribute the first time `/users/track` carries it, so an
+entry the queried workspace does not return may simply have seen no
+traffic there yet — and a registry shared by environments that point at
+different Braze workspaces has such entries by construction. It is also
+what makes the `type mismatch: … (run export to update)` hint safe to
+follow: the hint asks you to run `export`, and before this it asked you
+to delete every entry the other workspace owns.
+
+For entries Braze *did* return, the remote wins wholesale — `type`,
+`description` and `deprecated` are all overwritten. That is what
+corrects a stale entry, and it is why the hint above works at all. Only
+membership is preserved.
+
+Two consequences worth knowing:
+
+- Names matching `exclude_patterns` are kept, not refreshed. "Managed
+  out of band" applies in both directions.
+- A `registry.yaml` that no longer parses **fails** the export rather
+  than being overwritten. Merging has to read the file, and quietly
+  falling back to a full rewrite would delete the whole registry over a
+  one-character YAML slip.
+
+### `export --prune`
+
+Pass `--prune` for the other intent — "the remote is the truth, rewrite
+the file":
+
+```bash
+braze-sync export --resource custom_attribute --prune
+```
+
+This drops every entry the queried workspace does not return, and
+reports how many. It is also the way out of an unparseable registry: it
+is the one mode that does not read the existing file.
+
+Do not put `--prune` in a scheduled job that runs against a single
+environment unless that environment's workspace really is the whole
+truth for the registry.
 
 ## What registry mode is *not*
 

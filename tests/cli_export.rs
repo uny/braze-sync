@@ -954,3 +954,266 @@ async fn export_existing_email_template_without_placeholders_skips_templatize() 
         "must not introduce placeholders when local email template opts out, got:\n{html}"
     );
 }
+
+// =====================================================================
+// Custom Attribute — export against an *existing* registry
+//
+// The tests above start from no `registry.yaml`, so none of them can
+// observe what a write does to entries already in the file. That was the
+// gap behind #117: `export` replaced the file wholesale, silently
+// deleting every entry the queried workspace did not return. These tests
+// pin the membership rules instead of the file contents alone.
+//
+// Shared shape: Braze returns `remote_only` and `shared` (the latter
+// with a type that disagrees with the registry); the registry also holds
+// `registry_only`, which no workspace in this test has.
+// =====================================================================
+
+/// Two attributes, one of them (`shared`) typed `string` remotely while
+/// the local registry declares `number` — the exact state `diff` reports
+/// as `ℹ type mismatch … (run export to update)`.
+async fn mock_ca_server() -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/custom_attributes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "attributes": [
+                { "name": "shared", "data_type": "string", "status": "Active" },
+                { "name": "remote_only", "data_type": "number", "status": "Active" }
+            ],
+            "message": "success"
+        })))
+        .mount(&server)
+        .await;
+    server
+}
+
+const EXISTING_REGISTRY: &str = "\
+attributes:
+  - name: registry_only
+    type: boolean
+    description: no /users/track traffic in this workspace yet
+  - name: shared
+    type: number
+";
+
+fn run_export(config_path: std::path::PathBuf, extra: &[&str]) -> String {
+    let mut cmd = Command::cargo_bin("braze-sync").unwrap();
+    cmd.env("BRAZE_API_KEY", "test-key")
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["export", "--resource", "custom_attribute"]);
+    for a in extra {
+        cmd.arg(a);
+    }
+    let out = cmd.assert().success().get_output().clone();
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+/// #117: an entry present in the registry but absent from the queried
+/// workspace must survive. Braze creates attributes implicitly on first
+/// `/users/track` traffic, so absence is not evidence the entry is wrong.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_ca_keeps_registry_only_entry() {
+    let server = mock_ca_server().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    common::write_local_custom_attribute_registry(tmp.path(), EXISTING_REGISTRY);
+    let registry_path = tmp.path().join("custom_attributes/registry.yaml");
+
+    let stderr = tokio::task::spawn_blocking(move || run_export(config_path, &[]))
+        .await
+        .unwrap();
+
+    let content = fs::read_to_string(&registry_path).unwrap();
+    assert!(
+        content.contains("registry_only"),
+        "registry-only entry was dropped:\n{content}"
+    );
+    assert!(content.contains("remote_only"), "content:\n{content}");
+    assert!(content.contains("shared"), "content:\n{content}");
+    // The description on a kept entry is local-only state; nothing
+    // refreshed it, so it must come through verbatim.
+    assert!(
+        content.contains("no /users/track traffic in this workspace yet"),
+        "content:\n{content}"
+    );
+    // The count must not hide the kept entries behind "exported N".
+    assert!(
+        stderr.contains("refreshed 2") && stderr.contains("kept 1"),
+        "stderr:\n{stderr}"
+    );
+}
+
+/// The promise `diff`'s `type mismatch … (run export to update)` hint
+/// makes. Merging must not turn export into a no-op for entries Braze
+/// *did* return: those are still overwritten wholesale.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_ca_still_corrects_a_stale_type() {
+    let server = mock_ca_server().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    common::write_local_custom_attribute_registry(tmp.path(), EXISTING_REGISTRY);
+    let registry_path = tmp.path().join("custom_attributes/registry.yaml");
+
+    tokio::task::spawn_blocking(move || run_export(config_path, &[]))
+        .await
+        .unwrap();
+
+    let content = fs::read_to_string(&registry_path).unwrap();
+    let shared = content
+        .split("- name: shared")
+        .nth(1)
+        .expect("shared entry present");
+    assert!(
+        shared.contains("type: string"),
+        "local `number` should have been corrected to Braze's `string`:\n{content}"
+    );
+    assert!(
+        !shared.starts_with("\n    type: number"),
+        "stale type survived:\n{content}"
+    );
+}
+
+/// `exclude_patterns` means "managed out of band" — the docs say such
+/// names are skipped by export. Before #117 they were skipped only in
+/// the sense that they were filtered out of the remote list *and then
+/// deleted from the file*.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_ca_keeps_excluded_entry_already_in_registry() {
+    let server = mock_ca_server().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path =
+        common::write_config_with_ca_excludes(tmp.path(), &server.uri(), &["^remote_only$"]);
+    common::write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  - name: remote_only\n    type: number\n    description: managed out of band\n",
+    );
+    let registry_path = tmp.path().join("custom_attributes/registry.yaml");
+
+    tokio::task::spawn_blocking(move || run_export(config_path, &[]))
+        .await
+        .unwrap();
+
+    let content = fs::read_to_string(&registry_path).unwrap();
+    assert!(
+        content.contains("remote_only"),
+        "excluded entry was dropped from the registry:\n{content}"
+    );
+    // Excluded means out of band in both directions: it is kept, not
+    // refreshed, so the local annotation stays.
+    assert!(
+        content.contains("managed out of band"),
+        "excluded entry was refreshed from Braze:\n{content}"
+    );
+}
+
+/// `--prune` restores the pre-#117 rebuild for operators who do mean
+/// "the remote is the truth".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_ca_prune_drops_registry_only_entry() {
+    let server = mock_ca_server().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    common::write_local_custom_attribute_registry(tmp.path(), EXISTING_REGISTRY);
+    let registry_path = tmp.path().join("custom_attributes/registry.yaml");
+
+    let stderr = tokio::task::spawn_blocking(move || run_export(config_path, &["--prune"]))
+        .await
+        .unwrap();
+
+    let content = fs::read_to_string(&registry_path).unwrap();
+    assert!(
+        !content.contains("registry_only"),
+        "--prune should have dropped it:\n{content}"
+    );
+    assert!(content.contains("remote_only"), "content:\n{content}");
+    // Silence is what made this a data-loss bug; the count is the fix.
+    assert!(
+        stderr.contains("removed 1"),
+        "prune must say what it removed:\n{stderr}"
+    );
+}
+
+/// Merging needs to read the file, so a registry that no longer parses
+/// fails the command instead of being silently overwritten. The previous
+/// behaviour swallowed a one-character YAML slip and took 82 entries
+/// with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_ca_fails_loudly_on_unparseable_registry() {
+    let server = mock_ca_server().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    common::write_local_custom_attribute_registry(tmp.path(), "attributes:\n  - name: [oops\n");
+    let registry_path = tmp.path().join("custom_attributes/registry.yaml");
+    let before = fs::read_to_string(&registry_path).unwrap();
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["export", "--resource", "custom_attribute"])
+            .assert()
+            .failure();
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(&registry_path).unwrap(),
+        before,
+        "a failed export must leave the file alone"
+    );
+}
+
+/// …and `--prune` stays usable on that file, because it is the way out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_ca_prune_recovers_an_unparseable_registry() {
+    let server = mock_ca_server().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    common::write_local_custom_attribute_registry(tmp.path(), "attributes:\n  - name: [oops\n");
+    let registry_path = tmp.path().join("custom_attributes/registry.yaml");
+
+    tokio::task::spawn_blocking(move || run_export(config_path, &["--prune"]))
+        .await
+        .unwrap();
+
+    let content = fs::read_to_string(&registry_path).unwrap();
+    assert!(content.contains("remote_only"), "content:\n{content}");
+    assert!(content.contains("shared"), "content:\n{content}");
+}
+
+/// `diff` collapses duplicate registry names last-wins. `export` has to
+/// agree, or the two commands cannot converge: whichever entry export
+/// kept, diff would keep reporting the other as drift.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_ca_collapses_duplicate_registry_names_last_wins() {
+    let server = mock_ca_server().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    common::write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n\
+         \x20 - name: registry_only\n    type: string\n    description: first\n\
+         \x20 - name: registry_only\n    type: boolean\n    description: last\n",
+    );
+    let registry_path = tmp.path().join("custom_attributes/registry.yaml");
+
+    let stderr = tokio::task::spawn_blocking(move || run_export(config_path, &[]))
+        .await
+        .unwrap();
+
+    let content = fs::read_to_string(&registry_path).unwrap();
+    assert_eq!(
+        content.matches("- name: registry_only").count(),
+        1,
+        "duplicate should collapse to one entry:\n{content}"
+    );
+    assert!(content.contains("description: last"), "content:\n{content}");
+    assert!(
+        !content.contains("description: first"),
+        "content:\n{content}"
+    );
+    assert!(stderr.contains("kept 1"), "stderr:\n{stderr}");
+}

@@ -5,7 +5,8 @@ use crate::braze::BrazeClient;
 use crate::config::{is_excluded, ResolvedConfig};
 use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io, tag_io};
 use crate::resource::{
-    ContentBlock, CustomAttributeRegistry, EmailTemplate, ResourceKind, Tag, TagRegistry,
+    ContentBlock, CustomAttribute, CustomAttributeRegistry, EmailTemplate, ResourceKind, Tag,
+    TagRegistry,
 };
 use crate::values::has_placeholders;
 use crate::values::templatize::{templatize_body, FieldKind};
@@ -13,7 +14,7 @@ use anyhow::Context as _;
 use clap::Args;
 use futures::stream::{StreamExt, TryStreamExt};
 use regex_lite::Regex;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use super::{selected_kinds, warn_if_name_excluded, FETCH_CONCURRENCY};
@@ -29,6 +30,22 @@ pub struct ExportArgs {
     /// resource. Requires `--resource`.
     #[arg(long, requires = "resource")]
     pub name: Option<String>,
+
+    /// Rebuild the Custom Attribute registry from the queried workspace
+    /// alone, dropping entries that workspace does not have.
+    ///
+    /// Without this, `export` refreshes the entries Braze returned and
+    /// keeps the rest: an attribute materializes on first `/users/track`
+    /// traffic, so its absence from one workspace is not evidence the
+    /// registry entry is wrong. Pass `--prune` when you do mean "the
+    /// remote is the truth, rewrite the file" — and note that it is also
+    /// the recovery path for a `registry.yaml` that no longer parses,
+    /// because it is the one mode that does not read the existing file.
+    ///
+    /// Affects `custom_attribute` only; no other resource kind replaces
+    /// local state on export.
+    #[arg(long)]
+    pub prune: bool,
 }
 
 pub async fn run(
@@ -43,6 +60,16 @@ pub async fn run(
     let tags_path = config_dir.join(&resolved.resources.tag.path);
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
+
+    // `--prune` only means something for the single-file Custom Attribute
+    // registry. Silently accepting it elsewhere would let an operator
+    // believe a rebuild happened.
+    if args.prune && !kinds.contains(&ResourceKind::CustomAttribute) {
+        eprintln!(
+            "⚠ --prune affects custom_attribute only; it has no effect on \
+             the selected resource kind(s)"
+        );
+    }
 
     let mut total_written: usize = 0;
     for kind in kinds {
@@ -98,15 +125,16 @@ pub async fn run(
                          (the registry is a single file); exporting all attributes"
                     );
                 }
-                let n = export_custom_attributes(
+                let outcome = export_custom_attributes(
                     &client,
                     &custom_attributes_path,
                     resolved.excludes_for(ResourceKind::CustomAttribute),
+                    args.prune,
                 )
                 .await
                 .context("exporting custom_attribute")?;
-                eprintln!("✓ custom_attribute: exported {n} attribute(s)");
-                total_written += n;
+                eprintln!("{}", outcome.summary_line());
+                total_written += outcome.written();
             }
             ResourceKind::Tag => {
                 if args.name.is_some() {
@@ -371,19 +399,134 @@ pub(crate) fn collect_local_tag_references(
     Ok(tags)
 }
 
+/// What one Custom Attribute registry export did to the file.
+///
+/// `export` is the only writer of `registry.yaml`, and the registry is
+/// the only resource stored as a single file — so it is the only kind
+/// where a write can *remove* local state. The counts are reported
+/// separately because a single "N attributes written" count cannot say
+/// whether entries disappeared.
+struct RegistryExport {
+    /// Entries taken from the Braze response.
+    refreshed: usize,
+    /// Entries kept because the queried workspace does not have them.
+    /// Zero under `--prune`.
+    kept: usize,
+    /// Entries dropped because the queried workspace does not have them.
+    /// Non-zero only under `--prune`.
+    removed: usize,
+}
+
+impl RegistryExport {
+    /// Entries actually in the file afterwards.
+    fn written(&self) -> usize {
+        self.refreshed + self.kept
+    }
+
+    fn summary_line(&self) -> String {
+        if self.removed > 0 {
+            format!(
+                "✓ custom_attribute: refreshed {} from Braze, removed {} \
+                 registry entr{} this workspace does not have (--prune)",
+                self.refreshed,
+                self.removed,
+                if self.removed == 1 { "y" } else { "ies" },
+            )
+        } else if self.kept > 0 {
+            format!(
+                "✓ custom_attribute: refreshed {} from Braze, kept {} \
+                 registry-only entr{}",
+                self.refreshed,
+                self.kept,
+                if self.kept == 1 { "y" } else { "ies" },
+            )
+        } else {
+            format!(
+                "✓ custom_attribute: exported {} attribute(s)",
+                self.refreshed
+            )
+        }
+    }
+}
+
+/// Refresh the Custom Attribute registry from Braze.
+///
+/// Unlike every other resource kind, the registry is a single file, so a
+/// write here decides membership for the whole set rather than for one
+/// resource. Directory-backed kinds preserve a local-only resource for
+/// free — `export` simply never writes that file — and this function
+/// matches that behaviour explicitly: entries the queried workspace does
+/// not return are kept, not dropped.
+///
+/// That is not a courtesy. Braze has no create-attribute endpoint; an
+/// attribute exists once `/users/track` has carried it. A registry entry
+/// missing from one workspace therefore means "no traffic yet here", not
+/// "wrong entry" — and a registry shared by environments that point at
+/// different workspaces has such entries by construction. Dropping them
+/// would also make the `type mismatch: … (run export to update)` hint
+/// `diff` prints a destructive instruction.
+///
+/// Entries Braze *did* return are overwritten wholesale, which is what
+/// keeps that hint's promise: a stale `type` (or `description`, or
+/// `deprecated`) is corrected here. Only membership is preserved.
+///
+/// `--prune` restores the "the remote is the truth" rebuild.
 async fn export_custom_attributes(
     client: &BrazeClient,
     registry_path: &Path,
     excludes: &[Regex],
-) -> anyhow::Result<usize> {
-    let attrs: Vec<_> = client
+    prune: bool,
+) -> anyhow::Result<RegistryExport> {
+    let remote: Vec<CustomAttribute> = client
         .list_custom_attributes()
         .await?
         .into_iter()
         .filter(|a| !is_excluded(&a.name, excludes))
         .collect();
-    let count = attrs.len();
-    let registry = CustomAttributeRegistry { attributes: attrs };
+
+    // `--prune` must not fail on an unparseable registry: it is the
+    // documented way to replace one, so reading it can only be
+    // best-effort there — the load feeds the "removed N" count and
+    // nothing else. Without `--prune` the error propagates: merging
+    // requires knowing what is in the file, and silently falling back to
+    // a full replacement would restore the data loss this function
+    // exists to prevent, on precisely the input (a one-character YAML
+    // slip) where it is least expected.
+    let local = if prune {
+        custom_attribute_io::load_registry(registry_path).unwrap_or(None)
+    } else {
+        custom_attribute_io::load_registry(registry_path)?
+    };
+
+    let remote_names: BTreeSet<&str> = remote.iter().map(|a| a.name.as_str()).collect();
+
+    // Collapse duplicate local names last-wins, matching
+    // `diff::custom_attribute::diff`. Disagreeing would leave the two
+    // commands unable to converge: whichever entry `export` kept, `diff`
+    // would keep reporting the other one as drift.
+    let local_only: BTreeMap<&str, &CustomAttribute> = local
+        .iter()
+        .flat_map(|r| r.attributes.iter())
+        .filter(|a| !remote_names.contains(a.name.as_str()))
+        .map(|a| (a.name.as_str(), a))
+        .collect();
+
+    let refreshed = remote.len();
+    let local_only_count = local_only.len();
+
+    let mut attributes = remote;
+    if !prune {
+        attributes.extend(local_only.into_values().cloned());
+    }
+
+    // `save_registry` normalizes (sorts by name), so the merged order
+    // does not leak into the file.
+    let registry = CustomAttributeRegistry { attributes };
     custom_attribute_io::save_registry(registry_path, &registry)?;
-    Ok(count)
+
+    Ok(RegistryExport {
+        refreshed,
+        kept: if prune { 0 } else { local_only_count },
+        removed: if prune { local_only_count } else { 0 },
+    })
 }
