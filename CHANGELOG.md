@@ -69,13 +69,19 @@ file formats, JSON output, exit codes) for the full v1.x line.
   basis would delete out-of-band state while reporting that the
   workspace did not have it.
 
-  `--prune` is also the recovery path for a `registry.yaml` that no
-  longer parses: it is the one mode that tolerates a parse error. It
-  still reads the file when it can, so it can report how many entries
-  it dropped; when that read fails it says the count is **unknown**
-  rather than reporting zero. A read that fails for any other reason —
-  a permission fault, an unreadable inode — aborts instead. Swallowing
-  those would be a silent destructive write of exactly the kind this
+  `--prune` is also the recovery path for a corrupt `registry.yaml`. It
+  tolerates content corruption — bad YAML syntax, valid YAML of the
+  wrong shape, or bytes that are not UTF-8 at all (those are rejected
+  by the read, before the parser ever sees them, so they arrive as an
+  I/O error rather than a parse error and had to be admitted
+  explicitly). It still reads the file when it can, so it can report
+  how many entries it dropped; when the read fails it says the count is
+  **unknown** rather than reporting zero.
+
+  A read that fails because the file cannot be *reached* — a permission
+  fault, a path that is not a file — aborts instead, `--prune`
+  included. A registry nobody can read is not one anyone asked to
+  replace, and swallowing that is the silent destructive write this
   release set out to stop.
 
 ### Changed

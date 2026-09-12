@@ -1002,9 +1002,13 @@ fn run_export(config_path: std::path::PathBuf, extra: &[&str]) -> String {
     // Pin the log level: the binary defaults to `warn` on stderr, but
     // `EnvFilter::try_from_default_env` would honour a RUST_LOG inherited
     // from the developer's shell and silence the warnings asserted below.
+    // `--no-color` because the tracing layer keeps ANSI on when stderr is
+    // a pipe, and the escapes land between a field's name and its value
+    // (`count\x1b[0m\x1b[2m=\x1b[0m1`), so substring assertions on a
+    // structured field cannot match without it.
     cmd.env("BRAZE_API_KEY", "test-key")
         .env("RUST_LOG", "warn")
-        .args(["--config", config_path.to_str().unwrap()])
+        .args(["--config", config_path.to_str().unwrap(), "--no-color"])
         .args(["export", "--resource", "custom_attribute"]);
     for a in extra {
         cmd.arg(a);
@@ -1074,12 +1078,13 @@ async fn export_ca_still_corrects_a_stale_type() {
         Some("string"),
         "local `number` should have been corrected to Braze's `string`:\n{content}"
     );
-    // Pin the neighbours too. `entry_field` is only worth more than a
-    // positional slice if it actually isolates one entry, and these two
-    // would come out wrong if it bled across entry boundaries —
-    // `remote_only` is legitimately `number` here, which is why a
-    // file-wide `!contains("type: number")` is the wrong assertion and
-    // not a stronger one.
+    // Pin the neighbours too. `remote_only` is legitimately `number`
+    // here, which is why a file-wide `!contains("type: number")` is the
+    // wrong assertion rather than a stronger one. (These three do not by
+    // themselves exercise `entry_field`'s entry-boundary reset — `type`
+    // is the first field of every entry, so a helper that never reset
+    // would still answer them correctly. `entry_field_stops_at_the_next_entry`
+    // covers that.)
     assert_eq!(
         entry_field(&content, "remote_only", "type").as_deref(),
         Some("number"),
@@ -1090,6 +1095,25 @@ async fn export_ca_still_corrects_a_stale_type() {
         Some("boolean"),
         "a kept entry's own type must not be touched:\n{content}"
     );
+}
+
+/// `entry_field` must stop at the next entry, not run past it. Without
+/// this the helper's one guarantee over a positional slice is untested:
+/// every assertion built on it asks for `type`, which is each entry's
+/// first field and so answerable even by a helper that never resets.
+#[test]
+fn entry_field_stops_at_the_next_entry() {
+    let yaml = "attributes:\n\
+                - name: a\n  type: string\n\
+                - name: b\n  type: number\n  description: only b has one\n";
+    // `a` has no description; the next entry does.
+    assert_eq!(entry_field(yaml, "a", "description"), None);
+    assert_eq!(
+        entry_field(yaml, "b", "description").as_deref(),
+        Some("only b has one")
+    );
+    assert_eq!(entry_field(yaml, "a", "type").as_deref(), Some("string"));
+    assert_eq!(entry_field(yaml, "missing", "type"), None);
 }
 
 /// One field of one entry in a written `registry.yaml`, located by
@@ -1216,8 +1240,10 @@ async fn export_ca_fails_loudly_on_unparseable_registry() {
     // raised before the registry is ever read — it would pass with the
     // fail-loud guarantee gone.
     assert!(
-        stderr.contains("registry.yaml"),
-        "the failure must name the file it could not parse:\n{stderr}"
+        stderr.contains("YAML parse error in") && stderr.contains("registry.yaml"),
+        "the failure must be the parse error, naming the file — a bare \
+         `.failure()` also accepts a credential error or a write-side \
+         failure on the same path:\n{stderr}"
     );
 
     assert_eq!(
@@ -1253,10 +1279,14 @@ async fn export_ca_collapses_duplicate_registry_names_last_wins() {
     let server = mock_ca_server().await;
     let tmp = tempfile::tempdir().unwrap();
     let config_path = common::write_config(tmp.path(), &server.uri());
+    // Three entries, one name: surplus entries = 2, duplicated names = 1.
+    // Two entries would make both counts 1 and the assertion below could
+    // not tell the two counting rules apart.
     common::write_local_custom_attribute_registry(
         tmp.path(),
         "attributes:\n\
          \x20 - name: registry_only\n    type: string\n    description: first\n\
+         \x20 - name: registry_only\n    type: number\n    description: middle\n\
          \x20 - name: registry_only\n    type: boolean\n    description: last\n",
     );
     let registry_path = tmp.path().join("custom_attributes/registry.yaml");
@@ -1283,6 +1313,98 @@ async fn export_ca_collapses_duplicate_registry_names_last_wins() {
     assert!(
         stderr.contains("duplicate custom attribute name"),
         "export must warn about the collapsed duplicate:\n{stderr}"
+    );
+    assert!(
+        !content.contains("description: middle"),
+        "content:\n{content}"
+    );
+    // One duplicated name, two surplus entries. The count must describe
+    // names: surplus-entry counting would print `count=2` here, which an
+    // operator reads as two duplicated names.
+    assert!(
+        stderr.contains("count=1"),
+        "the warning must count names, not surplus entries:\n{stderr}"
+    );
+}
+
+/// `--prune`'s recovery path has to cover content corruption, not just
+/// YAML syntax: bytes that are not UTF-8 are rejected by
+/// `read_to_string` before the parser sees them, so they arrive as an
+/// I/O error and would otherwise abort the one command documented to
+/// replace such a file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_ca_prune_recovers_a_non_utf8_registry() {
+    let server = mock_ca_server().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    let ca_dir = tmp.path().join("custom_attributes");
+    fs::create_dir_all(&ca_dir).unwrap();
+    let registry_path = ca_dir.join("registry.yaml");
+    fs::write(&registry_path, [b'a', b't', b't', b'r', b':', b' ', 0x80]).unwrap();
+
+    let stderr = tokio::task::spawn_blocking(move || run_export(config_path, &["--prune"]))
+        .await
+        .unwrap();
+
+    let content = fs::read_to_string(&registry_path).unwrap();
+    assert!(content.contains("remote_only"), "content:\n{content}");
+    assert!(
+        stderr.contains("entries removed: unknown"),
+        "the count is unknowable here and must say so:\n{stderr}"
+    );
+}
+
+/// …but a registry that cannot be *reached* is not one anyone asked to
+/// replace, so `--prune` still aborts on a non-content I/O fault and
+/// leaves the file alone.
+///
+/// Uses permissions rather than a directory-in-place: a directory makes
+/// the *write* fail too, so the command exits non-zero either way and
+/// the test cannot tell a correct abort from a swallowed read error. An
+/// unreadable-but-replaceable file is the case with a real difference —
+/// it is also the case that made the original `unwrap_or(None)` a silent
+/// destructive write.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_ca_prune_aborts_when_the_registry_cannot_be_read() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let server = mock_ca_server().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    let before = "attributes:\n  - name: registry_only\n    type: string\n";
+    common::write_local_custom_attribute_registry(tmp.path(), before);
+    let registry_path = tmp.path().join("custom_attributes/registry.yaml");
+    fs::set_permissions(&registry_path, fs::Permissions::from_mode(0o000)).unwrap();
+
+    // Root ignores the mode bits, so the precondition would not hold and
+    // the test would assert nothing. Verify it rather than assume it.
+    if fs::read_to_string(&registry_path).is_ok() {
+        eprintln!("skipping: this user can read a 0o000 file (running as root?)");
+        return;
+    }
+
+    let for_cmd = config_path.clone();
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .env("RUST_LOG", "warn")
+            .args(["--config", for_cmd.to_str().unwrap(), "--no-color"])
+            .args(["export", "--resource", "custom_attribute", "--prune"])
+            .assert()
+            .failure();
+    })
+    .await
+    .unwrap();
+
+    // The discriminating assertion: the parent directory is writable, so
+    // a swallowed read error would have let `write_atomic` rename the
+    // remote set over this file.
+    fs::set_permissions(&registry_path, fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(
+        fs::read_to_string(&registry_path).unwrap(),
+        before,
+        "an unreadable registry must not be replaced"
     );
 }
 
@@ -1327,6 +1449,13 @@ async fn export_ca_prune_keeps_excluded_entry() {
     assert!(
         !stderr.contains("removed"),
         "nothing was removable here:\n{stderr}"
+    );
+    // The only assertion anywhere on `written()`'s `kept_excluded` term:
+    // `remote_only` from Braze plus the kept `shared`. Without this,
+    // dropping that term from the sum leaves every other test green.
+    assert!(
+        stderr.contains("done: 2 resource(s) written"),
+        "an excluded entry is in the file and must be counted:\n{stderr}"
     );
 }
 
@@ -1418,7 +1547,7 @@ async fn export_prune_warns_only_when_it_cannot_apply() {
             .unwrap()
             .env("BRAZE_API_KEY", "test-key")
             .env("RUST_LOG", "warn")
-            .args(["--config", for_cb.to_str().unwrap()])
+            .args(["--config", for_cb.to_str().unwrap(), "--no-color"])
             .args(["export", "--resource", "content_block", "--prune"])
             .assert()
             .success()

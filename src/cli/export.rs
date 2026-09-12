@@ -469,6 +469,21 @@ impl RegistryExport {
     }
 }
 
+/// Whether a failed registry load means "the file's contents are
+/// corrupt" rather than "the file could not be reached".
+///
+/// Only the first is something `--prune` is asked to recover from. A
+/// permission fault or a missing directory is not a registry anyone
+/// asked to replace, and treating it as one would be a silent
+/// destructive write.
+fn is_corrupt_content(e: &crate::error::Error) -> bool {
+    match e {
+        crate::error::Error::YamlParse { .. } => true,
+        crate::error::Error::Io(io) => io.kind() == std::io::ErrorKind::InvalidData,
+        _ => false,
+    }
+}
+
 fn plural_y(n: usize) -> &'static str {
     if n == 1 {
         "y"
@@ -532,7 +547,11 @@ async fn export_custom_attributes(
     let mut count_unknown = false;
     let local = match custom_attribute_io::load_registry(registry_path) {
         Ok(local) => local,
-        Err(crate::error::Error::YamlParse { .. }) if prune => {
+        // Content corruption: bad YAML syntax, valid YAML of the wrong
+        // shape, or bytes that are not UTF-8 at all — `read_to_string`
+        // rejects those before the parser ever sees them, so they arrive
+        // as `Io(InvalidData)` rather than `YamlParse`.
+        Err(e) if prune && is_corrupt_content(&e) => {
             count_unknown = true;
             None
         }
@@ -545,12 +564,15 @@ async fn export_custom_attributes(
     // kept, `diff` would keep reporting the other one as drift.
     let mut excluded: BTreeMap<&str, &CustomAttribute> = BTreeMap::new();
     let mut registry_only: BTreeMap<&str, &CustomAttribute> = BTreeMap::new();
-    let mut duplicates = 0usize;
     let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut duplicated: BTreeSet<&str> = BTreeSet::new();
     for a in local.iter().flat_map(|r| r.attributes.iter()) {
         let name = a.name.as_str();
         if !seen.insert(name) {
-            duplicates += 1;
+            // Count names, not surplus entries: three entries for one
+            // name is one duplicated name, and a `count` field that says
+            // 2 there would be read as two names.
+            duplicated.insert(name);
         }
         if is_excluded(name, excludes) {
             excluded.insert(name, a);
@@ -558,13 +580,21 @@ async fn export_custom_attributes(
             registry_only.insert(name, a);
         }
     }
-    if duplicates > 0 {
+    if !duplicated.is_empty() {
         // `diff` warns on the same input; staying silent here would make
         // the command that actually drops the losing entry the quiet one.
+        //
+        // The wording deliberately differs from `diff`'s "last entry
+        // wins". That is true on `diff`'s side, but not always here: if
+        // the duplicated name is one Braze returned and it is not
+        // excluded, neither local entry survives — the remote value
+        // overwrites both. What holds in every case is that one entry
+        // per name is written.
         tracing::warn!(
-            count = duplicates,
+            count = duplicated.len(),
             "duplicate custom attribute name(s) in local registry; \
-             last entry wins (run `validate` to catch this)"
+             only one entry per name is written (run `validate` to \
+             catch this)"
         );
     }
 

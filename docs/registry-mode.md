@@ -190,11 +190,14 @@ reports how many. Entries matching `exclude_patterns` are kept even
 here: excluded means the remote is not consulted about them, so the
 remote's silence is not evidence about them either.
 
-It is also the way out of an unparseable registry — it is the one mode
-that tolerates a parse error. It still reads the file when it can, so it
+It is also the way out of a corrupt registry. `--prune` tolerates
+content corruption — bad YAML syntax, valid YAML of the wrong shape, or
+bytes that are not UTF-8 — and still reads the file when it can, so it
 can say how many entries it dropped; when the read fails it reports the
-count as unknown rather than as zero. A read that fails for any *other*
-reason (a permission fault, an unreadable inode) aborts instead: a
+count as unknown rather than as zero.
+
+A read that fails because the file cannot be *reached* — a permission
+fault, a path that is not a file — aborts instead, `--prune` included. A
 registry nobody can read is not a registry anyone asked to replace.
 
 Do not put `--prune` in a scheduled job that runs against a single
