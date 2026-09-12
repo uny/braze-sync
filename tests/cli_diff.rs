@@ -1306,3 +1306,44 @@ async fn present_in_git_only_hint_does_not_assume_a_single_workspace() {
     );
     assert!(!stdout.contains("likely a typo"), "stdout: {stdout}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn only_drift_keeps_report_only_rows_and_trailer() {
+    // `--only-drift` hides in-sync blocks. A report-only row is drift —
+    // it must survive the filter, and so must the trailer that explains
+    // why it did not exit 2.
+    let server = drift_tier_server(json!([])).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_custom_attribute_registry(tmp.path(), LOCAL_REGISTRY);
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args([
+                "diff",
+                "--resource",
+                "custom_attribute",
+                "--only-drift",
+                "--fail-on-drift",
+                "--no-color",
+            ])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "expected exit 0");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("Custom Attribute: no_traffic_here"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("1 change(s) reported only"),
+        "stdout: {stdout}"
+    );
+}
