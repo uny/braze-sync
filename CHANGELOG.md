@@ -32,13 +32,16 @@ file formats, JSON output, exit codes) for the full v1.x line.
   **What this costs, stated plainly.** A pipeline that relied on exit 2
   to catch a typo in the registry goes green after upgrading — and so
   does one that relied on it to catch an attribute somebody removed on
-  the Braze side, which lands in the same state. The row is still
-  printed and still in the JSON, but the signal moved from the exit
-  code to the output. braze-sync cannot tell a typo, a dashboard-side
-  removal, and an attribute awaiting traffic apart, which is exactly
-  why it stopped failing the build over the question. No exit code was added; the set stays
-  frozen (README §Exit codes). What narrowed is which differences
-  qualify for `2`.
+  the Braze side, which lands in the same state — as does a
+  `/custom_attributes` response that came back short without erroring
+  (a `2xx` with an empty or missing `attributes` list, or a dropped
+  `Link: rel="next"` header). The row is still printed and still in
+  the JSON, but the signal moved from the exit code to the output.
+  braze-sync cannot tell a typo, a dashboard-side removal, a short
+  response, and an attribute awaiting traffic apart, which is exactly
+  why it stopped failing the build over the question. No exit code was
+  added; the set stays frozen (README §Exit codes). What narrowed is
+  which differences qualify for `2`.
 
   Nothing else was reclassified, including drift `apply` cannot write.
   Orphaned Content Blocks and Email Templates (no DELETE endpoint),

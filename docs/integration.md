@@ -90,9 +90,17 @@ setup looks like. "braze-sync cannot write it" is not the test.
 
 The cost is stated plainly: a registry typo, or an attribute somebody
 removed on the Braze side, lands in the same state and goes green too.
-braze-sync cannot tell them apart, which is exactly why it stopped
-failing the build over the question — the row is still printed, so the
-signal moved from the exit code to the output.
+So does a `/custom_attributes` fetch that came back short without
+erroring — a `2xx` whose body is empty or lacks `attributes`, or a
+first page whose `Link: rel="next"` header a proxy dropped — because
+every entry the response is missing looks the same as one awaiting
+traffic. (A non-`2xx` response still fails the run: `401` exits `4`,
+anything else exits `1`.) braze-sync cannot tell any of these apart,
+which is exactly why it stopped failing the build over the question —
+the row is still printed, so the signal moved from the exit code to
+the output. A run where *every* registry entry is report-only and the
+summary shows nothing in sync is worth a second look before you trust
+the green.
 
 Nothing is hidden either way. Report-only differences appear in the
 table with a count of how many were not charged against the gate, and
