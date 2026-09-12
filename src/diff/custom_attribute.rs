@@ -19,7 +19,9 @@ pub struct CustomAttributeDiff {
 pub enum CustomAttributeOp {
     /// Present in Braze but missing from local registry. Action: prompt `export`.
     UnregisteredInGit,
-    /// Present in local registry but not in Braze. Often a typo.
+    /// Present in local registry but not in Braze: a typo, or an
+    /// attribute this workspace has not seen `/users/track` traffic
+    /// for yet. See [`CustomAttributeDiff::drift_tier`].
     PresentInGitOnly,
     /// `deprecated` flag changed. The only mutation `apply` actually performs.
     DeprecationToggled {

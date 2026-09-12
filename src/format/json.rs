@@ -102,10 +102,11 @@ enum JsonDiffEntry {
     },
 }
 
-/// How `--fail-on-drift` treats this entry. Present on every entry of
-/// every kind so a consumer can filter without reproducing the per-kind
-/// table: `.diffs[] | select(.drift_tier == "gating")` is exactly the
-/// set that produced exit 2.
+/// How `diff --fail-on-drift` treats this entry. Present on every
+/// entry of every kind so a consumer can filter without reproducing the
+/// per-kind table: under that flag, `.diffs[] | select(.drift_tier ==
+/// "gating")` is exactly the set that produced exit 2. (`apply --format
+/// json` emits the same field; `apply` never exits 2 on it.)
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
 enum JsonDriftTier {
@@ -195,8 +196,8 @@ impl From<&DiffSummary> for JsonRoot {
 
 impl From<&ResourceDiff> for JsonDiffEntry {
     fn from(d: &ResourceDiff) -> Self {
-        // The tier lives on `ResourceDiff`, not on the per-kind diffs,
-        // so it is resolved here and threaded into each constructor.
+        // `ResourceDiff::drift_tier` owns the per-kind dispatch, so
+        // resolve the tier once here and thread it into each constructor.
         let tier = d.drift_tier().into();
         match d {
             ResourceDiff::CatalogSchema(c) => Self::from_catalog_schema(c, tier),

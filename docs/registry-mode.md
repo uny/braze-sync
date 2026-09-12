@@ -170,9 +170,10 @@ papered over by data loss.
 It does **not** exit `2`. `PresentInGitOnly` is report-only: Braze has
 no create-attribute endpoint, so `apply` has no call to make, and
 `export` can only clear the entry by deleting the one another workspace
-depends on. Nobody can resolve it, so the daily drift check recommended
-in [integration.md](integration.md) stays green — while still printing
-the row. See
+depends on. Nobody can resolve it, so it does not, by itself, fail the
+daily drift check recommended in [integration.md](integration.md) —
+the row is still printed, and any gating drift next to it still exits
+`2`. See
 [what counts as drift](integration.md#what-counts-as-drift-for-exit-2).
 
 If you would rather the entries not be listed at all, two ways out:
