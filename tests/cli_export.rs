@@ -1364,6 +1364,15 @@ async fn export_ca_prune_recovers_a_non_utf8_registry() {
 /// unreadable-but-replaceable file is the case with a real difference —
 /// it is also the case that made the original `unwrap_or(None)` a silent
 /// destructive write.
+///
+/// Unix-only. `PermissionsExt` is `cfg(unix)`-gated in std, and CI runs
+/// this suite on Windows too, where an ungated `use` would fail to
+/// compile the whole integration binary rather than skip one test.
+/// Windows has no equally cheap way to make a file unreadable while its
+/// parent stays writable, so the abort path is simply uncovered there —
+/// the code under test is platform-independent, and the alternative is
+/// losing every test in this file on one platform.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn export_ca_prune_aborts_when_the_registry_cannot_be_read() {
     use std::os::unix::fs::PermissionsExt;
@@ -1376,12 +1385,18 @@ async fn export_ca_prune_aborts_when_the_registry_cannot_be_read() {
     let registry_path = tmp.path().join("custom_attributes/registry.yaml");
     fs::set_permissions(&registry_path, fs::Permissions::from_mode(0o000)).unwrap();
 
-    // Root ignores the mode bits, so the precondition would not hold and
-    // the test would assert nothing. Verify it rather than assume it.
-    if fs::read_to_string(&registry_path).is_ok() {
-        eprintln!("skipping: this user can read a 0o000 file (running as root?)");
-        return;
-    }
+    // Root ignores the mode bits, so the precondition would not hold.
+    // Verify it rather than assume it — but panic rather than return: a
+    // silent early return is a test that reports green having asserted
+    // nothing, which is the failure mode this whole review kept finding.
+    // This repo's CI uses no container jobs, so it never runs as uid 0;
+    // if that changes, this should be seen and dealt with, not skipped.
+    assert!(
+        fs::read_to_string(&registry_path).is_err(),
+        "precondition failed: this user can read a 0o000 file (running \
+         as root?). The test cannot discriminate here — run the suite as \
+         a non-root user."
+    );
 
     let for_cmd = config_path.clone();
     tokio::task::spawn_blocking(move || {

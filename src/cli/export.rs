@@ -425,8 +425,8 @@ struct RegistryExport {
     /// which workspace happens to hold them.
     kept_excluded: usize,
     /// Entries dropped because the queried workspace does not have them.
-    /// `Some(0)` outside `--prune`. `None` means `--prune` could not read
-    /// the file it replaced, so the number is genuinely unknown — which
+    /// `Some(0)` outside `--prune`. `None` means the file `--prune`
+    /// replaced was corrupt, so the number is genuinely unknown — which
     /// has to be said rather than reported as zero.
     removed: Option<usize>,
 }
@@ -440,11 +440,12 @@ impl RegistryExport {
     fn summary_line(&self) -> String {
         let mut parts = vec![format!("refreshed {} from Braze", self.refreshed)];
         match self.removed {
-            // An unreadable file that `--prune` replaced anyway. How much
-            // it replaced cannot be established, and reporting 0 would be
+            // A corrupt file that `--prune` replaced. How much it
+            // replaced cannot be established, and reporting 0 would be
             // the same silent destructive write this function was changed
-            // to stop making.
-            None => parts.push("replaced an unreadable registry, entries removed: unknown".into()),
+            // to stop making. (A file that could not be *read* does not
+            // reach here at all — that aborts.)
+            None => parts.push("replaced a corrupt registry, entries removed: unknown".into()),
             Some(n) if n > 0 => parts.push(format!(
                 "removed {n} registry entr{} this workspace does not have",
                 plural_y(n)
@@ -473,9 +474,10 @@ impl RegistryExport {
 /// corrupt" rather than "the file could not be reached".
 ///
 /// Only the first is something `--prune` is asked to recover from. A
-/// permission fault or a missing directory is not a registry anyone
-/// asked to replace, and treating it as one would be a silent
-/// destructive write.
+/// permission fault, or a path that is not a file, is not a registry
+/// anyone asked to replace, and treating it as one would be a silent
+/// destructive write. (A missing file is neither: `load_registry` maps
+/// `NotFound` to `Ok(None)` before this is consulted.)
 fn is_corrupt_content(e: &crate::error::Error) -> bool {
     match e {
         crate::error::Error::YamlParse { .. } => true,
