@@ -8,13 +8,16 @@ expression: "JsonFormatter.format(&fixtures::content_block_orphan())"
     "changed": 1,
     "in_sync": 0,
     "destructive": 0,
-    "orphan": 1
+    "orphan": 1,
+    "gating_drift": 1,
+    "report_only_drift": 0
   },
   "diffs": [
     {
       "kind": "content_block",
       "name": "legacy_promo",
       "op": "unchanged",
+      "drift_tier": "gating",
       "orphan": true
     }
   ]

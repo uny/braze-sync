@@ -17,7 +17,7 @@ use crate::diff::custom_attribute::{CustomAttributeDiff, CustomAttributeOp};
 use crate::diff::email_template::EmailTemplateDiff;
 use crate::diff::tag::{TagDiff, TagOp};
 use crate::diff::TextDiffSummary;
-use crate::diff::{DiffOp, DiffSummary, ResourceDiff};
+use crate::diff::{DiffOp, DiffSummary, DriftTier, ResourceDiff};
 use crate::resource::CatalogField;
 use serde::Serialize;
 
@@ -49,6 +49,10 @@ struct JsonSummary {
     in_sync: usize,
     destructive: usize,
     orphan: usize,
+    /// Subset of `changed` that raises exit 2 under `--fail-on-drift`.
+    gating_drift: usize,
+    /// Subset of `changed` that is listed but never raises exit 2.
+    report_only_drift: usize,
 }
 
 #[derive(Serialize)]
@@ -57,11 +61,13 @@ enum JsonDiffEntry {
     CatalogSchema {
         name: String,
         op: JsonOp,
+        drift_tier: JsonDriftTier,
         field_diffs: Vec<JsonFieldDiff>,
     },
     ContentBlock {
         name: String,
         op: JsonOp,
+        drift_tier: JsonDriftTier,
         orphan: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         text_diff: Option<JsonTextDiff>,
@@ -69,6 +75,7 @@ enum JsonDiffEntry {
     EmailTemplate {
         name: String,
         op: JsonOp,
+        drift_tier: JsonDriftTier,
         subject_changed: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         body_html_diff: Option<JsonTextDiff>,
@@ -81,6 +88,7 @@ enum JsonDiffEntry {
         name: String,
         #[serde(flatten)]
         change: JsonCustomAttributeChange,
+        drift_tier: JsonDriftTier,
         #[serde(skip_serializing_if = "Vec::is_empty")]
         hints: Vec<String>,
     },
@@ -88,9 +96,32 @@ enum JsonDiffEntry {
         name: String,
         #[serde(flatten)]
         change: JsonTagChange,
+        drift_tier: JsonDriftTier,
         #[serde(skip_serializing_if = "Vec::is_empty")]
         hints: Vec<String>,
     },
+}
+
+/// How `--fail-on-drift` treats this entry. Present on every entry of
+/// every kind so a consumer can filter without reproducing the per-kind
+/// table: `.diffs[] | select(.drift_tier == "gating")` is exactly the
+/// set that produced exit 2.
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum JsonDriftTier {
+    None,
+    ReportOnly,
+    Gating,
+}
+
+impl From<DriftTier> for JsonDriftTier {
+    fn from(t: DriftTier) -> Self {
+        match t {
+            DriftTier::None => Self::None,
+            DriftTier::ReportOnly => Self::ReportOnly,
+            DriftTier::Gating => Self::Gating,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -154,6 +185,8 @@ impl From<&DiffSummary> for JsonRoot {
                 in_sync: s.in_sync_count(),
                 destructive: s.destructive_count(),
                 orphan: s.orphan_count(),
+                gating_drift: s.gating_drift_count(),
+                report_only_drift: s.report_only_drift_count(),
             },
             diffs: s.diffs.iter().map(JsonDiffEntry::from).collect(),
         }
@@ -162,38 +195,44 @@ impl From<&DiffSummary> for JsonRoot {
 
 impl From<&ResourceDiff> for JsonDiffEntry {
     fn from(d: &ResourceDiff) -> Self {
+        // The tier lives on `ResourceDiff`, not on the per-kind diffs,
+        // so it is resolved here and threaded into each constructor.
+        let tier = d.drift_tier().into();
         match d {
-            ResourceDiff::CatalogSchema(c) => Self::from_catalog_schema(c),
-            ResourceDiff::ContentBlock(c) => Self::from_content_block(c),
-            ResourceDiff::EmailTemplate(c) => Self::from_email_template(c),
-            ResourceDiff::CustomAttribute(c) => Self::from_custom_attribute(c),
-            ResourceDiff::Tag(c) => Self::from_tag(c),
+            ResourceDiff::CatalogSchema(c) => Self::from_catalog_schema(c, tier),
+            ResourceDiff::ContentBlock(c) => Self::from_content_block(c, tier),
+            ResourceDiff::EmailTemplate(c) => Self::from_email_template(c, tier),
+            ResourceDiff::CustomAttribute(c) => Self::from_custom_attribute(c, tier),
+            ResourceDiff::Tag(c) => Self::from_tag(c, tier),
         }
     }
 }
 
 impl JsonDiffEntry {
-    fn from_catalog_schema(c: &CatalogSchemaDiff) -> Self {
+    fn from_catalog_schema(c: &CatalogSchemaDiff, drift_tier: JsonDriftTier) -> Self {
         Self::CatalogSchema {
             name: c.name.clone(),
             op: top_op(&c.op),
+            drift_tier,
             field_diffs: c.field_diffs.iter().filter_map(json_field_diff).collect(),
         }
     }
 
-    fn from_content_block(c: &ContentBlockDiff) -> Self {
+    fn from_content_block(c: &ContentBlockDiff, drift_tier: JsonDriftTier) -> Self {
         Self::ContentBlock {
             name: c.name.clone(),
             op: top_op(&c.op),
+            drift_tier,
             orphan: c.orphan,
             text_diff: c.text_diff.as_ref().map(json_text_diff),
         }
     }
 
-    fn from_email_template(c: &EmailTemplateDiff) -> Self {
+    fn from_email_template(c: &EmailTemplateDiff, drift_tier: JsonDriftTier) -> Self {
         Self::EmailTemplate {
             name: c.name.clone(),
             op: top_op(&c.op),
+            drift_tier,
             subject_changed: c.subject_changed,
             body_html_diff: c.body_html_diff.as_ref().map(json_text_diff),
             body_plaintext_diff: c.body_plaintext_diff.as_ref().map(json_text_diff),
@@ -202,18 +241,20 @@ impl JsonDiffEntry {
         }
     }
 
-    fn from_custom_attribute(c: &CustomAttributeDiff) -> Self {
+    fn from_custom_attribute(c: &CustomAttributeDiff, drift_tier: JsonDriftTier) -> Self {
         Self::CustomAttribute {
             name: c.name.clone(),
             change: json_custom_attribute_change(&c.op),
+            drift_tier,
             hints: c.hints.clone(),
         }
     }
 
-    fn from_tag(c: &TagDiff) -> Self {
+    fn from_tag(c: &TagDiff, drift_tier: JsonDriftTier) -> Self {
         Self::Tag {
             name: c.name.clone(),
             change: json_tag_change(&c.op),
+            drift_tier,
             hints: c.hints.clone(),
         }
     }

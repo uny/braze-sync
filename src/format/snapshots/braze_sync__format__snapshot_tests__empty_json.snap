@@ -8,7 +8,9 @@ expression: "JsonFormatter.format(&fixtures::empty())"
     "changed": 0,
     "in_sync": 0,
     "destructive": 0,
-    "orphan": 0
+    "orphan": 0,
+    "gating_drift": 0,
+    "report_only_drift": 0
   },
   "diffs": []
 }

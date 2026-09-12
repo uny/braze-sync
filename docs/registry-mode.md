@@ -76,7 +76,7 @@ Fields:
 |:---|:---|:---|
 | `Unchanged` | Identical in Git and Braze | None |
 | `UnregisteredInGit` | Exists in Braze, missing from the registry | Report; prompts a follow-up `export` |
-| `PresentInGitOnly` | In the registry, not in Braze | Warning — a typo in the registry, or an attribute that has seen no `/users/track` traffic in *this* workspace. Which one it is depends on whether the registry covers more than one workspace; the CLI cannot tell |
+| `PresentInGitOnly` | In the registry, not in Braze | Warning — a typo in the registry, or an attribute that has seen no `/users/track` traffic in *this* workspace. Which one it is depends on whether the registry covers more than one workspace; the CLI cannot tell. Listed, but does not raise exit `2` |
 | `DeprecationToggled` | `deprecated` differs between Git and Braze | **Writes** — this is the only mutation `braze-sync` performs for Custom Attributes |
 | `MetadataOnly` | Only `description` differs | Report; no API call (Braze has no description endpoint) |
 
@@ -155,29 +155,31 @@ Two consequences worth knowing:
   falling back to a full rewrite would delete the whole registry over a
   one-character YAML slip.
 
-### This keeps `diff --fail-on-drift` red
+### This keeps the entry listed as drift, but not as a failure
 
 Worth stating plainly, because it is the direct cost of the change: a
-kept entry is drift. `diff` classifies it `PresentInGitOnly`, which
-counts toward `changed_count()`, so `diff --fail-on-drift` exits **2** —
-and `apply` cannot clear it, because Braze has no create-attribute
-endpoint. The daily drift check recommended in
-[integration.md](integration.md) therefore stays red for as long as the
-entry stays in the registry.
+kept entry is drift. `diff` classifies it `PresentInGitOnly` and counts
+it toward `changed_count()`, so it appears in the table and in
+`--format json` every run. Before this change it disappeared from both
+— but only because `export` had deleted it. The listing is not new
+information appearing; it is existing disagreement stopping being
+papered over by data loss.
 
-Before this change that gate went green, but only because `export` had
-deleted the entry. The red is not new information appearing; it is
-existing disagreement stopping being papered over by data loss.
+It does **not** exit `2`. `PresentInGitOnly` is report-only: Braze has
+no create-attribute endpoint, so `apply` has no call to make, and
+`export` can only clear the entry by deleting the one another workspace
+depends on. Nobody can resolve it, so the daily drift check recommended
+in [integration.md](integration.md) stays green — while still printing
+the row. See
+[what counts as drift](integration.md#what-counts-as-drift-for-exit-2).
 
-Three ways out, in rough order of preference:
+If you would rather the entries not be listed at all, two ways out:
 
 1. Add the names to `custom_attribute.exclude_patterns` — the intended
-   mechanism for "managed out of band". They stay in the file and stop
-   counting as drift.
+   mechanism for "managed out of band". They stop being compared at
+   all, so they leave the listing as well as the gate.
 2. `export --prune` against the workspace that is the whole truth for
    the registry, if one is.
-3. Wait for kind-aware drift severity, so drift no command can resolve
-   stops raising exit 2 (uny/braze-sync#115).
 
 ### `export --prune`
 

@@ -1124,3 +1124,185 @@ async fn diff_only_drift_does_not_affect_json_output() {
     assert_eq!(parsed["diffs"].as_array().unwrap().len(), 1);
     assert_eq!(parsed["summary"]["in_sync"], 1);
 }
+
+// =====================================================================
+// drift tiers under --fail-on-drift (#115)
+//
+// A registry describing more than one Braze workspace legitimately
+// contains attributes this workspace has not seen traffic for. Those
+// must stay in every listing but must not hold a scheduled CI job red,
+// because nothing anyone can run resolves them.
+// =====================================================================
+
+/// Shared setup: one registry entry Braze does not return
+/// (`PresentInGitOnly`), plus `extra` attributes returned by Braze.
+async fn drift_tier_server(extra: serde_json::Value) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/custom_attributes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "attributes": extra
+        })))
+        .mount(&server)
+        .await;
+    server
+}
+
+const LOCAL_REGISTRY: &str = "attributes:\n  - name: no_traffic_here\n    type: string\n";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fail_on_drift_ignores_report_only_drift_but_still_lists_it() {
+    // Braze returns nothing, so the single registry entry is
+    // PresentInGitOnly — the one state no command can clear.
+    let server = drift_tier_server(json!([])).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_custom_attribute_registry(tmp.path(), LOCAL_REGISTRY);
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args([
+                "diff",
+                "--resource",
+                "custom_attribute",
+                "--fail-on-drift",
+                "--no-color",
+            ])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "expected exit 0");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    // The ledger is the point: suppressing the row would trade a false
+    // alarm for a blind spot.
+    assert!(
+        stdout.contains("Custom Attribute: no_traffic_here"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("1 changed"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("1 change(s) reported only"),
+        "stdout: {stdout}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fail_on_drift_still_exits_two_for_gating_drift() {
+    // `other` is in Braze but not in the registry: UnregisteredInGit,
+    // which `export` resolves, so it keeps gating.
+    let server = drift_tier_server(json!([{"name": "other", "data_type": "string"}])).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_custom_attribute_registry(tmp.path(), LOCAL_REGISTRY);
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args([
+                "diff",
+                "--resource",
+                "custom_attribute",
+                "--fail-on-drift",
+                "--no-color",
+            ])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(output.status.code(), Some(2), "expected exit 2");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    // Mixed run: both rows listed, but only the gating one is counted.
+    assert!(stdout.contains("2 changed"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("Custom Attribute: no_traffic_here"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("Custom Attribute: other"),
+        "stdout: {stdout}"
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("Drift detected in 1 resource(s)"),
+        "count must be the gating subset, not the total; stderr: {stderr}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn json_output_carries_the_drift_tier() {
+    let server = drift_tier_server(json!([{"name": "other", "data_type": "string"}])).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_custom_attribute_registry(tmp.path(), LOCAL_REGISTRY);
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["diff", "--resource", "custom_attribute", "--format", "json"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["summary"]["changed"], 2);
+    assert_eq!(v["summary"]["gating_drift"], 1);
+    assert_eq!(v["summary"]["report_only_drift"], 1);
+
+    // A consumer must be able to reproduce the gate without
+    // reimplementing the per-kind table.
+    let tier_of = |name: &str| -> String {
+        v["diffs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["name"] == name)
+            .unwrap_or_else(|| panic!("{name} missing from JSON: {stdout}"))["drift_tier"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(tier_of("no_traffic_here"), "report_only");
+    assert_eq!(tier_of("other"), "gating");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn present_in_git_only_hint_does_not_assume_a_single_workspace() {
+    let server = drift_tier_server(json!([])).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_custom_attribute_registry(tmp.path(), LOCAL_REGISTRY);
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["diff", "--resource", "custom_attribute", "--no-color"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("no /users/track traffic in this workspace yet"),
+        "stdout: {stdout}"
+    );
+    assert!(!stdout.contains("likely a typo"), "stdout: {stdout}");
+}

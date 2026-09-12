@@ -8,25 +8,30 @@ expression: "JsonFormatter.format(&fixtures::mostly_in_sync_with_one_change())"
     "changed": 2,
     "in_sync": 6,
     "destructive": 0,
-    "orphan": 1
+    "orphan": 1,
+    "gating_drift": 2,
+    "report_only_drift": 0
   },
   "diffs": [
     {
       "kind": "catalog_schema",
       "name": "stable",
       "op": "unchanged",
+      "drift_tier": "none",
       "field_diffs": []
     },
     {
       "kind": "content_block",
       "name": "footer",
       "op": "unchanged",
+      "drift_tier": "none",
       "orphan": false
     },
     {
       "kind": "content_block",
       "name": "promo",
       "op": "modified",
+      "drift_tier": "gating",
       "orphan": false,
       "text_diff": {
         "additions": 5,
@@ -37,6 +42,7 @@ expression: "JsonFormatter.format(&fixtures::mostly_in_sync_with_one_change())"
       "kind": "email_template",
       "name": "receipt",
       "op": "unchanged",
+      "drift_tier": "none",
       "subject_changed": false,
       "metadata_changed": false,
       "orphan": false
@@ -45,6 +51,7 @@ expression: "JsonFormatter.format(&fixtures::mostly_in_sync_with_one_change())"
       "kind": "email_template",
       "name": "legacy_welcome",
       "op": "unchanged",
+      "drift_tier": "gating",
       "subject_changed": false,
       "metadata_changed": false,
       "orphan": true
@@ -53,6 +60,7 @@ expression: "JsonFormatter.format(&fixtures::mostly_in_sync_with_one_change())"
       "kind": "custom_attribute",
       "name": "visit_count",
       "op": "unchanged",
+      "drift_tier": "none",
       "hints": [
         "type mismatch: local number vs Braze string (run export to update)"
       ]
@@ -60,12 +68,14 @@ expression: "JsonFormatter.format(&fixtures::mostly_in_sync_with_one_change())"
     {
       "kind": "tag",
       "name": "transactional",
-      "op": "unchanged"
+      "op": "unchanged",
+      "drift_tier": "none"
     },
     {
       "kind": "tag",
       "name": "seasonal",
       "op": "unchanged",
+      "drift_tier": "none",
       "hints": [
         "registered in two environments with different casing"
       ]

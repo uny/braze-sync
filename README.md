@@ -317,7 +317,7 @@ across all v1.x releases.
 |:---:|:---|
 | `0` | Success |
 | `1` | General error |
-| `2` | Drift detected (`diff --fail-on-drift`) |
+| `2` | Drift detected (`diff --fail-on-drift`). Counts drift somebody can resolve; drift no command and no dashboard action can clear is listed but not counted — see [integration.md](docs/integration.md#what-counts-as-drift-for-exit-2) |
 | `3` | Config / argument error (or `validate` issues) |
 | `4` | Authentication failed (invalid API key) |
 | `5` | Rate limit retries exhausted |

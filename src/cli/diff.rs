@@ -180,11 +180,14 @@ pub async fn run(
         return Err(Error::FallbackGated { count: gated_count }.into());
     }
 
-    if args.fail_on_drift && summary.changed_count() > 0 {
-        return Err(Error::DriftDetected {
-            count: summary.changed_count(),
+    // Gates on the gating tier, not on `changed_count()`: drift that no
+    // action by anyone can clear stays in the listing above but must not
+    // hold a scheduled CI job red forever. See `diff::DriftTier`.
+    if args.fail_on_drift {
+        let gating = summary.gating_drift_count();
+        if gating > 0 {
+            return Err(Error::DriftDetected { count: gating }.into());
         }
-        .into());
     }
 
     Ok(())
