@@ -192,9 +192,10 @@ remote's silence is not evidence about them either.
 
 It is also the way out of a corrupt registry. `--prune` tolerates
 content corruption — bad YAML syntax, valid YAML of the wrong shape, or
-bytes that are not UTF-8 — and still reads the file when it can, so it
-can say how many entries it dropped; when the read fails it reports the
-count as unknown rather than as zero.
+bytes that are not UTF-8. When it can load the file it says how many
+entries it dropped; when corruption stops it obtaining them, whether at
+the read or at the parse, it reports the count as **unknown** rather
+than as zero.
 
 A read that fails because the file cannot be *reached* — a permission
 fault, a path that is not a file — aborts instead, `--prune` included. A

@@ -71,12 +71,13 @@ file formats, JSON output, exit codes) for the full v1.x line.
 
   `--prune` is also the recovery path for a corrupt `registry.yaml`. It
   tolerates content corruption — bad YAML syntax, valid YAML of the
-  wrong shape, or bytes that are not UTF-8 at all (those are rejected
-  by the read, before the parser ever sees them, so they arrive as an
-  I/O error rather than a parse error and had to be admitted
-  explicitly). It still reads the file when it can, so it can report
-  how many entries it dropped; when the read fails it says the count is
-  **unknown** rather than reporting zero.
+  wrong shape, or bytes that are not UTF-8 at all (those last are
+  rejected by the read, before the parser ever sees them, so they
+  arrive as an I/O error rather than a parse error and had to be
+  admitted explicitly). When it can load the file it reports how many
+  entries it dropped; when corruption stops it obtaining them — at the
+  read for undecodable bytes, at the parse for everything else — it
+  says the count is **unknown** rather than reporting zero.
 
   A read that fails because the file cannot be *reached* — a permission
   fault, a path that is not a file — aborts instead, `--prune`
