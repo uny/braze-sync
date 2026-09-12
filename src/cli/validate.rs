@@ -33,8 +33,19 @@ struct ValidationIssue {
     message: String,
 }
 
-pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> anyhow::Result<()> {
+pub async fn run(
+    args: &ValidateArgs,
+    cfg: &ConfigFile,
+    env_override: Option<&str>,
+    config_dir: &Path,
+) -> anyhow::Result<()> {
     let kinds = selected_kinds(args.resource, &cfg.resources);
+    // Same environment pick as every other command (`--env`, else
+    // `default_environment`) so per-environment excludes skip the same
+    // names here that `diff`/`apply` would skip — without resolving the
+    // API key, which validate must keep not needing.
+    let env_name = cfg.environment_name(env_override)?;
+    let mut excludes_by_kind = cfg.excludes_for_environment(&env_name)?;
 
     let mut issues: Vec<ValidationIssue> = Vec::new();
 
@@ -42,7 +53,7 @@ pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> an
         match kind {
             ResourceKind::CatalogSchema => {
                 let catalogs_root = config_dir.join(&cfg.resources.catalog_schema.path);
-                let excludes = compile_kind_excludes(cfg, kind)?;
+                let excludes = excludes_by_kind.remove(&kind).unwrap_or_default();
                 validate_catalog_schemas(
                     &catalogs_root,
                     cfg.naming.catalog_name_pattern.as_deref(),
@@ -52,7 +63,7 @@ pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> an
             }
             ResourceKind::ContentBlock => {
                 let content_blocks_root = config_dir.join(&cfg.resources.content_block.path);
-                let excludes = compile_kind_excludes(cfg, kind)?;
+                let excludes = excludes_by_kind.remove(&kind).unwrap_or_default();
                 validate_content_blocks(
                     &content_blocks_root,
                     cfg.naming.content_block_name_pattern.as_deref(),
@@ -62,12 +73,12 @@ pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> an
             }
             ResourceKind::EmailTemplate => {
                 let email_templates_root = config_dir.join(&cfg.resources.email_template.path);
-                let excludes = compile_kind_excludes(cfg, kind)?;
+                let excludes = excludes_by_kind.remove(&kind).unwrap_or_default();
                 validate_email_templates(&email_templates_root, &excludes, &mut issues)?;
             }
             ResourceKind::CustomAttribute => {
                 let registry_path = config_dir.join(&cfg.resources.custom_attribute.path);
-                let excludes = compile_kind_excludes(cfg, kind)?;
+                let excludes = excludes_by_kind.remove(&kind).unwrap_or_default();
                 validate_custom_attributes(
                     &registry_path,
                     cfg.naming.custom_attribute_name_pattern.as_deref(),
@@ -77,7 +88,7 @@ pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> an
             }
             ResourceKind::Tag => {
                 let registry_path = config_dir.join(&cfg.resources.tag.path);
-                let excludes = compile_kind_excludes(cfg, kind)?;
+                let excludes = excludes_by_kind.remove(&kind).unwrap_or_default();
                 validate_tags(
                     cfg,
                     config_dir,
@@ -101,13 +112,6 @@ pub async fn run(args: &ValidateArgs, cfg: &ConfigFile, config_dir: &Path) -> an
     }
 
     Err(Error::Config(format!("{} validation issue(s) found", issues.len())).into())
-}
-
-fn compile_kind_excludes(cfg: &ConfigFile, kind: ResourceKind) -> anyhow::Result<Vec<Regex>> {
-    Ok(crate::config::compile_exclude_patterns(
-        &cfg.resources.for_kind(kind).exclude_patterns,
-        kind.as_str(),
-    )?)
 }
 
 /// Try to open a resource root directory. Returns `None` (and pushes an

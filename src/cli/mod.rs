@@ -141,7 +141,7 @@ pub async fn run() -> i32 {
     // it as a pre-merge check. All other commands fall through to the
     // env-resolution stage below.
     if let Command::Validate(args) = &cli.command {
-        return finish(validate::run(args, &cfg, &config_dir).await);
+        return finish(validate::run(args, &cfg, cli.env.as_deref(), &config_dir).await);
     }
 
     // Templatize is local-only too — dispatch alongside validate

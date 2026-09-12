@@ -115,6 +115,23 @@ file formats, JSON output, exit codes) for the full v1.x line.
 
 ### Added
 
+- **Per-environment `exclude_patterns` (#116).** A resource block now
+  takes `environments.<env>.exclude_patterns`, appended to the kind-level
+  list when `<env>` is the active environment (`--env`, else
+  `default_environment`). It exists for the case where one workspace's
+  copy of a resource cannot be synced and the other's can — a content
+  block authored with the drag-and-drop editor, which Braze refuses to
+  update through the API — without un-managing the namesake in every
+  other environment, which is what a kind-level pattern did. `<env>`
+  must be declared under the top-level `environments` map; every
+  environment's patterns are compiled at load, not only the active
+  one's. The key lives on the resource block (which rejects unknown
+  keys) rather than under `environments.<env>` (which does not), so an
+  older binary refuses a config that uses it instead of applying to the
+  block it was told to leave alone. `validate` now honors `--env`,
+  which it parsed and ignored before; with no per-environment patterns
+  its behaviour is unchanged. Nothing here adds an include/allowlist —
+  a resource is either matched by a pattern or managed.
 - **`export --prune`.** Restores the previous rebuild for the case where
   it is what you mean: drop every Custom Attribute registry entry the
   queried workspace does not return, and report how many. It affects

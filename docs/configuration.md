@@ -85,7 +85,8 @@ optional — omitted entries fall back to the defaults shown below. To
 skip a resource entirely in a workspace, set `enabled: false`.
 
 Every resource sub-block also accepts an optional
-`exclude_patterns: [<regex>, …]` list; see
+`exclude_patterns: [<regex>, …]` list and an optional `environments`
+map that scopes further patterns to one environment; see
 [§ exclude_patterns](#exclude_patterns) below.
 
 #### `catalog_schema`
@@ -95,6 +96,7 @@ Every resource sub-block also accepts an optional
 | `enabled` | bool | `true` |
 | `path` | path | `catalogs/` |
 | `exclude_patterns` | list of regex strings | `[]` |
+| `environments.<env>.exclude_patterns` | list of regex strings | `[]` |
 
 Directory holding one `<catalog>/schema.yaml` per catalog.
 
@@ -105,6 +107,7 @@ Directory holding one `<catalog>/schema.yaml` per catalog.
 | `enabled` | bool | `true` |
 | `path` | path | `content_blocks/` |
 | `exclude_patterns` | list of regex strings | `[]` |
+| `environments.<env>.exclude_patterns` | list of regex strings | `[]` |
 
 Directory of `<name>.liquid` files.
 
@@ -115,6 +118,7 @@ Directory of `<name>.liquid` files.
 | `enabled` | bool | `true` |
 | `path` | path | `email_templates/` |
 | `exclude_patterns` | list of regex strings | `[]` |
+| `environments.<env>.exclude_patterns` | list of regex strings | `[]` |
 
 Directory holding one `<template>/` subdirectory per email template, each
 containing `template.yaml`, `body.html`, and `body.txt`.
@@ -126,6 +130,7 @@ containing `template.yaml`, `body.html`, and `body.txt`.
 | `enabled` | bool | `true` |
 | `path` | path | `custom_attributes/registry.yaml` |
 | `exclude_patterns` | list of regex strings | `[]` |
+| `environments.<env>.exclude_patterns` | list of regex strings | `[]` |
 
 A single-file registry — see [registry-mode.md](registry-mode.md).
 
@@ -136,6 +141,7 @@ A single-file registry — see [registry-mode.md](registry-mode.md).
 | `enabled` | bool | `false` |
 | `path` | path | `tags/registry.yaml` |
 | `exclude_patterns` | list of regex strings | `[]` |
+| `environments.<env>.exclude_patterns` | list of regex strings | `[]` |
 
 A single-file registry of workspace tags. **Opt-in:** omitting
 `resources.tag` from your config leaves tag tracking off so existing
@@ -195,6 +201,46 @@ custom_attribute:
     - "^(hoge|hack)$"   # developer leftovers
     - "^test_"          # anything prefixed test_
 ```
+
+#### Scoping a pattern to one environment
+
+`exclude_patterns` on the resource block applies to every environment.
+To exclude a name in one environment only, put the pattern under
+`environments.<env>.exclude_patterns` on the same resource block; the
+active environment's list (picked by `--env`, else
+`default_environment`) is appended to the kind-level list, and a name
+matching either is excluded. The other environments keep managing the
+name.
+
+```yaml
+content_block:
+  path: content_blocks/
+  exclude_patterns:
+    - "^test_"          # every environment
+  environments:
+    prod:
+      exclude_patterns:
+        - "^footer$"    # prod only
+```
+
+The case this exists for: Braze refuses API updates to content blocks
+authored with the drag-and-drop editor (`HTTP 400: DND Content blocks
+are not allowed to be updated from the API`). Whether a block is DND is
+a property of one workspace's copy, so `prod`'s `footer` may need
+excluding while `dev`'s `footer` — ordinary HTML — should stay
+drift-checked. A kind-level `^footer$` would un-manage both.
+
+`<env>` must be a key of the top-level `environments` map; an
+undeclared name is a config error (exit `3`). Every environment's
+patterns are compiled at load, not just the active one's, so a bad
+regex under `prod` fails a `dev` run too. `validate` honors `--env` for
+this the same way the other commands do — it needs no API key either
+way.
+
+The map lives on the resource block rather than under
+`environments.<env>` deliberately: the resource block rejects unknown
+keys, so a `braze-sync` older than this key refuses the whole file
+instead of silently applying to the block you excluded.
 
 ### `naming` (optional)
 

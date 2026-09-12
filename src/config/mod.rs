@@ -18,7 +18,7 @@ pub mod schema;
 
 pub use schema::{
     ApplyOrder, ConfigFile, Defaults, EnvironmentConfig, NamingConfig, ResourceConfig,
-    ResourcesConfig,
+    ResourceEnvironmentConfig, ResourcesConfig,
 };
 
 use crate::error::{Error, Result};
@@ -41,7 +41,8 @@ pub struct ResolvedConfig {
     pub api_key: SecretString,
     pub resources: ResourcesConfig,
     pub naming: NamingConfig,
-    /// Compiled `exclude_patterns` per resource kind. Populated by
+    /// Compiled `exclude_patterns` per resource kind — the kind-level
+    /// list plus the active environment's. Populated by
     /// [`ConfigFile::resolve_with`] so callers can look up a `&[Regex]`
     /// without recompiling on every invocation.
     pub excludes: HashMap<ResourceKind, Vec<Regex>>,
@@ -142,12 +143,68 @@ impl ConfigFile {
             }
         }
         // Compile every resource's exclude_patterns at load time so
-        // malformed regexes fail fast instead of at first use.
+        // malformed regexes fail fast instead of at first use — the
+        // per-environment lists too, not just the active environment's,
+        // so a typo in `prod`'s list is caught by a `dev` run.
         for kind in ResourceKind::all() {
             let rc = self.resources.for_kind(*kind);
             compile_exclude_patterns(&rc.exclude_patterns, kind.as_str())?;
+            for (env_name, env_rc) in &rc.environments {
+                if !self.environments.contains_key(env_name) {
+                    return Err(Error::Config(format!(
+                        "resources.{}.environments.{env_name}: not declared in the \
+                         top-level environments map",
+                        kind.as_str()
+                    )));
+                }
+                compile_exclude_patterns(
+                    &env_rc.exclude_patterns,
+                    &format!("{}.environments.{env_name}", kind.as_str()),
+                )?;
+            }
         }
         Ok(())
+    }
+
+    /// The environment a run targets: `env_override` (the `--env` flag)
+    /// when given, else `default_environment`. Errors on an undeclared
+    /// name so the caller never has to special-case it.
+    pub fn environment_name(&self, env_override: Option<&str>) -> Result<String> {
+        let env_name = env_override
+            .map(str::to_string)
+            .unwrap_or_else(|| self.default_environment.clone());
+        if !self.environments.contains_key(&env_name) {
+            let known: Vec<&str> = self.environments.keys().map(String::as_str).collect();
+            return Err(Error::Config(format!(
+                "unknown environment '{}'; declared: [{}]",
+                env_name,
+                known.join(", ")
+            )));
+        }
+        Ok(env_name)
+    }
+
+    /// Compiled exclude patterns per kind for `env_name`: the kind-level
+    /// list followed by that environment's own. Shared by
+    /// [`Self::resolve_with`] and `validate`, which runs before
+    /// environment resolution because it needs no API key.
+    pub fn excludes_for_environment(
+        &self,
+        env_name: &str,
+    ) -> Result<HashMap<ResourceKind, Vec<Regex>>> {
+        let mut excludes = HashMap::new();
+        for kind in ResourceKind::all() {
+            let rc = self.resources.for_kind(*kind);
+            let mut patterns = compile_exclude_patterns(&rc.exclude_patterns, kind.as_str())?;
+            if let Some(env_rc) = rc.environments.get(env_name) {
+                patterns.extend(compile_exclude_patterns(
+                    &env_rc.exclude_patterns,
+                    &format!("{}.environments.{env_name}", kind.as_str()),
+                )?);
+            }
+            excludes.insert(*kind, patterns);
+        }
+        Ok(excludes)
     }
 
     /// Resolve to a [`ResolvedConfig`] using the real process environment.
@@ -162,18 +219,8 @@ impl ConfigFile {
         env_override: Option<&str>,
         env_lookup: impl Fn(&str) -> Option<String>,
     ) -> Result<ResolvedConfig> {
-        let env_name = env_override
-            .map(str::to_string)
-            .unwrap_or_else(|| self.default_environment.clone());
-
-        if !self.environments.contains_key(&env_name) {
-            let known: Vec<&str> = self.environments.keys().map(String::as_str).collect();
-            return Err(Error::Config(format!(
-                "unknown environment '{}'; declared: [{}]",
-                env_name,
-                known.join(", ")
-            )));
-        }
+        let env_name = self.environment_name(env_override)?;
+        let excludes = self.excludes_for_environment(&env_name)?;
         let env_cfg = self
             .environments
             .remove(&env_name)
@@ -186,15 +233,6 @@ impl ConfigFile {
                 "environment variable '{}' is set but empty",
                 env_cfg.api_key_env
             )));
-        }
-
-        let mut excludes: HashMap<ResourceKind, Vec<Regex>> = HashMap::new();
-        for kind in ResourceKind::all() {
-            let rc = self.resources.for_kind(*kind);
-            excludes.insert(
-                *kind,
-                compile_exclude_patterns(&rc.exclude_patterns, kind.as_str())?,
-            );
         }
 
         Ok(ResolvedConfig {
@@ -434,6 +472,149 @@ resources:
             }
             other => panic!("expected Config error, got {other:?}"),
         }
+    }
+
+    const TWO_ENVS_WITH_SCOPED_EXCLUDE: &str = r#"
+version: 1
+default_environment: a
+environments:
+  a:
+    api_endpoint: https://rest.fra-02.braze.eu
+    api_key_env: BRAZE_A_API_KEY
+  b:
+    api_endpoint: https://rest.fra-02.braze.eu
+    api_key_env: BRAZE_B_API_KEY
+resources:
+  content_block:
+    path: content_blocks/
+    exclude_patterns:
+      - "^shared_"
+    environments:
+      a:
+        exclude_patterns:
+          - "^foo$"
+"#;
+
+    #[test]
+    fn per_environment_excludes_add_to_kind_level_for_the_active_environment_only() {
+        let f = write_config(TWO_ENVS_WITH_SCOPED_EXCLUDE);
+        let lookup = |_: &str| Some("k".to_string());
+
+        let a = ConfigFile::load(f.path())
+            .unwrap()
+            .resolve_with(Some("a"), lookup)
+            .unwrap();
+        let a_ex = a.excludes_for(ResourceKind::ContentBlock);
+        assert!(is_excluded("foo", a_ex));
+        assert!(is_excluded("shared_x", a_ex));
+        assert!(!is_excluded("bar", a_ex));
+
+        let b = ConfigFile::load(f.path())
+            .unwrap()
+            .resolve_with(Some("b"), lookup)
+            .unwrap();
+        let b_ex = b.excludes_for(ResourceKind::ContentBlock);
+        assert!(!is_excluded("foo", b_ex), "b's foo must stay managed");
+        assert!(
+            is_excluded("shared_x", b_ex),
+            "kind-level list applies everywhere"
+        );
+    }
+
+    #[test]
+    fn excludes_for_environment_needs_no_api_key() {
+        // `validate` runs before env resolution; the same pick must be
+        // reachable from the unresolved file.
+        let f = write_config(TWO_ENVS_WITH_SCOPED_EXCLUDE);
+        let cfg = ConfigFile::load(f.path()).unwrap();
+        assert_eq!(cfg.environment_name(None).unwrap(), "a");
+        let ex = cfg.excludes_for_environment("b").unwrap();
+        assert!(!is_excluded("foo", &ex[&ResourceKind::ContentBlock]));
+    }
+
+    #[test]
+    fn rejects_per_environment_exclude_for_undeclared_environment() {
+        let yaml = r#"
+version: 1
+default_environment: dev
+environments:
+  dev:
+    api_endpoint: https://rest.fra-02.braze.eu
+    api_key_env: BRAZE_DEV_API_KEY
+resources:
+  content_block:
+    path: content_blocks/
+    environments:
+      prod:
+        exclude_patterns: ["^foo$"]
+"#;
+        let f = write_config(yaml);
+        let err = ConfigFile::load(f.path()).unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(
+                    msg.contains("resources.content_block.environments.prod"),
+                    "msg: {msg}"
+                );
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_per_environment_exclude_at_load_even_when_inactive() {
+        // `b` is not the default environment; a `dev`-side run must
+        // still refuse the file rather than let prod discover the typo.
+        let yaml = r#"
+version: 1
+default_environment: a
+environments:
+  a:
+    api_endpoint: https://rest.fra-02.braze.eu
+    api_key_env: BRAZE_A_API_KEY
+  b:
+    api_endpoint: https://rest.fra-02.braze.eu
+    api_key_env: BRAZE_B_API_KEY
+resources:
+  content_block:
+    path: content_blocks/
+    environments:
+      b:
+        exclude_patterns: ["("]
+"#;
+        let f = write_config(yaml);
+        let err = ConfigFile::load(f.path()).unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(
+                    msg.contains("content_block.environments.b.exclude_patterns[0]"),
+                    "msg: {msg}"
+                );
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_key_under_resource_environment() {
+        // Fail-closed is the reason the key lives under the resource.
+        let yaml = r#"
+version: 1
+default_environment: dev
+environments:
+  dev:
+    api_endpoint: https://rest.fra-02.braze.eu
+    api_key_env: BRAZE_DEV_API_KEY
+resources:
+  content_block:
+    path: content_blocks/
+    environments:
+      dev:
+        include_patterns: ["^foo$"]
+"#;
+        let f = write_config(yaml);
+        let err = ConfigFile::load(f.path()).unwrap_err();
+        assert!(matches!(err, Error::YamlParse { .. }), "got: {err:?}");
     }
 
     #[test]
