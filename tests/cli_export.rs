@@ -1867,3 +1867,53 @@ async fn export_prune_warning_does_not_misattribute_a_disabled_kind() {
          line above it:\n{stderr}"
     );
 }
+
+/// The other half of that quadrant: no `--resource` at all, with
+/// `custom_attribute` disabled. `selected_kinds` logs its reason at
+/// debug here, invisible at the default level, so the inert-`--prune`
+/// line is the *only* thing the operator sees — and "no effect on the
+/// selected resource kind(s)" would send them to look at their kind
+/// selection when the cause is the config toggle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_prune_names_the_disabled_kind_without_a_resource_flag() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = tmp.path().join("braze-sync.config.yaml");
+    fs::write(
+        &config_path,
+        "version: 1\n\
+         default_environment: test\n\
+         environments:\n\
+         \x20 test:\n    api_endpoint: http://127.0.0.1:1\n    api_key_env: BRAZE_API_KEY\n\
+         resources:\n\
+         \x20 catalog_schema:\n    enabled: false\n    path: catalogs/\n\
+         \x20 content_block:\n    enabled: false\n    path: content_blocks/\n\
+         \x20 email_template:\n    enabled: false\n    path: email_templates/\n\
+         \x20 custom_attribute:\n    enabled: false\n    path: custom_attributes/registry.yaml\n",
+    )
+    .unwrap();
+
+    let stderr = tokio::task::spawn_blocking(move || {
+        let out = Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .env("RUST_LOG", "warn")
+            .args(["--config", config_path.to_str().unwrap(), "--no-color"])
+            .args(["export", "--prune"])
+            .assert()
+            .get_output()
+            .clone();
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        stderr.contains("disabled in config"),
+        "the operator must be told the kind is off, not that they picked \
+         the wrong kinds:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("has no effect on the selected resource kind"),
+        "that wording names the wrong cause here:\n{stderr}"
+    );
+}

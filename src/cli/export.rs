@@ -58,10 +58,18 @@ pub struct ExportArgs {
     /// reference rather than from a remote list, so no other kind has
     /// state a workspace's silence can remove.
     ///
-    /// Conflicts with `--name`. `export` ignores `--name` for
-    /// `custom_attribute` (the registry is a single file), so the two
-    /// together would read as "prune this one entry" and do the exact
-    /// opposite — rebuild the whole file.
+    /// Conflicts with `--name`, for every kind rather than just this
+    /// one. `export` ignores `--name` for `custom_attribute` (the
+    /// registry is a single file), so the pair reads as "prune this one
+    /// entry" and does the exact opposite — rebuilds the whole file.
+    ///
+    /// The conflict is not narrowed to `--resource custom_attribute`
+    /// because a static refusal beats a runtime one here: clap rejects
+    /// the invocation before the first API call, whereas a check inside
+    /// the `custom_attribute` arm would fire after other kinds had
+    /// already been written. The cost is that `--name X --prune` on some
+    /// other kind — where `--prune` was inert and `--name` was honoured
+    /// — is now an error rather than a warning.
     #[arg(long, conflicts_with = "name")]
     pub prune: bool,
 }
@@ -83,19 +91,28 @@ pub async fn run(
     // registry. Silently accepting it elsewhere would let an operator
     // believe a rebuild happened.
     //
-    // Keyed off `--resource`, not off `kinds`: when the operator named
-    // `custom_attribute` and it is disabled in config, `selected_kinds`
-    // has already said so and returned nothing. Saying "it has no effect
-    // on the selected resource kind(s)" on top of that would name the
-    // wrong cause — they picked the right kind; it is switched off.
-    if args.prune
-        && !kinds.contains(&ResourceKind::CustomAttribute)
-        && args.resource != Some(ResourceKind::CustomAttribute)
-    {
-        eprintln!(
-            "⚠ --prune affects custom_attribute only; it has no effect on \
-             the selected resource kind(s)"
-        );
+    // Which reason is given matters as much as saying something. There
+    // are two ways for the kind to be absent, and naming the wrong one
+    // sends the operator to the wrong place: a different `--resource`
+    // means they picked another kind, whereas `enabled: false` means
+    // they picked the right one and it is switched off. `selected_kinds`
+    // announces the disabled case only when the kind was named — its
+    // no-`--resource` branch logs at debug, invisible by default — so
+    // this cannot defer to it and has to say so itself.
+    if args.prune && !kinds.contains(&ResourceKind::CustomAttribute) {
+        if resolved.resources.custom_attribute.enabled {
+            eprintln!(
+                "⚠ --prune affects custom_attribute only; it has no effect on \
+                 the selected resource kind(s)"
+            );
+        } else if args.resource != Some(ResourceKind::CustomAttribute) {
+            // Named-and-disabled is the one case already covered:
+            // `selected_kinds` printed the reason a moment ago.
+            eprintln!(
+                "⚠ --prune affects custom_attribute only, and it is disabled \
+                 in config; nothing was pruned"
+            );
+        }
     }
 
     let mut total_written: usize = 0;

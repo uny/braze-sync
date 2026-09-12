@@ -66,6 +66,13 @@ file formats, JSON output, exit codes) for the full v1.x line.
   a remote list, so no other kind has state a workspace's silence can
   remove.
 
+  `--prune` is refused together with `--name`, and refused for every
+  kind rather than only `custom_attribute`: clap rejects the pair before
+  the first API call, where a check inside the `custom_attribute` arm
+  would fire only after other kinds had been written. So
+  `export --resource content_block --name hero --prune`, which used to
+  warn that `--prune` was inert and then export `hero`, now exits 3.
+
   Entries matching `exclude_patterns` are kept even under `--prune`.
   Excluded means the remote is not consulted about them, so the
   remote's silence is not evidence about them either — pruning on that
@@ -118,9 +125,11 @@ file formats, JSON output, exit codes) for the full v1.x line.
   its own duplicate check and so cannot see the out-of-band case.
 
 - **`export`'s `done: N resource(s) written` trailer counts kept entries.**
-  For `custom_attribute` it is now what is in the file, not what was
-  fetched, so the same inputs can print a larger `N` than before; for
-  every other kind it still counts what was fetched.
+  For `custom_attribute` it is now what is in the file, not what Braze
+  returned, so the same inputs can print a larger `N` than before. The
+  other kinds are unchanged: what Braze returned for the three
+  directory-backed kinds, and — as before — what local resources
+  reference for `tag`, which has no remote list to count.
 
 - **`export`'s `custom_attribute` stderr line changed.** It now reads
   `✓ custom_attribute: refreshed N from Braze, kept M registry-only
