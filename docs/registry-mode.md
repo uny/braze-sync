@@ -113,6 +113,8 @@ pretends to be more powerful than it is.
    A nightly `diff --fail-on-drift` (see
    [integration.md](integration.md)) will flag new attributes as
    `UnregisteredInGit` so someone opens a PR with a description.
+   Entries the workspace has not seen yet (`PresentInGitOnly`) are
+   listed by the same run but do not fail it.
 
 4. **Deprecate deliberately**. When an attribute is truly retired, mark
    it `deprecated: true` in the registry and run `apply --confirm`.

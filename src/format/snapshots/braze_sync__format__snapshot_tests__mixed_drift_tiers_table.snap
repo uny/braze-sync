@@ -10,4 +10,4 @@ expression: "TableFormatter::default().format(&fixtures::mixed_drift_tiers())"
 
 Summary: 2 changed, 0 in sync, 0 orphan, 0 destructive
 
-ℹ 1 change(s) reported only — not counted by --fail-on-drift. Nothing braze-sync or the Braze dashboard can do resolves them.
+ℹ 1 change(s) reported only — not counted by --fail-on-drift. A correct multi-workspace registry produces them, and the CLI cannot tell those from a typo.

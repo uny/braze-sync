@@ -66,8 +66,10 @@ Exit-code contract:
 
 ### What counts as drift for exit `2`
 
-`--fail-on-drift` does not count every difference it prints. It counts
-the ones somebody can resolve.
+`--fail-on-drift` does not count every difference it prints. It skips
+the one state a *correct* setup produces — where the output of a
+healthy configuration and of a mistake are the same, so failing the
+build over it says nothing.
 
 The exception today is a Custom Attribute present in the Git registry
 but not in Braze. There is no create endpoint for Custom Attributes —
@@ -83,8 +85,14 @@ Everything else still fails the build, including drift `apply` cannot
 write: an orphaned Content Block or Email Template (a human archives it
 in the dashboard), a Custom Attribute in Braze but missing from the
 registry (`export` resolves it), a description that disagrees (a human
-edits one side), and both Tag states. "braze-sync cannot write it" is
-not the test — "nobody can resolve it" is.
+edits one side), and both Tag states. None of those is what a healthy
+setup looks like. "braze-sync cannot write it" is not the test.
+
+The cost is stated plainly: a registry typo, or an attribute somebody
+removed on the Braze side, lands in the same state and goes green too.
+braze-sync cannot tell them apart, which is exactly why it stopped
+failing the build over the question — the row is still printed, so the
+signal moved from the exit code to the output.
 
 Nothing is hidden either way. Report-only differences appear in the
 table with a count of how many were not charged against the gate, and
@@ -175,7 +183,9 @@ jq '.summary' diff.json
 #   "changed": 5,
 #   "in_sync": 1,
 #   "destructive": 1,
-#   "orphan": 1
+#   "orphan": 1,
+#   "gating_drift": 4,
+#   "report_only_drift": 1
 # }
 ```
 

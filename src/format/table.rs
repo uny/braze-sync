@@ -41,17 +41,16 @@ pub fn render(summary: &DiffSummary, only_drift: bool) -> String {
         summary.destructive_count(),
     );
 
-    // Report-only drift is real disagreement that no braze-sync command
-    // and no dashboard action can clear, so `--fail-on-drift` does not
-    // count it. Say so here: otherwise "N changed" next to exit 0 reads
-    // as a bug.
+    // Report-only drift is real disagreement that a correct setup can
+    // produce, so `--fail-on-drift` does not count it. Say so here:
+    // otherwise "N changed" next to exit 0 reads as a bug.
     let report_only = summary.report_only_drift_count();
     if report_only > 0 {
         let _ = writeln!(
             out,
             "\nℹ {report_only} change(s) reported only — not counted by \
-             --fail-on-drift. Nothing braze-sync or the Braze dashboard \
-             can do resolves them.",
+             --fail-on-drift. A correct multi-workspace registry produces \
+             them, and the CLI cannot tell those from a typo.",
         );
     }
 

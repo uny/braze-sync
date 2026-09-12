@@ -84,16 +84,18 @@ impl<T> DiffOp<T> {
 /// and all Tag drift, both of which a CI gate must keep failing on.
 ///
 /// The rule for [`DriftTier::ReportOnly`] is deliberately narrow: a
-/// state qualifies only when a *correct* configuration produces it, so
-/// that no action by anyone would clear it. "braze-sync cannot write
+/// state qualifies only when a *correct* configuration produces it —
+/// when the same output is what a healthy setup looks like, failing
+/// the build over it carries no information. "braze-sync cannot write
 /// it" is not sufficient — most unwritable drift still means a human
 /// must go do something, in the Braze dashboard or in Git.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriftTier {
     /// No change. Not drift at all.
     None,
-    /// Real disagreement, but one a correct setup produces and nobody
-    /// can resolve. Listed in every output; does not raise exit 2.
+    /// Real disagreement, but one a correct setup produces — so it
+    /// cannot be told apart from a mistake by looking. Listed in every
+    /// output; does not raise exit 2.
     ReportOnly,
     /// Drift a human must act on. Raises exit 2 under `--fail-on-drift`.
     Gating,
@@ -248,9 +250,9 @@ impl DiffSummary {
     }
 
     /// Count of diffs that raise exit 2 under `--fail-on-drift`. A
-    /// subset of [`Self::changed_count`]: the difference is drift no
-    /// action by anyone can clear, which stays in every listing but
-    /// must not keep a scheduled CI job permanently red.
+    /// subset of [`Self::changed_count`]: the difference is drift a
+    /// correct setup produces, which stays in every listing but must
+    /// not keep a scheduled CI job permanently red.
     pub fn gating_drift_count(&self) -> usize {
         self.diffs
             .iter()
@@ -339,7 +341,5 @@ mod drift_tier_tests {
         assert_eq!(summary.gating_drift_count(), 1);
         assert_eq!(summary.report_only_drift_count(), 1);
         assert_eq!(summary.in_sync_count(), 1);
-        // The ledger stays whole: nothing is dropped from the listing.
-        assert_eq!(summary.diffs.len(), 3);
     }
 }

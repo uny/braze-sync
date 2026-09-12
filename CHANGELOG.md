@@ -11,8 +11,8 @@ file formats, JSON output, exit codes) for the full v1.x line.
 
 ### Fixed
 
-- **`diff --fail-on-drift` no longer exits 2 for drift nobody can
-  resolve (#115).** The gate counted every diff whose `has_changes()`
+- **`diff --fail-on-drift` no longer exits 2 for drift a correct setup
+  produces (#115).** The gate counted every diff whose `has_changes()`
   was true, with no notion of whether the difference could be acted on.
   One state cannot: a Custom Attribute in the Git registry that Braze
   does not have. Braze has no create endpoint for Custom Attributes —
@@ -30,11 +30,13 @@ file formats, JSON output, exit codes) for the full v1.x line.
   code changed.
 
   **What this costs, stated plainly.** A pipeline that relied on exit 2
-  to catch a typo in the registry goes green after upgrading. The row is
-  still printed and still in the JSON, but the signal moved from the
-  exit code to the output — and braze-sync cannot tell a typo from an
-  attribute awaiting traffic, which is exactly why it stopped failing
-  the build over the question. No exit code was added; the set stays
+  to catch a typo in the registry goes green after upgrading — and so
+  does one that relied on it to catch an attribute somebody removed on
+  the Braze side, which lands in the same state. The row is still
+  printed and still in the JSON, but the signal moved from the exit
+  code to the output. braze-sync cannot tell a typo, a dashboard-side
+  removal, and an attribute awaiting traffic apart, which is exactly
+  why it stopped failing the build over the question. No exit code was added; the set stays
   frozen (README §Exit codes). What narrowed is which differences
   qualify for `2`.
 
@@ -42,10 +44,12 @@ file formats, JSON output, exit codes) for the full v1.x line.
   Orphaned Content Blocks and Email Templates (no DELETE endpoint),
   Custom Attributes missing from the registry, descriptions that
   disagree, and both Tag states all still exit 2 — each is resolved by
-  a human in the dashboard or in Git. The test is not "can braze-sync
-  write it" but "can anybody resolve it", which is why the existing
-  `is_actionable()` predicate — which answers the first question, and
-  excludes orphans and all Tag drift — was not reused for the gate.
+  a human in the dashboard or in Git, and none of them is what a
+  healthy setup looks like. The test is not "can braze-sync write it"
+  but "does a correct configuration produce this", which is why the
+  existing `is_actionable()` predicate — which answers the first
+  question, and excludes orphans and all Tag drift — was not reused for
+  the gate.
 
   To make the split legible rather than implicit: `--format json` now
   carries `drift_tier` (`gating` / `report_only` / `none`) on every
@@ -102,7 +106,7 @@ file formats, JSON output, exit codes) for the full v1.x line.
   `PresentInGitOnly`, which counts toward `changed_count()`, so it
   appears in the table and in `--format json` on every run where it
   previously vanished — but only because `export` had deleted it. It no
-  longer exits 2; see the drift-severity entry below, which landed in
+  longer exits 2; see the drift-severity entry above, which landed in
   the same release. To drop such entries from the listing as well, use
   `custom_attribute.exclude_patterns`.
 

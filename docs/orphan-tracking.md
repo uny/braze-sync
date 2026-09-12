@@ -44,14 +44,17 @@ individual diff entry and in the `summary.orphan` count:
 ```json
 {
   "version": 1,
-  "summary": { "changed": 2, "in_sync": 4, "destructive": 0, "orphan": 2 },
+  "summary": {
+    "changed": 2, "in_sync": 4, "destructive": 0, "orphan": 2,
+    "gating_drift": 2, "report_only_drift": 0
+  },
   "diffs": [
     {
-      "kind": "content_block", "op": "unchanged",
+      "kind": "content_block", "op": "unchanged", "drift_tier": "gating",
       "name": "legacy_promo", "orphan": true
     },
     {
-      "kind": "email_template", "op": "unchanged",
+      "kind": "email_template", "op": "unchanged", "drift_tier": "gating",
       "name": "old_welcome", "orphan": true,
       "subject_changed": false, "metadata_changed": false
     }
