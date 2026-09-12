@@ -61,13 +61,21 @@ file formats, JSON output, exit codes) for the full v1.x line.
 - **`export --prune`.** Restores the previous rebuild for the case where
   it is what you mean: drop every Custom Attribute registry entry the
   queried workspace does not return, and report how many. It affects
-  `custom_attribute` only; no other kind replaces local state on export.
+  `custom_attribute` only. `tags/registry.yaml` is single-file too, but
+  it is rebuilt from the tags local resources reference rather than from
+  a remote list, so no other kind has state a workspace's silence can
+  remove.
 
   Entries matching `exclude_patterns` are kept even under `--prune`.
   Excluded means the remote is not consulted about them, so the
   remote's silence is not evidence about them either — pruning on that
   basis would delete out-of-band state while reporting that the
   workspace did not have it.
+
+  The corrupt-file recovery below is the one exception, and the summary
+  line now says so: identifying an excluded entry means reading the
+  file, so a registry that will not load takes its excluded entries
+  with it.
 
   `--prune` is also the recovery path for a corrupt `registry.yaml`. It
   tolerates content corruption — bad YAML syntax, valid YAML of the
@@ -80,10 +88,12 @@ file formats, JSON output, exit codes) for the full v1.x line.
   says the count is **unknown** rather than reporting zero.
 
   A read that fails because the file cannot be *reached* — a permission
-  fault, a path that is not a file — aborts instead, `--prune`
-  included. A registry nobody can read is not one anyone asked to
-  replace, and swallowing that is the silent destructive write this
-  release set out to stop.
+  fault, or a directory in place of the file — aborts instead,
+  `--prune` included. A registry nobody can read is not one anyone
+  asked to replace, and swallowing that is the silent destructive
+  write this release set out to stop. The test is what the read
+  returns, not what the path is: a named pipe there does not abort,
+  it blocks until a writer appears.
 
 ### Changed
 
@@ -94,15 +104,28 @@ file formats, JSON output, exit codes) for the full v1.x line.
   one-character YAML slip would take the whole registry with it. Use
   `export --prune` to replace a file in that state.
 
-- **Duplicate names in the registry collapse last-wins on `export`**,
+- **Duplicate names in the registry collapse to one entry on `export`**,
   matching what `diff` already does. Disagreeing left the two commands
-  unable to converge: whichever of two same-named entries `export`
-  kept, `diff` would keep reporting the other as drift.
+  unable to converge: whichever of two same-named entries `export` kept,
+  `diff` would keep reporting the other as drift. Last-wins among the
+  local entries, except where Braze returned that name and it is not
+  excluded — there the remote value overwrites both, as it does for any
+  refreshed entry.
+
+  Because collapsing deletes entries, `export` names the duplicated
+  names on stderr and counts the dropped entries in its summary line
+  rather than deferring to `validate`, which skips excluded names before
+  its own duplicate check and so cannot see the out-of-band case.
+
+- **`export`'s `done: N resource(s) written` trailer counts kept entries.**
+  For `custom_attribute` it is now what is in the file, not what was
+  fetched, so the same inputs can print a larger `N` than before; for
+  every other kind it still counts what was fetched.
 
 - **`export`'s `custom_attribute` stderr line changed.** It now reads
   `✓ custom_attribute: refreshed N from Braze, kept M registry-only
-  entries` (the `kept`/`removed`/`excluded` clauses appear only when
-  non-zero). The old `exported N attribute(s)` wording is gone. Nothing
+  entries` (the `kept`/`removed`/`excluded`/`dropped` clauses appear only
+  when non-zero). The old `exported N attribute(s)` wording is gone. Nothing
   in this repo greps it and `--format` is inert for `export`, so this
   human line is export's only output surface — noted because the v1.0
   freeze is near and an external consumer could be matching on it.

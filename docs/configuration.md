@@ -154,7 +154,13 @@ See [registry-mode.md](registry-mode.md) for the registry contract.
 `name` matches any pattern, it is treated as **managed out of band**
 and is skipped by every command:
 
-- `export` does not write it to disk
+- `export` does not fetch it from Braze or write what Braze says about
+  it. For the directory-backed kinds that means no file is written at
+  all. The single-file Custom Attribute registry is the exception in
+  form only: an excluded entry already in `registry.yaml` is carried
+  through untouched rather than dropped — the file has to be rewritten
+  as a whole, and deleting the entry would be a statement about it. See
+  [registry-mode.md](registry-mode.md#what-export-writes).
 - `diff` / `apply` ignore it on both sides (so a locally-excluded
   resource will not surface as "missing from Braze" or "orphaned")
 - `validate` skips its structural and naming-pattern checks

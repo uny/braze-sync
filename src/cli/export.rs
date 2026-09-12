@@ -42,7 +42,10 @@ pub struct ExportArgs {
     ///
     /// Entries matching `exclude_patterns` are kept even here — excluded
     /// means the remote is not consulted about them, so the remote's
-    /// silence is not evidence either.
+    /// silence is not evidence either. The one exception is the corrupt-
+    /// file recovery below: identifying an excluded entry means reading
+    /// the file, so a file that will not load takes them with it, and
+    /// the summary line says so.
     ///
     /// `--prune` is also the recovery path for a `registry.yaml` that no
     /// longer parses: it is the one mode that tolerates a parse error.
@@ -50,9 +53,16 @@ pub struct ExportArgs {
     /// it dropped — so when the read fails it reports that the count is
     /// unknown rather than reporting zero.
     ///
-    /// Affects `custom_attribute` only; no other resource kind replaces
-    /// local state on export.
-    #[arg(long)]
+    /// Affects `custom_attribute` only. `tags/registry.yaml` is
+    /// single-file too, but it is rebuilt from the tags local resources
+    /// reference rather than from a remote list, so no other kind has
+    /// state a workspace's silence can remove.
+    ///
+    /// Conflicts with `--name`. `export` ignores `--name` for
+    /// `custom_attribute` (the registry is a single file), so the two
+    /// together would read as "prune this one entry" and do the exact
+    /// opposite — rebuild the whole file.
+    #[arg(long, conflicts_with = "name")]
     pub prune: bool,
 }
 
@@ -72,7 +82,16 @@ pub async fn run(
     // `--prune` only means something for the single-file Custom Attribute
     // registry. Silently accepting it elsewhere would let an operator
     // believe a rebuild happened.
-    if args.prune && !kinds.contains(&ResourceKind::CustomAttribute) {
+    //
+    // Keyed off `--resource`, not off `kinds`: when the operator named
+    // `custom_attribute` and it is disabled in config, `selected_kinds`
+    // has already said so and returned nothing. Saying "it has no effect
+    // on the selected resource kind(s)" on top of that would name the
+    // wrong cause — they picked the right kind; it is switched off.
+    if args.prune
+        && !kinds.contains(&ResourceKind::CustomAttribute)
+        && args.resource != Some(ResourceKind::CustomAttribute)
+    {
         eprintln!(
             "⚠ --prune affects custom_attribute only; it has no effect on \
              the selected resource kind(s)"
@@ -409,11 +428,12 @@ pub(crate) fn collect_local_tag_references(
 
 /// What one Custom Attribute registry export did to the file.
 ///
-/// `export` is the only writer of `registry.yaml`, and the registry is
-/// the only resource stored as a single file — so it is the only kind
-/// where a write can *remove* local state. The counts are reported
-/// separately because a single "N attributes written" count cannot say
-/// whether entries disappeared.
+/// `export` is the only writer of `registry.yaml`, and it is the only
+/// kind whose export can drop an entry the *remote* did not speak to —
+/// `tags/registry.yaml` is single-file too, but it is rebuilt from local
+/// resource frontmatter, so nothing there turns on what Braze returned.
+/// The counts are reported separately because a single "N attributes
+/// written" count cannot say whether entries disappeared.
 struct RegistryExport {
     /// Entries taken from the Braze response.
     refreshed: usize,
@@ -429,6 +449,16 @@ struct RegistryExport {
     /// replaced was corrupt, so the number is genuinely unknown — which
     /// has to be said rather than reported as zero.
     removed: Option<usize>,
+    /// Surplus entries dropped because two or more shared a name. Counted
+    /// in *entries*, not names — this is the "how many lines vanished"
+    /// number, whereas the warning that names them counts names.
+    ///
+    /// Reported separately from `removed`, and never folded into it:
+    /// these went because the file disagreed with itself, not because a
+    /// workspace was silent about them. Folding them in would also make
+    /// plain `export` — which reports `removed: Some(0)` — claim it
+    /// removed nothing on a run that did.
+    collapsed_duplicates: usize,
 }
 
 impl RegistryExport {
@@ -445,7 +475,17 @@ impl RegistryExport {
             // the same silent destructive write this function was changed
             // to stop making. (A file that could not be *read* does not
             // reach here at all — that aborts.)
-            None => parts.push("replaced a corrupt registry, entries removed: unknown".into()),
+            // The excluded clause is not a detail: everywhere else
+            // `--prune` promises to keep excluded entries, and this is
+            // the one path where it cannot — reading the file is what
+            // would have identified them. Saying only "unknown" would
+            // leave the operator holding a promise that quietly did not
+            // apply to the run they just made.
+            None => parts.push(
+                "replaced a corrupt registry, entries removed: unknown \
+                 (any excluded entries it held could not be kept)"
+                    .into(),
+            ),
             Some(n) if n > 0 => parts.push(format!(
                 "removed {n} registry entr{} this workspace does not have",
                 plural_y(n)
@@ -466,6 +506,16 @@ impl RegistryExport {
                 plural_y(self.kept_excluded)
             ));
         }
+        if self.collapsed_duplicates > 0 {
+            // Named separately from `removed` so that a plain `export`
+            // — which removes nothing on the remote's account — cannot
+            // report a run that deleted lines as if it had deleted none.
+            parts.push(format!(
+                "dropped {} duplicate entr{}",
+                self.collapsed_duplicates,
+                plural_y(self.collapsed_duplicates)
+            ));
+        }
         format!("✓ custom_attribute: {}", parts.join(", "))
     }
 }
@@ -474,10 +524,16 @@ impl RegistryExport {
 /// corrupt" rather than "the file could not be reached".
 ///
 /// Only the first is something `--prune` is asked to recover from. A
-/// permission fault, or a path that is not a file, is not a registry
-/// anyone asked to replace, and treating it as one would be a silent
-/// destructive write. (A missing file is neither: `load_registry` maps
-/// `NotFound` to `Ok(None)` before this is consulted.)
+/// permission fault, or a path `read_to_string` refuses (a directory),
+/// is not a registry anyone asked to replace, and treating it as one
+/// would be a silent destructive write. (A missing file is neither:
+/// `load_registry` maps `NotFound` to `Ok(None)` before this is
+/// consulted.)
+///
+/// "Not a file" is not the boundary, and saying so would overclaim: a
+/// FIFO at the registry path does not error here, it blocks in
+/// `read_to_string` until something opens the other end. The boundary
+/// is what the read *returns*.
 fn is_corrupt_content(e: &crate::error::Error) -> bool {
     match e {
         crate::error::Error::YamlParse { .. } => true,
@@ -568,13 +624,17 @@ async fn export_custom_attributes(
     let mut registry_only: BTreeMap<&str, &CustomAttribute> = BTreeMap::new();
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     let mut duplicated: BTreeSet<&str> = BTreeSet::new();
+    let mut collapsed_duplicates: usize = 0;
     for a in local.iter().flat_map(|r| r.attributes.iter()) {
         let name = a.name.as_str();
         if !seen.insert(name) {
-            // Count names, not surplus entries: three entries for one
-            // name is one duplicated name, and a `count` field that says
-            // 2 there would be read as two names.
+            // Two units, deliberately. The warning names *names*: three
+            // entries for one name is one duplicated name, and a count
+            // of 2 there would be read as two names. The summary line
+            // counts *entries*, because that is how many lines the write
+            // is about to delete.
             duplicated.insert(name);
+            collapsed_duplicates += 1;
         }
         if is_excluded(name, excludes) {
             excluded.insert(name, a);
@@ -592,11 +652,19 @@ async fn export_custom_attributes(
         // excluded, neither local entry survives — the remote value
         // overwrites both. What holds in every case is that one entry
         // per name is written.
-        tracing::warn!(
-            count = duplicated.len(),
-            "duplicate custom attribute name(s) in local registry; \
-             only one entry per name is written (run `validate` to \
-             catch this)"
+        //
+        // `eprintln!`, not `tracing::warn!` as in `diff`, and the names
+        // spelled out rather than counted: this is the one line standing
+        // between an operator and a deleted entry, and a `tracing` line
+        // is silenced by whatever `RUST_LOG` their shell happens to
+        // carry. The names have to be here because `validate` cannot be
+        // the fallback — it skips excluded names before its own
+        // duplicate check, so for exactly the out-of-band entries this
+        // deletion hurts most, it reports nothing.
+        eprintln!(
+            "⚠ custom_attribute: duplicate name(s) in the local registry \
+             — only one entry per name is written, the rest are dropped: {}",
+            duplicated.iter().copied().collect::<Vec<_>>().join(", ")
         );
     }
 
@@ -626,5 +694,6 @@ async fn export_custom_attributes(
         } else {
             Some(registry_only_count)
         },
+        collapsed_duplicates,
     })
 }

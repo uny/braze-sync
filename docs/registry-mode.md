@@ -27,7 +27,7 @@ be dishonest. `braze-sync` runs the one mode that is actually honest:
 ## What the registry is
 
 A single file — `custom_attributes/registry.yaml` — enumerates the
-Custom Attributes that exist in Braze, along with lightweight metadata:
+Custom Attributes that exist in Braze, along with lightweight metadata.
 
 Usually that is one workspace's set. It need not be: the registry is a
 plain file in Git, and nothing binds it to a single workspace. A project
@@ -122,12 +122,15 @@ pretends to be more powerful than it is.
 
 `export` refreshes the entries Braze returned and **keeps the rest**.
 
-That distinction only exists for this resource kind. Every other kind is
-directory-backed — one file per catalog, content block, or template — so
+That distinction only exists for this resource kind. Catalogs, content
+blocks and templates are directory-backed — one file per resource — so
 `export` writing the resources Braze returned leaves a local-only
 resource untouched for free. The registry is a single file, so a write
 here decides membership for the whole set, and the same behaviour has to
-be spelled out rather than falling out of the layout.
+be spelled out rather than falling out of the layout. (`tags/registry.yaml`
+is single-file too, but it is rebuilt from the tags your local resources
+reference, not from a remote list — Braze exposes no tag API at all —
+so nothing there turns on what a workspace returned.)
 
 Keeping is the correct default because absence is not evidence. Braze
 creates an attribute the first time `/users/track` carries it, so an
@@ -197,9 +200,18 @@ entries it dropped; when corruption stops it obtaining them, whether at
 the read or at the parse, it reports the count as **unknown** rather
 than as zero.
 
+That recovery path is the one exception to the excluded rule above, and
+the summary line says so: identifying an excluded entry means reading
+the file, so a registry that will not load takes its excluded entries
+with it. If you have out-of-band entries you cannot afford to lose,
+repair the YAML by hand instead of reaching for `--prune`.
+
 A read that fails because the file cannot be *reached* — a permission
-fault, a path that is not a file — aborts instead, `--prune` included. A
-registry nobody can read is not a registry anyone asked to replace.
+fault, or a directory in place of the file — aborts instead, `--prune`
+included. A registry nobody can read is not a registry anyone asked to
+replace. The test is what the read returns, not what the path is: a
+named pipe at that path does not abort, it blocks until a writer shows
+up.
 
 Do not put `--prune` in a scheduled job that runs against a single
 environment unless that environment's workspace really is the whole

@@ -1311,19 +1311,24 @@ async fn export_ca_collapses_duplicate_registry_names_last_wins() {
     // but doing it silently would leave the command that performs the
     // deletion as the quiet one of the two.
     assert!(
-        stderr.contains("duplicate custom attribute name"),
+        stderr.contains("duplicate name(s) in the local registry"),
         "export must warn about the collapsed duplicate:\n{stderr}"
     );
     assert!(
         !content.contains("description: middle"),
         "content:\n{content}"
     );
-    // One duplicated name, two surplus entries. The count must describe
-    // names: surplus-entry counting would print `count=2` here, which an
-    // operator reads as two duplicated names.
+    // One duplicated name, two surplus entries — reported in their own
+    // units. The warning names the name (a count alone leaves the
+    // operator nothing to search for); the summary counts the entries
+    // that actually left the file.
     assert!(
-        stderr.contains("count=1"),
-        "the warning must count names, not surplus entries:\n{stderr}"
+        stderr.contains("dropped: registry_only"),
+        "the warning must name the duplicated name:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("dropped 2 duplicate entries"),
+        "the summary must count the surplus entries, not the names:\n{stderr}"
     );
 }
 
@@ -1492,10 +1497,12 @@ async fn export_ca_prune_reports_unknown_removal_count_on_unparseable_registry()
         stderr.contains("entries removed: unknown"),
         "a replacement of unknown size must say so:\n{stderr}"
     );
-    assert!(
-        !stderr.contains("removed 0"),
-        "must not report zero removals for a file it could not read:\n{stderr}"
-    );
+    // Deliberately no `!stderr.contains("removed 0")` companion here: the
+    // `Some(0)` arm of `summary_line` pushes nothing, so that string is
+    // unreachable for every input and the assertion could not fail. Were
+    // `count_unknown` never set, `removed` would be `Some(0)` and the
+    // summary would carry no removal clause at all — which is exactly what
+    // the assertion above catches.
 }
 
 /// The `done: N resource(s) written` trailer is the only observable of
@@ -1607,5 +1614,256 @@ async fn export_ca_kept_count_pluralizes() {
     assert!(
         stderr.contains("kept 2 registry-only entries"),
         "stderr:\n{stderr}"
+    );
+}
+
+/// The quadrant no other excluded test covers: a name that is excluded
+/// **and** absent from the Braze response. Both existing excluded tests
+/// (`^remote_only$`, `^shared$`) pick a name the mock returns, so the
+/// order of the `is_excluded` / `!remote_names.contains` arms in
+/// `export_custom_attributes` is unpinned by them — swap the two and
+/// they both still pass, because a name in `remote_names` reaches the
+/// `excluded` bucket either way.
+///
+/// This is also the *typical* shape of an out-of-band attribute: managed
+/// elsewhere, so the queried workspace has never seen it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_ca_prune_keeps_excluded_entry_absent_from_braze() {
+    let server = mock_ca_server().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path =
+        common::write_config_with_ca_excludes(tmp.path(), &server.uri(), &["^out_of_band$"]);
+    common::write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  - name: out_of_band\n    type: string\n    description: managed elsewhere\n",
+    );
+    let registry_path = tmp.path().join("custom_attributes/registry.yaml");
+
+    let stderr = tokio::task::spawn_blocking(move || run_export(config_path, &["--prune"]))
+        .await
+        .unwrap();
+
+    let content = fs::read_to_string(&registry_path).unwrap();
+    assert!(
+        content.contains("out_of_band"),
+        "--prune deleted an excluded entry the workspace does not have:\n{content}"
+    );
+    assert!(
+        content.contains("managed elsewhere"),
+        "the kept entry must come through verbatim:\n{content}"
+    );
+    // The discriminating half: with the bucket arms swapped this entry
+    // is classified registry-only, so it is not merely absent from the
+    // file — it is reported as a removal.
+    assert!(
+        stderr.contains("kept 1 excluded entr"),
+        "an excluded entry absent from Braze must be reported as excluded, \
+         not as registry-only:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("removed"),
+        "nothing here is the workspace's to remove:\n{stderr}"
+    );
+}
+
+/// A duplicated name that is *also* excluded. The collapse deletes an
+/// out-of-band entry, and `validate` cannot be the safety net — it skips
+/// excluded names before its own duplicate check — so `export` has to
+/// name the name itself and count what it dropped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_ca_names_and_counts_a_collapsed_excluded_duplicate() {
+    let server = mock_ca_server().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config_with_ca_excludes(tmp.path(), &server.uri(), &["^_"]);
+    common::write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n\
+         \x20 - name: _x\n    type: string\n    description: first\n\
+         \x20 - name: _x\n    type: number\n    description: last\n",
+    );
+    let registry_path = tmp.path().join("custom_attributes/registry.yaml");
+
+    let stderr = tokio::task::spawn_blocking(move || run_export(config_path, &[]))
+        .await
+        .unwrap();
+
+    let content = fs::read_to_string(&registry_path).unwrap();
+    assert_eq!(
+        content.matches("- name: _x").count(),
+        1,
+        "duplicate should collapse to one entry:\n{content}"
+    );
+    // Naming it is the whole point: a bare count leaves the operator with
+    // nothing to search for, and `validate` exits 0 on this input.
+    assert!(
+        stderr.contains("_x"),
+        "the dropped duplicate must be named, not just counted:\n{stderr}"
+    );
+    // A plain `export` reports `removed 0` — so the deletion has to be
+    // reported on its own clause or it is reported as not having happened.
+    assert!(
+        stderr
+            .lines()
+            .any(|l| l.ends_with("dropped 1 duplicate entry")),
+        "the collapsed entry must be counted in the summary:\n{stderr}"
+    );
+}
+
+/// The dropped-duplicate count is entries, not names: three entries for
+/// one name plus two for another is three surplus entries across two
+/// names. Counting names here would print `dropped 2`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_ca_dropped_duplicate_count_is_entries_not_names() {
+    let server = mock_ca_server().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    common::write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n\
+         \x20 - name: a\n    type: string\n\
+         \x20 - name: a\n    type: string\n\
+         \x20 - name: a\n    type: string\n\
+         \x20 - name: b\n    type: string\n\
+         \x20 - name: b\n    type: string\n",
+    );
+
+    let stderr = tokio::task::spawn_blocking(move || run_export(config_path, &[]))
+        .await
+        .unwrap();
+
+    assert!(
+        stderr.contains("dropped 3 duplicate entries"),
+        "3 surplus entries (2 from `a`, 1 from `b`) across 2 names — a \
+         name-counting implementation would print `dropped 2`. Also pins \
+         plural_y's plural arm at this call site:\n{stderr}"
+    );
+    // Both names, not just the first.
+    assert!(
+        stderr.contains("a, b"),
+        "every duplicated name must be listed:\n{stderr}"
+    );
+}
+
+/// `--name` is ignored for `custom_attribute`, so pairing it with
+/// `--prune` reads as "drop this one entry" and used to do the opposite
+/// — rebuild the whole registry. clap now refuses the combination.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_ca_rejects_name_with_prune() {
+    let server = mock_ca_server().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    common::write_local_custom_attribute_registry(tmp.path(), EXISTING_REGISTRY);
+    let registry_path = tmp.path().join("custom_attributes/registry.yaml");
+    let before = fs::read_to_string(&registry_path).unwrap();
+
+    let stderr = tokio::task::spawn_blocking(move || {
+        let out = Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap(), "--no-color"])
+            .args([
+                "export",
+                "--resource",
+                "custom_attribute",
+                "--name",
+                "registry_only",
+                "--prune",
+            ])
+            .assert()
+            .failure()
+            .get_output()
+            .clone();
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    })
+    .await
+    .unwrap();
+
+    // A bare `.failure()` would also accept a credential error or a panic
+    // raised after the registry had already been rewritten.
+    assert!(
+        stderr.contains("cannot be used with"),
+        "the failure must be clap's conflict, not something else:\n{stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(&registry_path).unwrap(),
+        before,
+        "a refused invocation must not touch the registry"
+    );
+}
+
+/// `--prune` on a corrupt registry cannot keep excluded entries —
+/// identifying one means reading the file. That is the one hole in the
+/// promise `--prune` makes everywhere else, so the summary line has to
+/// admit it rather than reporting only an unknown count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_ca_prune_admits_it_could_not_keep_excluded_entries() {
+    let server = mock_ca_server().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path =
+        common::write_config_with_ca_excludes(tmp.path(), &server.uri(), &["^out_of_band$"]);
+    common::write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  - name: out_of_band\n    type: [oops\n",
+    );
+    let registry_path = tmp.path().join("custom_attributes/registry.yaml");
+
+    let stderr = tokio::task::spawn_blocking(move || run_export(config_path, &["--prune"]))
+        .await
+        .unwrap();
+
+    let content = fs::read_to_string(&registry_path).unwrap();
+    // The loss is real — pinned so the disclosure below cannot drift away
+    // from the behaviour it describes.
+    assert!(
+        !content.contains("out_of_band"),
+        "precondition: the excluded entry is unrecoverable here:\n{content}"
+    );
+    assert!(
+        stderr.contains("excluded entries") && stderr.contains("could not be kept"),
+        "the one path where --prune breaks its excluded promise must say so:\n{stderr}"
+    );
+}
+
+/// Naming the wrong cause is its own defect: when the operator selected
+/// `custom_attribute` and it is disabled in config, `selected_kinds`
+/// has already said why nothing ran. Adding "it has no effect on the
+/// selected resource kind(s)" tells them they picked the wrong kind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_prune_warning_does_not_misattribute_a_disabled_kind() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = tmp.path().join("braze-sync.config.yaml");
+    fs::write(
+        &config_path,
+        "version: 1\n\
+         default_environment: test\n\
+         environments:\n\
+         \x20 test:\n    api_endpoint: http://127.0.0.1:1\n    api_key_env: BRAZE_API_KEY\n\
+         resources:\n\
+         \x20 custom_attribute:\n    enabled: false\n    path: custom_attributes/registry.yaml\n",
+    )
+    .unwrap();
+
+    let stderr = tokio::task::spawn_blocking(move || {
+        let out = Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap(), "--no-color"])
+            .args(["export", "--resource", "custom_attribute", "--prune"])
+            .assert()
+            .get_output()
+            .clone();
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        stderr.contains("disabled in config"),
+        "precondition: the kind is off, and that is the reason given:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("has no effect on the selected resource kind"),
+        "--prune's inert warning must not contradict the disabled-kind \
+         line above it:\n{stderr}"
     );
 }
