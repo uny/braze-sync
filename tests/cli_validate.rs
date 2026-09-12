@@ -193,6 +193,28 @@ naming:
     );
 }
 
+/// `--env` used to be parsed and ignored by `validate`; an undeclared
+/// name is now the same config error the other commands give.
+#[test]
+fn validate_rejects_undeclared_env() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), Default::default());
+
+    let output = Command::cargo_bin("braze-sync")
+        .unwrap()
+        .args(["--config", config_path.to_str().unwrap(), "--env", "zzz"])
+        .args(["validate"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown environment 'zzz'"),
+        "stderr: {stderr}"
+    );
+}
+
 // =====================================================================
 // Content Block (v0.2.0)
 // =====================================================================

@@ -53,7 +53,9 @@ pub async fn run(
         match kind {
             ResourceKind::CatalogSchema => {
                 let catalogs_root = config_dir.join(&cfg.resources.catalog_schema.path);
-                let excludes = excludes_by_kind.remove(&kind).unwrap_or_default();
+                let excludes = excludes_by_kind
+                    .remove(&kind)
+                    .expect("excludes_for_environment inserts every kind");
                 validate_catalog_schemas(
                     &catalogs_root,
                     cfg.naming.catalog_name_pattern.as_deref(),
@@ -63,7 +65,9 @@ pub async fn run(
             }
             ResourceKind::ContentBlock => {
                 let content_blocks_root = config_dir.join(&cfg.resources.content_block.path);
-                let excludes = excludes_by_kind.remove(&kind).unwrap_or_default();
+                let excludes = excludes_by_kind
+                    .remove(&kind)
+                    .expect("excludes_for_environment inserts every kind");
                 validate_content_blocks(
                     &content_blocks_root,
                     cfg.naming.content_block_name_pattern.as_deref(),
@@ -73,12 +77,16 @@ pub async fn run(
             }
             ResourceKind::EmailTemplate => {
                 let email_templates_root = config_dir.join(&cfg.resources.email_template.path);
-                let excludes = excludes_by_kind.remove(&kind).unwrap_or_default();
+                let excludes = excludes_by_kind
+                    .remove(&kind)
+                    .expect("excludes_for_environment inserts every kind");
                 validate_email_templates(&email_templates_root, &excludes, &mut issues)?;
             }
             ResourceKind::CustomAttribute => {
                 let registry_path = config_dir.join(&cfg.resources.custom_attribute.path);
-                let excludes = excludes_by_kind.remove(&kind).unwrap_or_default();
+                let excludes = excludes_by_kind
+                    .remove(&kind)
+                    .expect("excludes_for_environment inserts every kind");
                 validate_custom_attributes(
                     &registry_path,
                     cfg.naming.custom_attribute_name_pattern.as_deref(),
@@ -88,7 +96,9 @@ pub async fn run(
             }
             ResourceKind::Tag => {
                 let registry_path = config_dir.join(&cfg.resources.tag.path);
-                let excludes = excludes_by_kind.remove(&kind).unwrap_or_default();
+                let excludes = excludes_by_kind
+                    .remove(&kind)
+                    .expect("excludes_for_environment inserts every kind");
                 validate_tags(
                     cfg,
                     config_dir,

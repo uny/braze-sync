@@ -152,8 +152,8 @@ impl ConfigFile {
             for (env_name, env_rc) in &rc.environments {
                 if !self.environments.contains_key(env_name) {
                     return Err(Error::Config(format!(
-                        "resources.{}.environments.{env_name}: not declared in the \
-                         top-level environments map",
+                        "{}.environments.{env_name}: not declared in the top-level \
+                         environments map",
                         kind.as_str()
                     )));
                 }
@@ -553,7 +553,7 @@ resources:
         match err {
             Error::Config(msg) => {
                 assert!(
-                    msg.contains("resources.content_block.environments.prod"),
+                    msg.contains("content_block.environments.prod: not declared"),
                     "msg: {msg}"
                 );
             }
