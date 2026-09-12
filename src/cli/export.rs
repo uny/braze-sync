@@ -5,7 +5,8 @@ use crate::braze::BrazeClient;
 use crate::config::{is_excluded, ResolvedConfig};
 use crate::fs::{catalog_io, content_block_io, custom_attribute_io, email_template_io, tag_io};
 use crate::resource::{
-    ContentBlock, CustomAttributeRegistry, EmailTemplate, ResourceKind, Tag, TagRegistry,
+    ContentBlock, CustomAttribute, CustomAttributeRegistry, EmailTemplate, ResourceKind, Tag,
+    TagRegistry,
 };
 use crate::values::has_placeholders;
 use crate::values::templatize::{templatize_body, FieldKind};
@@ -13,7 +14,7 @@ use anyhow::Context as _;
 use clap::Args;
 use futures::stream::{StreamExt, TryStreamExt};
 use regex_lite::Regex;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use super::{selected_kinds, warn_if_name_excluded, FETCH_CONCURRENCY};
@@ -29,6 +30,48 @@ pub struct ExportArgs {
     /// resource. Requires `--resource`.
     #[arg(long, requires = "resource")]
     pub name: Option<String>,
+
+    /// Rebuild the Custom Attribute registry from the queried workspace
+    /// alone, dropping entries that workspace does not have.
+    ///
+    /// Without this, `export` refreshes the entries Braze returned and
+    /// keeps the rest: an attribute materializes on first `/users/track`
+    /// traffic, so its absence from one workspace is not evidence the
+    /// registry entry is wrong. Pass `--prune` when you do mean "the
+    /// remote is the truth, rewrite the file".
+    ///
+    /// Entries matching `exclude_patterns` are kept even here — excluded
+    /// means the remote is not consulted about them, so the remote's
+    /// silence is not evidence either. The one exception is the corrupt-
+    /// file recovery below: identifying an excluded entry means reading
+    /// the file, so a file that will not load takes them with it, and
+    /// the summary line says so.
+    ///
+    /// `--prune` is also the recovery path for a `registry.yaml` that no
+    /// longer parses: it is the one mode that tolerates a parse error.
+    /// It still reads the file when it can, to report how many entries
+    /// it dropped — so when the read fails it reports that the count is
+    /// unknown rather than reporting zero.
+    ///
+    /// Affects `custom_attribute` only. `tags/registry.yaml` is
+    /// single-file too, but it is rebuilt from the tags local resources
+    /// reference rather than from a remote list, so no other kind has
+    /// state a workspace's silence can remove.
+    ///
+    /// Conflicts with `--name`, for every kind rather than just this
+    /// one. `export` ignores `--name` for `custom_attribute` (the
+    /// registry is a single file), so the pair reads as "prune this one
+    /// entry" and does the exact opposite — rebuilds the whole file.
+    ///
+    /// The conflict is not narrowed to `--resource custom_attribute`
+    /// because a static refusal beats a runtime one here: clap rejects
+    /// the invocation before the first API call, whereas a check inside
+    /// the `custom_attribute` arm would fire after other kinds had
+    /// already been written. The cost is that `--name X --prune` on some
+    /// other kind — where `--prune` was inert and `--name` was honoured
+    /// — is now an error rather than a warning.
+    #[arg(long, conflicts_with = "name")]
+    pub prune: bool,
 }
 
 pub async fn run(
@@ -43,6 +86,34 @@ pub async fn run(
     let tags_path = config_dir.join(&resolved.resources.tag.path);
     let client = BrazeClient::from_resolved(&resolved);
     let kinds = selected_kinds(args.resource, &resolved.resources);
+
+    // `--prune` only means something for the single-file Custom Attribute
+    // registry. Silently accepting it elsewhere would let an operator
+    // believe a rebuild happened.
+    //
+    // Which reason is given matters as much as saying something. There
+    // are two ways for the kind to be absent, and naming the wrong one
+    // sends the operator to the wrong place: a different `--resource`
+    // means they picked another kind, whereas `enabled: false` means
+    // they picked the right one and it is switched off. `selected_kinds`
+    // announces the disabled case only when the kind was named — its
+    // no-`--resource` branch logs at debug, invisible by default — so
+    // this cannot defer to it and has to say so itself.
+    if args.prune && !kinds.contains(&ResourceKind::CustomAttribute) {
+        if resolved.resources.custom_attribute.enabled {
+            eprintln!(
+                "⚠ --prune affects custom_attribute only; it has no effect on \
+                 the selected resource kind(s)"
+            );
+        } else if args.resource != Some(ResourceKind::CustomAttribute) {
+            // Named-and-disabled is the one case already covered:
+            // `selected_kinds` printed the reason a moment ago.
+            eprintln!(
+                "⚠ --prune affects custom_attribute only, and it is disabled \
+                 in config; nothing was pruned"
+            );
+        }
+    }
 
     let mut total_written: usize = 0;
     for kind in kinds {
@@ -98,15 +169,16 @@ pub async fn run(
                          (the registry is a single file); exporting all attributes"
                     );
                 }
-                let n = export_custom_attributes(
+                let outcome = export_custom_attributes(
                     &client,
                     &custom_attributes_path,
                     resolved.excludes_for(ResourceKind::CustomAttribute),
+                    args.prune,
                 )
                 .await
                 .context("exporting custom_attribute")?;
-                eprintln!("✓ custom_attribute: exported {n} attribute(s)");
-                total_written += n;
+                eprintln!("{}", outcome.summary_line());
+                total_written += outcome.written();
             }
             ResourceKind::Tag => {
                 if args.name.is_some() {
@@ -371,19 +443,274 @@ pub(crate) fn collect_local_tag_references(
     Ok(tags)
 }
 
+/// What one Custom Attribute registry export did to the file.
+///
+/// `export` is the only writer of `registry.yaml`, and it is the only
+/// kind whose export can drop an entry the *remote* did not speak to —
+/// `tags/registry.yaml` is single-file too, but it is rebuilt from local
+/// resource frontmatter, so nothing there turns on what Braze returned.
+/// The counts are reported separately because a single "N attributes
+/// written" count cannot say whether entries disappeared.
+struct RegistryExport {
+    /// Entries taken from the Braze response.
+    refreshed: usize,
+    /// Entries kept because the queried workspace does not have them.
+    /// Zero under `--prune`.
+    kept_registry_only: usize,
+    /// Entries kept because they match `exclude_patterns`. Kept under
+    /// `--prune` too: "managed out of band" is not a statement about
+    /// which workspace happens to hold them.
+    kept_excluded: usize,
+    /// Entries dropped because the queried workspace does not have them.
+    /// `Some(0)` outside `--prune`. `None` means the file `--prune`
+    /// replaced was corrupt, so the number is genuinely unknown — which
+    /// has to be said rather than reported as zero.
+    removed: Option<usize>,
+    /// Surplus entries dropped because two or more shared a name. Counted
+    /// in *entries*, not names — this is the "how many lines vanished"
+    /// number, whereas the warning that names them counts names.
+    ///
+    /// Reported separately from `removed`, and never folded into it:
+    /// these went because the file disagreed with itself, not because a
+    /// workspace was silent about them. Folding them in would also make
+    /// plain `export` — which reports `removed: Some(0)` — claim it
+    /// removed nothing on a run that did.
+    collapsed_duplicates: usize,
+}
+
+impl RegistryExport {
+    /// Entries actually in the file afterwards.
+    fn written(&self) -> usize {
+        self.refreshed + self.kept_registry_only + self.kept_excluded
+    }
+
+    fn summary_line(&self) -> String {
+        let mut parts = vec![format!("refreshed {} from Braze", self.refreshed)];
+        match self.removed {
+            // A corrupt file that `--prune` replaced. How much it
+            // replaced cannot be established, and reporting 0 would be
+            // the same silent destructive write this function was changed
+            // to stop making. (A file that could not be *read* does not
+            // reach here at all — that aborts.)
+            // The excluded clause is not a detail: everywhere else
+            // `--prune` promises to keep excluded entries, and this is
+            // the one path where it cannot — reading the file is what
+            // would have identified them. Saying only "unknown" would
+            // leave the operator holding a promise that quietly did not
+            // apply to the run they just made.
+            None => parts.push(
+                "replaced a corrupt registry, entries removed: unknown \
+                 (any excluded entries it held could not be kept)"
+                    .into(),
+            ),
+            Some(n) if n > 0 => parts.push(format!(
+                "removed {n} registry entr{} this workspace does not have",
+                plural_y(n)
+            )),
+            Some(_) => {}
+        }
+        if self.kept_registry_only > 0 {
+            parts.push(format!(
+                "kept {} registry-only entr{}",
+                self.kept_registry_only,
+                plural_y(self.kept_registry_only)
+            ));
+        }
+        if self.kept_excluded > 0 {
+            parts.push(format!(
+                "kept {} excluded entr{}",
+                self.kept_excluded,
+                plural_y(self.kept_excluded)
+            ));
+        }
+        if self.collapsed_duplicates > 0 {
+            // Named separately from `removed` so that a plain `export`
+            // — which removes nothing on the remote's account — cannot
+            // report a run that deleted lines as if it had deleted none.
+            parts.push(format!(
+                "dropped {} duplicate entr{}",
+                self.collapsed_duplicates,
+                plural_y(self.collapsed_duplicates)
+            ));
+        }
+        format!("✓ custom_attribute: {}", parts.join(", "))
+    }
+}
+
+/// Whether a failed registry load means "the file's contents are
+/// corrupt" rather than "the file could not be reached".
+///
+/// Only the first is something `--prune` is asked to recover from. A
+/// permission fault, or a path `read_to_string` refuses (a directory),
+/// is not a registry anyone asked to replace, and treating it as one
+/// would be a silent destructive write. (A missing file is neither:
+/// `load_registry` maps `NotFound` to `Ok(None)` before this is
+/// consulted.)
+///
+/// "Not a file" is not the boundary, and saying so would overclaim: a
+/// FIFO at the registry path does not error here, it blocks in
+/// `read_to_string` until something opens the other end. The boundary
+/// is what the read *returns*.
+fn is_corrupt_content(e: &crate::error::Error) -> bool {
+    match e {
+        crate::error::Error::YamlParse { .. } => true,
+        crate::error::Error::Io(io) => io.kind() == std::io::ErrorKind::InvalidData,
+        _ => false,
+    }
+}
+
+fn plural_y(n: usize) -> &'static str {
+    if n == 1 {
+        "y"
+    } else {
+        "ies"
+    }
+}
+
+/// Refresh the Custom Attribute registry from Braze.
+///
+/// Unlike every other resource kind, the registry is a single file, so a
+/// write here decides membership for the whole set rather than for one
+/// resource. Directory-backed kinds preserve a local-only resource for
+/// free — `export` simply never writes that file — and this function
+/// matches that behaviour explicitly: entries the queried workspace does
+/// not return are kept, not dropped.
+///
+/// That is not a courtesy. Braze has no create-attribute endpoint; an
+/// attribute exists once `/users/track` has carried it. A registry entry
+/// missing from one workspace therefore means "no traffic yet here", not
+/// "wrong entry" — and a registry shared by environments that point at
+/// different workspaces has such entries by construction. Dropping them
+/// would also make the `type mismatch: … (run export to update)` hint
+/// `diff` prints a destructive instruction.
+///
+/// Entries Braze *did* return are overwritten wholesale, which is what
+/// keeps that hint's promise: a stale `type` (or `description`, or
+/// `deprecated`) is corrected here. Only membership is preserved.
+///
+/// `--prune` restores the "the remote is the truth" rebuild — for the
+/// entries whose truth the remote actually speaks to. An entry matching
+/// `exclude_patterns` is kept either way: excluded means the remote is
+/// not consulted about it, so the remote's silence says nothing.
 async fn export_custom_attributes(
     client: &BrazeClient,
     registry_path: &Path,
     excludes: &[Regex],
-) -> anyhow::Result<usize> {
-    let attrs: Vec<_> = client
-        .list_custom_attributes()
-        .await?
+    prune: bool,
+) -> anyhow::Result<RegistryExport> {
+    // Classification needs the *unfiltered* names: an excluded attribute
+    // Braze returned is still an attribute Braze returned. Filtering
+    // before this point is what made `--prune` delete an excluded entry
+    // while reporting that the workspace did not have it.
+    let remote_all = client.list_custom_attributes().await?;
+    let remote_names: BTreeSet<String> = remote_all.iter().map(|a| a.name.clone()).collect();
+    let remote: Vec<CustomAttribute> = remote_all
         .into_iter()
         .filter(|a| !is_excluded(&a.name, excludes))
         .collect();
-    let count = attrs.len();
-    let registry = CustomAttributeRegistry { attributes: attrs };
+
+    // `--prune` must not fail on an unparseable registry: replacing one
+    // is what the flag is for, so a parse error there is expected input
+    // rather than an error — but the entry count it replaced is then
+    // unknowable, and `None` says so. Every *other* error still
+    // propagates, `--prune` included: a registry that cannot be read
+    // because of a permission or I/O fault is not a registry anyone
+    // asked to replace, and swallowing that would be a silent
+    // destructive write of exactly the kind this function exists to
+    // prevent. Without `--prune` even the parse error propagates, since
+    // merging cannot proceed without knowing what is in the file.
+    let mut count_unknown = false;
+    let local = match custom_attribute_io::load_registry(registry_path) {
+        Ok(local) => local,
+        // Content corruption: bad YAML syntax, valid YAML of the wrong
+        // shape, or bytes that are not UTF-8 at all — `read_to_string`
+        // rejects those before the parser ever sees them, so they arrive
+        // as `Io(InvalidData)` rather than `YamlParse`.
+        Err(e) if prune && is_corrupt_content(&e) => {
+            count_unknown = true;
+            None
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    // Three buckets, keyed so duplicate local names collapse last-wins,
+    // matching `diff::custom_attribute::diff`. Disagreeing would leave
+    // the two commands unable to converge: whichever entry `export`
+    // kept, `diff` would keep reporting the other one as drift.
+    let mut excluded: BTreeMap<&str, &CustomAttribute> = BTreeMap::new();
+    let mut registry_only: BTreeMap<&str, &CustomAttribute> = BTreeMap::new();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut duplicated: BTreeSet<&str> = BTreeSet::new();
+    let mut collapsed_duplicates: usize = 0;
+    for a in local.iter().flat_map(|r| r.attributes.iter()) {
+        let name = a.name.as_str();
+        if !seen.insert(name) {
+            // Two units, deliberately. The warning names *names*: three
+            // entries for one name is one duplicated name, and a count
+            // of 2 there would be read as two names. The summary line
+            // counts *entries*, because that is how many lines the write
+            // is about to delete.
+            duplicated.insert(name);
+            collapsed_duplicates += 1;
+        }
+        if is_excluded(name, excludes) {
+            excluded.insert(name, a);
+        } else if !remote_names.contains(name) {
+            registry_only.insert(name, a);
+        }
+    }
+    if !duplicated.is_empty() {
+        // `diff` warns on the same input; staying silent here would make
+        // the command that actually drops the losing entry the quiet one.
+        //
+        // The wording deliberately differs from `diff`'s "last entry
+        // wins". That is true on `diff`'s side, but not always here: if
+        // the duplicated name is one Braze returned and it is not
+        // excluded, neither local entry survives — the remote value
+        // overwrites both. What holds in every case is that one entry
+        // per name is written.
+        //
+        // `eprintln!`, not `tracing::warn!` as in `diff`, and the names
+        // spelled out rather than counted: this is the one line standing
+        // between an operator and a deleted entry, and a `tracing` line
+        // is silenced by whatever `RUST_LOG` their shell happens to
+        // carry. The names have to be here because `validate` cannot be
+        // the fallback — it skips excluded names before its own
+        // duplicate check, so for exactly the out-of-band entries this
+        // deletion hurts most, it reports nothing.
+        eprintln!(
+            "⚠ custom_attribute: duplicate name(s) in the local registry \
+             — only one entry per name is written, the rest are dropped: {}",
+            duplicated.iter().copied().collect::<Vec<_>>().join(", ")
+        );
+    }
+
+    let refreshed = remote.len();
+    let kept_excluded = excluded.len();
+    let registry_only_count = registry_only.len();
+
+    let mut attributes = remote;
+    attributes.extend(excluded.into_values().cloned());
+    if !prune {
+        attributes.extend(registry_only.into_values().cloned());
+    }
+
+    // `save_registry` normalizes (sorts by name), so the merged order
+    // does not leak into the file.
+    let registry = CustomAttributeRegistry { attributes };
     custom_attribute_io::save_registry(registry_path, &registry)?;
-    Ok(count)
+
+    Ok(RegistryExport {
+        refreshed,
+        kept_registry_only: if prune { 0 } else { registry_only_count },
+        kept_excluded,
+        removed: if !prune {
+            Some(0)
+        } else if count_unknown {
+            None
+        } else {
+            Some(registry_only_count)
+        },
+        collapsed_duplicates,
+    })
 }

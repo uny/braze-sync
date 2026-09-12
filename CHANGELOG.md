@@ -7,6 +7,142 @@ versions follow [semver](https://semver.org/). Per IMPLEMENTATION.md
 changes; v1.0 freezes the public surface (CLI flags, config schema,
 file formats, JSON output, exit codes) for the full v1.x line.
 
+## [Unreleased]
+
+### Fixed
+
+- **`export` no longer deletes Custom Attribute registry entries the
+  queried workspace does not have (#117).** `export --resource
+  custom_attribute` rebuilt `registry.yaml` from the Braze response
+  alone, so every entry Braze did not return was removed from the file
+  with no warning, no count, and no prompt. Entries matching
+  `exclude_patterns` went the same way, because they were filtered out
+  of the remote list *and then* written over the file.
+
+  `export` now overwrites the entries Braze returned and keeps the rest.
+  Entries Braze did return are still overwritten wholesale — `type`,
+  `description` and `deprecated` — which is what keeps `diff`'s `type
+  mismatch: … (run export to update)` hint working. Only membership
+  changed.
+
+  Keeping is the default because absence is not evidence: Braze creates
+  an attribute on first `/users/track` traffic, so an entry the queried
+  workspace does not return may simply have seen no traffic there. A
+  registry shared by environments pointing at different workspaces has
+  such entries by construction — and for those, the hint above was
+  instructing operators to delete the other workspace's entries.
+
+  This matches what every other resource kind already did. Directory-
+  backed kinds keep a local-only resource for free, since `export`
+  writes one file per resource Braze returned and never removes others.
+  The registry is a single file, so the same behaviour had to be
+  written down rather than falling out of the layout.
+
+  **What this does not fix, and what it costs.** The registry still
+  cannot tell you *which* workspace an entry belongs to, so a genuinely
+  stale entry — a typo, or an attribute retired everywhere — now
+  survives `export` and has to be removed by hand or with `--prune`.
+  Trading a silent deletion for a surviving typo is deliberate: a typo
+  is visible in the file and in `diff`, and a deleted entry is visible
+  nowhere.
+
+  The direct cost is that **`diff --fail-on-drift` now stays red.** A
+  kept entry is `PresentInGitOnly`, which counts toward
+  `changed_count()`, so the gate exits 2 — and `apply` cannot clear it,
+  because there is no create-attribute endpoint. That gate went green
+  before this change only because `export` had deleted the entry; the
+  red is existing disagreement stopping being papered over by data
+  loss, not new information. Until kind-aware drift severity lands
+  (#115), the way to keep such a gate green is
+  `custom_attribute.exclude_patterns`.
+
+### Added
+
+- **`export --prune`.** Restores the previous rebuild for the case where
+  it is what you mean: drop every Custom Attribute registry entry the
+  queried workspace does not return, and report how many. It affects
+  `custom_attribute` only. `tags/registry.yaml` is single-file too, but
+  it is rebuilt from the tags local resources reference rather than from
+  a remote list, so no other kind has state a workspace's silence can
+  remove.
+
+  `--prune` is refused together with `--name`, and refused for every
+  kind rather than only `custom_attribute`: clap rejects the pair before
+  the first API call, where a check inside the `custom_attribute` arm
+  would fire only after other kinds had been written. So
+  `export --resource content_block --name hero --prune`, which used to
+  warn that `--prune` was inert and then export `hero`, now exits 3.
+
+  Entries matching `exclude_patterns` are kept even under `--prune`.
+  Excluded means the remote is not consulted about them, so the
+  remote's silence is not evidence about them either — pruning on that
+  basis would delete out-of-band state while reporting that the
+  workspace did not have it.
+
+  The corrupt-file recovery below is the one exception, and the summary
+  line now says so: identifying an excluded entry means reading the
+  file, so a registry that will not load takes its excluded entries
+  with it.
+
+  `--prune` is also the recovery path for a corrupt `registry.yaml`. It
+  tolerates content corruption — bad YAML syntax, valid YAML of the
+  wrong shape, or bytes that are not UTF-8 at all (those last are
+  rejected by the read, before the parser ever sees them, so they
+  arrive as an I/O error rather than a parse error and had to be
+  admitted explicitly). When it can load the file it reports how many
+  entries it dropped; when corruption stops it obtaining them — at the
+  read for undecodable bytes, at the parse for everything else — it
+  says the count is **unknown** rather than reporting zero.
+
+  A read that fails because the file cannot be *reached* — a permission
+  fault, or a directory in place of the file — aborts instead,
+  `--prune` included. A registry nobody can read is not one anyone
+  asked to replace, and swallowing that is the silent destructive
+  write this release set out to stop. The test is what the read
+  returns, not what the path is: a named pipe there does not abort,
+  it blocks until a writer appears.
+
+### Changed
+
+- **An unparseable `custom_attributes/registry.yaml` now fails `export`
+  instead of being silently overwritten.** Merging has to read the file.
+  Swallowing the parse error and falling back to a full rewrite would
+  reintroduce #117 on exactly the input where it is least expected — a
+  one-character YAML slip would take the whole registry with it. Use
+  `export --prune` to replace a file in that state.
+
+- **Duplicate names in the registry collapse to one entry on `export`**,
+  matching what `diff` already does. Disagreeing left the two commands
+  unable to converge: whichever of two same-named entries `export` kept,
+  `diff` would keep reporting the other as drift. Last-wins among the
+  local entries, except where Braze returned that name and it is not
+  excluded — there the remote value overwrites both, as it does for any
+  refreshed entry.
+
+  Because collapsing deletes entries, `export` names the duplicated
+  names on stderr and counts the dropped entries in its summary line
+  rather than deferring to `validate`, which skips excluded names before
+  its own duplicate check and so cannot see the out-of-band case.
+
+- **`export`'s `done: N resource(s) written` trailer counts kept entries.**
+  For `custom_attribute` it is now what is in the file, not what Braze
+  returned, so the same inputs can print a larger `N` than before. The
+  other kinds are unchanged: what Braze returned for the three
+  directory-backed kinds, and — as before — what local resources
+  reference for `tag`, which has no remote list to count.
+
+- **`export`'s `custom_attribute` stderr line changed.** It now reads
+  `✓ custom_attribute: refreshed N from Braze, kept M registry-only
+  entries` (the `kept`/`removed`/`excluded`/`dropped` clauses appear only
+  when non-zero). The old `exported N attribute(s)` wording is gone. Nothing
+  in this repo greps it and `--format` is inert for `export`, so this
+  human line is export's only output surface — noted because the v1.0
+  freeze is near and an external consumer could be matching on it.
+
+- The `registry.yaml` header comment now states that `export` keeps
+  entries it did not fetch. The file is no longer purely a dump of one
+  workspace, so "Generated by braze-sync" alone was misleading.
+
 ## [0.21.0] — 2026-09-11
 
 ### Added
