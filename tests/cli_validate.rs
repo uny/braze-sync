@@ -135,6 +135,86 @@ fn validate_reports_naming_pattern_violation() {
     assert!(stderr.contains("catalog_name_pattern"), "stderr: {stderr}");
 }
 
+/// `validate` picks the environment the way every other command does
+/// (`--env`, else `default_environment`), so an exclude scoped to one
+/// environment silences a naming violation there and nowhere else.
+#[test]
+fn validate_honors_env_flag_for_environment_scoped_excludes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = tmp.path().join("braze-sync.config.yaml");
+    std::fs::write(
+        &config_path,
+        "version: 1
+default_environment: a
+environments:
+  a:
+    api_endpoint: http://127.0.0.1:1
+    api_key_env: BRAZE_VALIDATE_TEST_NOT_SET
+  b:
+    api_endpoint: http://127.0.0.1:1
+    api_key_env: BRAZE_VALIDATE_TEST_NOT_SET
+resources:
+  content_block:
+    path: content_blocks/
+    environments:
+      a:
+        exclude_patterns: ['^BadName$']
+naming:
+  content_block_name_pattern: '^[a-z][a-z0-9_]*$'
+",
+    )
+    .unwrap();
+    write_local_content_block(tmp.path(), "BadName", "Hello\n");
+
+    let run = |env: &str| {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env_remove("BRAZE_VALIDATE_TEST_NOT_SET")
+            .args(["--config", config_path.to_str().unwrap(), "--env", env])
+            .args(["validate", "--resource", "content_block"])
+            .output()
+            .unwrap()
+    };
+
+    let a = run("a");
+    assert!(
+        a.status.success(),
+        "a stderr: {}",
+        String::from_utf8_lossy(&a.stderr)
+    );
+
+    let b = run("b");
+    assert_eq!(b.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&b.stderr);
+    assert!(stderr.contains("BadName"), "b stderr: {stderr}");
+    assert!(
+        stderr.contains("content_block_name_pattern"),
+        "b stderr: {stderr}"
+    );
+}
+
+/// `--env` used to be parsed and ignored by `validate`; an undeclared
+/// name is now the same config error the other commands give.
+#[test]
+fn validate_rejects_undeclared_env() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), Default::default());
+
+    let output = Command::cargo_bin("braze-sync")
+        .unwrap()
+        .args(["--config", config_path.to_str().unwrap(), "--env", "zzz"])
+        .args(["validate"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown environment 'zzz'"),
+        "stderr: {stderr}"
+    );
+}
+
 // =====================================================================
 // Content Block (v0.2.0)
 // =====================================================================

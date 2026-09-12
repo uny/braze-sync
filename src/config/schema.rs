@@ -92,6 +92,14 @@ pub struct ResourceConfig {
     /// don't produce noise. See `docs/configuration.md §exclude_patterns`.
     #[serde(default)]
     pub exclude_patterns: Vec<String>,
+    /// Per-environment overrides, keyed by a name declared under the
+    /// top-level `environments` map (an undeclared name is a config
+    /// error). Lives here rather than under `environments.<name>` so a
+    /// binary that predates the key rejects the file outright instead
+    /// of silently syncing what the user asked it not to touch — this
+    /// struct is `deny_unknown_fields`, `EnvironmentConfig` is not.
+    #[serde(default)]
+    pub environments: BTreeMap<String, ResourceEnvironmentConfig>,
     /// Apply-time ordering policy. Currently consulted only by
     /// `content_block` apply, which uses `Dependency` to topologically
     /// sort `{{content_blocks.${other}}}` references so a referrer is
@@ -101,6 +109,21 @@ pub struct ResourceConfig {
     /// it on other resource kinds is accepted but inert.
     #[serde(default)]
     pub apply_order: ApplyOrder,
+}
+
+/// Environment-scoped part of a [`ResourceConfig`]. Only exclusion is
+/// scoped today: a resource can exist under the same name in two
+/// workspaces and be syncable in one but not the other (a content block
+/// authored with the drag-and-drop editor cannot be updated through the
+/// API, and DND-ness is a property of one workspace's copy).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceEnvironmentConfig {
+    /// Added to the kind-level `exclude_patterns` when this environment
+    /// is the active one. Same regex dialect and semantics; a name
+    /// matching either list is excluded.
+    #[serde(default)]
+    pub exclude_patterns: Vec<String>,
 }
 
 /// Apply-time ordering policy. `Dependency` topo-sorts content_blocks
@@ -125,6 +148,7 @@ fn default_catalog_schema() -> ResourceConfig {
         enabled: true,
         path: PathBuf::from("catalogs/"),
         exclude_patterns: Vec::new(),
+        environments: BTreeMap::new(),
         apply_order: ApplyOrder::Dependency,
     }
 }
@@ -134,6 +158,7 @@ fn default_content_block() -> ResourceConfig {
         enabled: true,
         path: PathBuf::from("content_blocks/"),
         exclude_patterns: Vec::new(),
+        environments: BTreeMap::new(),
         apply_order: ApplyOrder::Dependency,
     }
 }
@@ -143,6 +168,7 @@ fn default_email_template() -> ResourceConfig {
         enabled: true,
         path: PathBuf::from("email_templates/"),
         exclude_patterns: Vec::new(),
+        environments: BTreeMap::new(),
         apply_order: ApplyOrder::Dependency,
     }
 }
@@ -152,6 +178,7 @@ fn default_custom_attribute() -> ResourceConfig {
         enabled: true,
         path: PathBuf::from("custom_attributes/registry.yaml"),
         exclude_patterns: Vec::new(),
+        environments: BTreeMap::new(),
         apply_order: ApplyOrder::Dependency,
     }
 }
@@ -163,6 +190,7 @@ fn default_tag() -> ResourceConfig {
         enabled: false,
         path: PathBuf::from("tags/registry.yaml"),
         exclude_patterns: Vec::new(),
+        environments: BTreeMap::new(),
         apply_order: ApplyOrder::Dependency,
     }
 }

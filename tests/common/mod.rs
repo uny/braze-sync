@@ -140,6 +140,39 @@ resources:
     config_path
 }
 
+/// Write a config with two environments, `a` and `b`, that both point
+/// at `server_uri`, plus a `content_block` exclude scoped to `a` only.
+/// The two environments share one mock so a test can show the same
+/// name being skipped in one and managed in the other.
+pub fn write_config_with_env_scoped_cb_exclude(
+    dir: &Path,
+    server_uri: &str,
+    pattern: &str,
+) -> PathBuf {
+    let config_path = dir.join("braze-sync.config.yaml");
+    let yaml = format!(
+        "version: 1
+default_environment: a
+environments:
+  a:
+    api_endpoint: {server_uri}
+    api_key_env: BRAZE_API_KEY
+  b:
+    api_endpoint: {server_uri}
+    api_key_env: BRAZE_API_KEY
+resources:
+  content_block:
+    path: content_blocks/
+    environments:
+      a:
+        exclude_patterns:
+          - '{pattern}'
+"
+    );
+    fs::write(&config_path, yaml).unwrap();
+    config_path
+}
+
 /// Write a local tag registry to `<dir>/tags/registry.yaml`.
 pub fn write_local_tag_registry(dir: &Path, yaml_body: &str) {
     let t_dir = dir.join("tags");

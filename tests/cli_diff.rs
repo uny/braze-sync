@@ -10,8 +10,8 @@ mod common;
 
 use assert_cmd::Command;
 use common::{
-    write_config, write_local_content_block, write_local_custom_attribute_registry,
-    write_local_email_template, write_local_schema,
+    write_config, write_config_with_env_scoped_cb_exclude, write_local_content_block,
+    write_local_custom_attribute_registry, write_local_email_template, write_local_schema,
 };
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param};
@@ -256,6 +256,56 @@ async fn diff_content_block_added_when_remote_missing() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("Content Block: fresh"), "stdout: {stdout}");
     assert!(stdout.contains("+ new content block"), "stdout: {stdout}");
+}
+
+/// A name excluded in environment `a` only is skipped there and still
+/// diffed in `b` — the same local file, the same remote, only `--env`
+/// differs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diff_content_block_environment_scoped_exclude_skips_one_environment_only() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/content_blocks/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"content_blocks": []})))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config_with_env_scoped_cb_exclude(tmp.path(), &server.uri(), "^foo$");
+    write_local_content_block(tmp.path(), "foo", "Hello\n");
+
+    let run = |env: &'static str| {
+        let config_path = config_path.clone();
+        tokio::task::spawn_blocking(move || {
+            Command::cargo_bin("braze-sync")
+                .unwrap()
+                .env("BRAZE_API_KEY", "test-key")
+                .args(["--config", config_path.to_str().unwrap(), "--env", env])
+                .args(["diff", "--resource", "content_block", "--fail-on-drift"])
+                .output()
+                .unwrap()
+        })
+    };
+
+    let a = run("a").await.unwrap();
+    assert!(
+        a.status.success(),
+        "a: {}",
+        String::from_utf8_lossy(&a.stderr)
+    );
+    let a_out = String::from_utf8(a.stdout).unwrap();
+    assert!(!a_out.contains("Content Block: foo"), "a stdout: {a_out}");
+
+    let b = run("b").await.unwrap();
+    assert_eq!(
+        b.status.code(),
+        Some(2),
+        "b: {}",
+        String::from_utf8_lossy(&b.stderr)
+    );
+    let b_out = String::from_utf8(b.stdout).unwrap();
+    assert!(b_out.contains("Content Block: foo"), "b stdout: {b_out}");
+    assert!(b_out.contains("+ new content block"), "b stdout: {b_out}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
