@@ -77,6 +77,30 @@ impl<T> DiffOp<T> {
     }
 }
 
+/// How a changed diff is treated by `diff --fail-on-drift`.
+///
+/// Separate from [`ResourceDiff::is_actionable`], which answers a
+/// different question — "can `apply` push this?" — and excludes orphans
+/// and all Tag drift, both of which a CI gate must keep failing on.
+///
+/// The rule for [`DriftTier::ReportOnly`] is deliberately narrow: a
+/// state qualifies only when a *correct* configuration produces it —
+/// when the same output is what a healthy setup looks like, failing
+/// the build over it carries no information. "braze-sync cannot write
+/// it" is not sufficient — most unwritable drift still means a human
+/// must go do something, in the Braze dashboard or in Git.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriftTier {
+    /// No change. Not drift at all.
+    None,
+    /// Real disagreement, but one a correct setup produces — so it
+    /// cannot be told apart from a mistake by looking. Listed in every
+    /// output; does not raise exit 2.
+    ReportOnly,
+    /// Drift a human must act on. Raises exit 2 under `--fail-on-drift`.
+    Gating,
+}
+
 /// Per-resource-kind diff result.
 #[derive(Debug, Clone)]
 pub enum ResourceDiff {
@@ -168,6 +192,33 @@ impl ResourceDiff {
             _ => false,
         }
     }
+
+    /// Which drift tier this diff falls in. See [`DriftTier`] for the
+    /// rule; the per-kind reasoning is below.
+    pub fn drift_tier(&self) -> DriftTier {
+        if !self.has_changes() {
+            return DriftTier::None;
+        }
+        match self {
+            // The only kind with a report-only state; see
+            // `CustomAttributeDiff::drift_tier`.
+            Self::CustomAttribute(d) => d.drift_tier(),
+            // Orphans: Braze exposes no DELETE, but the resolution is a
+            // human archiving the resource in the dashboard (or
+            // deleting the local file). Somebody must act, so this
+            // gates.
+            //
+            // Tags: `ReferencedButUnregistered` blocks `apply`
+            // pre-flight outright, and `RegisteredButUnreferenced` is a
+            // registry entry whose last user is gone. Both are resolved
+            // entirely in Git plus the dashboard — nothing about them
+            // is unresolvable, so both gate.
+            //
+            // Catalog Schema / Content Block / Email Template: `apply`
+            // writes these directly.
+            _ => DriftTier::Gating,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -196,5 +247,99 @@ impl DiffSummary {
 
     pub fn in_sync_count(&self) -> usize {
         self.diffs.iter().filter(|d| !d.has_changes()).count()
+    }
+
+    /// Count of diffs that raise exit 2 under `--fail-on-drift`. A
+    /// subset of [`Self::changed_count`]: the difference is drift a
+    /// correct setup produces, which stays in every listing but must
+    /// not keep a scheduled CI job permanently red.
+    pub fn gating_drift_count(&self) -> usize {
+        self.diffs
+            .iter()
+            .filter(|d| d.drift_tier() == DriftTier::Gating)
+            .count()
+    }
+
+    /// Count of changed diffs that are listed but do not raise exit 2.
+    pub fn report_only_drift_count(&self) -> usize {
+        self.diffs
+            .iter()
+            .filter(|d| d.drift_tier() == DriftTier::ReportOnly)
+            .count()
+    }
+}
+
+#[cfg(test)]
+mod drift_tier_tests {
+    use super::*;
+
+    fn orphan_content_block() -> ResourceDiff {
+        ResourceDiff::ContentBlock(content_block::ContentBlockDiff {
+            name: "legacy_banner".into(),
+            op: DiffOp::Unchanged,
+            text_diff: None,
+            orphan: true,
+        })
+    }
+
+    fn tag(op: tag::TagOp) -> ResourceDiff {
+        ResourceDiff::Tag(tag::TagDiff {
+            name: "promo".into(),
+            op,
+            hints: vec![],
+        })
+    }
+
+    /// An orphan cannot be written by `apply` — Braze exposes no DELETE
+    /// — but archiving it in the dashboard resolves it, so it must keep
+    /// raising exit 2. This is the case that makes `is_actionable()`
+    /// (which excludes orphans) the wrong predicate for the gate.
+    #[test]
+    fn orphans_gate_even_though_apply_cannot_write_them() {
+        let d = orphan_content_block();
+        assert!(!d.is_actionable());
+        assert_eq!(d.drift_tier(), DriftTier::Gating);
+    }
+
+    /// Braze has no tag-mutation API at all, yet both Tag states are
+    /// resolved entirely in Git plus the dashboard. `is_actionable()`
+    /// returns false for every Tag diff; the gate must not follow it.
+    #[test]
+    fn both_tag_states_gate() {
+        for op in [
+            tag::TagOp::ReferencedButUnregistered,
+            tag::TagOp::RegisteredButUnreferenced,
+        ] {
+            let d = tag(op);
+            assert!(!d.is_actionable());
+            assert_eq!(d.drift_tier(), DriftTier::Gating);
+        }
+    }
+
+    #[test]
+    fn unchanged_tag_is_not_drift() {
+        assert_eq!(tag(tag::TagOp::Unchanged).drift_tier(), DriftTier::None);
+    }
+
+    #[test]
+    fn counts_split_changed_into_the_two_tiers() {
+        let report_only = ResourceDiff::CustomAttribute(custom_attribute::CustomAttributeDiff {
+            name: "trial_started_at".into(),
+            op: custom_attribute::CustomAttributeOp::PresentInGitOnly,
+            hints: vec![],
+        });
+        let in_sync = ResourceDiff::ContentBlock(content_block::ContentBlockDiff {
+            name: "promo".into(),
+            op: DiffOp::Unchanged,
+            text_diff: None,
+            orphan: false,
+        });
+        let summary = DiffSummary {
+            diffs: vec![report_only, orphan_content_block(), in_sync],
+        };
+        assert_eq!(summary.changed_count(), 2);
+        assert_eq!(summary.gating_drift_count(), 1);
+        assert_eq!(summary.report_only_drift_count(), 1);
+        assert_eq!(summary.in_sync_count(), 1);
     }
 }

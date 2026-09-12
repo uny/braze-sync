@@ -8,13 +8,16 @@ expression: "JsonFormatter.format(&fixtures::catalog_schema_unchanged())"
     "changed": 0,
     "in_sync": 1,
     "destructive": 0,
-    "orphan": 0
+    "orphan": 0,
+    "gating_drift": 0,
+    "report_only_drift": 0
   },
   "diffs": [
     {
       "kind": "catalog_schema",
       "name": "stable",
       "op": "unchanged",
+      "drift_tier": "none",
       "field_diffs": []
     }
   ]

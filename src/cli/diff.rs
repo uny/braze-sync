@@ -1,8 +1,9 @@
 //! `braze-sync diff` — show drift between local files and Braze.
 //!
 //! Plan output goes to stdout (so `braze-sync diff > drift.txt` is
-//! clean); warnings go to stderr. With `--fail-on-drift`, any drift
-//! exits 2 so CI can gate on a clean tree.
+//! clean); warnings go to stderr. With `--fail-on-drift`, drift on the
+//! gating tier exits 2 so CI can gate on a clean tree; see
+//! `diff::DriftTier` for what is listed but not counted.
 
 use crate::braze::error::BrazeApiError;
 use crate::braze::BrazeClient;
@@ -46,7 +47,10 @@ pub struct DiffArgs {
     #[arg(long, requires = "resource")]
     pub name: Option<String>,
 
-    /// Exit with code 2 if any drift is detected. Intended for CI gates.
+    /// Exit with code 2 if drift somebody must act on is detected.
+    /// Intended for CI gates. Drift a correct setup produces (a Custom
+    /// Attribute awaiting traffic in this workspace) is listed but not
+    /// counted.
     #[arg(long)]
     pub fail_on_drift: bool,
 
@@ -180,11 +184,14 @@ pub async fn run(
         return Err(Error::FallbackGated { count: gated_count }.into());
     }
 
-    if args.fail_on_drift && summary.changed_count() > 0 {
-        return Err(Error::DriftDetected {
-            count: summary.changed_count(),
+    // Gates on the gating tier, not on `changed_count()`: drift a correct
+    // setup produces stays in the listing above but must not hold a
+    // scheduled CI job red forever. See `diff::DriftTier`.
+    if args.fail_on_drift {
+        let gating = summary.gating_drift_count();
+        if gating > 0 {
+            return Err(Error::DriftDetected { count: gating }.into());
         }
-        .into());
     }
 
     Ok(())

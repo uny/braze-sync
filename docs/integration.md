@@ -55,7 +55,7 @@ Exit-code contract:
 |:---:|:---|:---|
 | `0` | In sync | Pass |
 | `1` | Generic failure (I/O, parse, unmapped error) | Fail the build |
-| `2` | Drift detected | Fail the build |
+| `2` | Drift detected — see [what counts as drift](#what-counts-as-drift-for-exit-2) | Fail the build |
 | `3` | `validate` caught a local issue | Fail the build |
 | `4` | API key is invalid | Fail & page the operator |
 | `5` | Rate limit retries exhausted | Retry the job |
@@ -63,6 +63,57 @@ Exit-code contract:
 | `7` | Plan/apply mismatch (`apply --plan`): the op set differs, the remote moved since the plan, or the plan's scope — environment or endpoint — no longer matches | Fail the build; regenerate the plan and re-review |
 | `8` | Fallback gate: unmatched placeholder + unconsumed remote lid value (see `apply --allow-fallback`). Unlike code `2`, this fires unconditionally — plain `diff` has no opt-in flag for it | Fail the build / block merge |
 | `9` | Plan outside its validity window (`apply --max-plan-age`) — the approval expired, or the plan's `generated_at` is too far in the future | Regenerate the plan and re-approve; do not retry the same plan |
+
+### What counts as drift for exit `2`
+
+`--fail-on-drift` does not count every difference it prints. It skips
+the one state a *correct* setup produces — where the output of a
+healthy configuration and of a mistake are the same, so failing the
+build over it says nothing.
+
+The exception today is a Custom Attribute present in the Git registry
+but not in Braze. There is no create endpoint for Custom Attributes —
+an attribute materializes in a workspace on the first `/users/track`
+call carrying it — so when one registry describes more than one
+workspace, every attribute that has not yet seen traffic in the
+workspace you are diffing against is reported here. No `apply` clears
+it, and `export` only clears it by deleting the entry the other
+workspace depends on. Counting it would leave the scheduled job below
+red every day, which hides the genuine drift sitting next to it.
+
+Everything else still fails the build, including drift `apply` cannot
+write: an orphaned Content Block or Email Template (a human archives it
+in the dashboard), a Custom Attribute in Braze but missing from the
+registry (`export` resolves it), a description that disagrees (a human
+edits one side), and both Tag states. None of those is what a healthy
+setup looks like. "braze-sync cannot write it" is not the test.
+
+The cost is stated plainly: a registry typo, or an attribute somebody
+removed on the Braze side, lands in the same state and goes green too.
+So does a `/custom_attributes` fetch that came back short without
+erroring — a `2xx` whose body is empty or lacks `attributes`, or a
+first page whose `Link: rel="next"` header a proxy dropped — because
+every entry the response is missing looks the same as one awaiting
+traffic. (A non-`2xx` response still fails the run with its own code
+from the table above: `4`, `5`, or `1`.) braze-sync cannot tell any of
+these apart,
+which is exactly why it stopped failing the build over the question —
+the row is still printed, so the signal moved from the exit code to
+the output. A run where *every* registry entry is report-only and the
+summary shows nothing in sync is worth a second look before you trust
+the green.
+
+Nothing is hidden either way. Report-only differences appear in the
+table with a count of how many were not charged against the gate, and
+in `--format json` every entry carries a `drift_tier` of `gating`,
+`report_only`, or `none`, with `summary.gating_drift` and
+`summary.report_only_drift` alongside `summary.changed`. To reproduce
+the gate exactly:
+
+```bash
+braze-sync diff --env prod --format json \
+  | jq '[.diffs[] | select(.drift_tier == "gating")] | length'
+```
 
 ## Apply on merge
 
@@ -141,7 +192,9 @@ jq '.summary' diff.json
 #   "changed": 5,
 #   "in_sync": 1,
 #   "destructive": 1,
-#   "orphan": 1
+#   "orphan": 1,
+#   "gating_drift": 4,
+#   "report_only_drift": 1
 # }
 ```
 
@@ -225,3 +278,7 @@ too; otherwise they stay in the step log.
 Even with PR-level drift checks, schedule a daily `diff --fail-on-drift`
 against production. Dashboard edits are the dominant source of drift in
 practice, and they bypass every PR-gated check you install.
+
+A daily job is only useful while a red result still means something, so
+check [what counts as drift](#what-counts-as-drift-for-exit-2) if yours
+is red every morning.

@@ -41,6 +41,19 @@ pub fn render(summary: &DiffSummary, only_drift: bool) -> String {
         summary.destructive_count(),
     );
 
+    // Report-only drift is real disagreement that a correct setup can
+    // produce, so `--fail-on-drift` does not count it. Say so here:
+    // otherwise "N changed" next to exit 0 reads as a bug.
+    let report_only = summary.report_only_drift_count();
+    if report_only > 0 {
+        let _ = writeln!(
+            out,
+            "\nℹ {report_only} change(s) reported only — not counted by \
+             --fail-on-drift. A correct multi-workspace registry produces \
+             them, and the CLI cannot tell those from a typo.",
+        );
+    }
+
     // Always-on orphan report. Braze exposes no DELETE for content blocks
     // or email templates, so braze-sync cannot prune them; surface them as
     // a read-only signal instead of mutating remote state.
@@ -207,7 +220,17 @@ fn render_custom_attribute(out: &mut String, d: &CustomAttributeDiff) {
             out.push_str("   ⚠ exists in Braze but not in Git registry (run export)\n");
         }
         CustomAttributeOp::PresentInGitOnly => {
-            out.push_str("   ⚠ in Git registry but not in Braze (likely a typo)\n");
+            // "likely a typo" assumed the registry mirrors exactly one
+            // workspace. It does not have to: an attribute materializes
+            // on the first `/users/track` call carrying it, so a
+            // registry covering more than one workspace legitimately
+            // describes attributes this one has not seen yet. Hedged
+            // the same way docs/registry-mode.md already is — the CLI
+            // genuinely cannot tell the two apart.
+            out.push_str(
+                "   ⚠ in Git registry but not in Braze \
+                 (a typo, or no /users/track traffic in this workspace yet)\n",
+            );
         }
         CustomAttributeOp::MetadataOnly => {
             out.push_str("   ~ metadata-only change (no API to apply)\n");

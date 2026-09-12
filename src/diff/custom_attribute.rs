@@ -19,7 +19,9 @@ pub struct CustomAttributeDiff {
 pub enum CustomAttributeOp {
     /// Present in Braze but missing from local registry. Action: prompt `export`.
     UnregisteredInGit,
-    /// Present in local registry but not in Braze. Often a typo.
+    /// Present in local registry but not in Braze: a typo, or an
+    /// attribute this workspace has not seen `/users/track` traffic
+    /// for yet. See [`CustomAttributeDiff::drift_tier`].
     PresentInGitOnly,
     /// `deprecated` flag changed. The only mutation `apply` actually performs.
     DeprecationToggled {
@@ -47,6 +49,39 @@ impl CustomAttributeDiff {
     /// block apply of unrelated resources.
     pub fn is_actionable(&self) -> bool {
         matches!(self.op, CustomAttributeOp::DeprecationToggled { .. })
+    }
+
+    /// Which drift tier this diff falls in for `diff --fail-on-drift`.
+    ///
+    /// `PresentInGitOnly` is the one state a *correct* setup produces
+    /// and nobody can clear. A Custom Attribute materializes in a
+    /// workspace on the first `/users/track` call carrying it, and
+    /// there is no create endpoint — so when one registry describes
+    /// more than one workspace, every attribute that has not yet seen
+    /// traffic in *this* workspace is reported here. `apply` has no
+    /// call to make, and `export` can only clear it by deleting the
+    /// entry the other workspace depends on. Under a daily scheduled
+    /// drift check that is a job that is red forever, which hides the
+    /// genuine drift sitting next to it.
+    ///
+    /// Every other state gates:
+    ///
+    /// - `UnregisteredInGit` — the registry is incomplete. `export`
+    ///   resolves it; the whole point of the registry is that the list
+    ///   is complete, so an omission is drift a human must close.
+    /// - `MetadataOnly` — descriptions genuinely disagree. braze-sync
+    ///   has no endpoint for them, but a human editing either the
+    ///   dashboard or the registry does, so this is not unresolvable.
+    /// - `DeprecationToggled` — `apply` writes it.
+    pub fn drift_tier(&self) -> crate::diff::DriftTier {
+        use crate::diff::DriftTier;
+        match self.op {
+            CustomAttributeOp::Unchanged => DriftTier::None,
+            CustomAttributeOp::PresentInGitOnly => DriftTier::ReportOnly,
+            CustomAttributeOp::UnregisteredInGit
+            | CustomAttributeOp::MetadataOnly
+            | CustomAttributeOp::DeprecationToggled { .. } => DriftTier::Gating,
+        }
     }
 }
 
@@ -425,5 +460,57 @@ mod tests {
         let remote = vec![attr("x", false, Some("desc"))];
         let diffs = diff(Some(&registry), &remote);
         assert!(diffs[0].hints.is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // drift tiers (#115)
+    // -----------------------------------------------------------------
+
+    fn tier_of(op: CustomAttributeOp) -> crate::diff::DriftTier {
+        CustomAttributeDiff {
+            name: "x".into(),
+            op,
+            hints: vec![],
+        }
+        .drift_tier()
+    }
+
+    /// The whole point of #115: an attribute declared in a registry that
+    /// covers more than one workspace is not drift anyone can close.
+    #[test]
+    fn present_in_git_only_is_report_only() {
+        assert_eq!(
+            tier_of(CustomAttributeOp::PresentInGitOnly),
+            crate::diff::DriftTier::ReportOnly
+        );
+    }
+
+    /// The states that must keep gating. `UnregisteredInGit` and
+    /// `MetadataOnly` are equally unwritable by `apply`, so "braze-sync
+    /// cannot write it" must not be what decides the tier.
+    #[test]
+    fn every_other_changed_state_gates() {
+        for op in [
+            CustomAttributeOp::UnregisteredInGit,
+            CustomAttributeOp::MetadataOnly,
+            CustomAttributeOp::DeprecationToggled {
+                from: false,
+                to: true,
+            },
+        ] {
+            assert_eq!(
+                tier_of(op.clone()),
+                crate::diff::DriftTier::Gating,
+                "{op:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unchanged_is_not_drift() {
+        assert_eq!(
+            tier_of(CustomAttributeOp::Unchanged),
+            crate::diff::DriftTier::None
+        );
     }
 }

@@ -1,0 +1,29 @@
+---
+source: src/format/snapshot_tests.rs
+expression: "JsonFormatter.format(&fixtures::mixed_drift_tiers())"
+---
+{
+  "version": 1,
+  "summary": {
+    "changed": 2,
+    "in_sync": 0,
+    "destructive": 0,
+    "orphan": 0,
+    "gating_drift": 1,
+    "report_only_drift": 1
+  },
+  "diffs": [
+    {
+      "kind": "custom_attribute",
+      "name": "trial_started_at",
+      "op": "present_in_git_only",
+      "drift_tier": "report_only"
+    },
+    {
+      "kind": "custom_attribute",
+      "name": "plan_tier",
+      "op": "unregistered_in_git",
+      "drift_tier": "gating"
+    }
+  ]
+}

@@ -282,3 +282,25 @@ pub fn custom_attribute_unchanged_with_hint() -> DiffSummary {
         diffs: vec![ResourceDiff::CustomAttribute(ca)],
     }
 }
+
+/// A `PresentInGitOnly` custom attribute next to a genuinely gating
+/// one. Pins the ledger contract from #115: both render, both appear in
+/// `--format json`, and only the second raises exit 2.
+pub fn mixed_drift_tiers() -> DiffSummary {
+    let report_only = CustomAttributeDiff {
+        name: "trial_started_at".into(),
+        op: CustomAttributeOp::PresentInGitOnly,
+        hints: vec![],
+    };
+    let gating = CustomAttributeDiff {
+        name: "plan_tier".into(),
+        op: CustomAttributeOp::UnregisteredInGit,
+        hints: vec![],
+    };
+    DiffSummary {
+        diffs: vec![
+            ResourceDiff::CustomAttribute(report_only),
+            ResourceDiff::CustomAttribute(gating),
+        ],
+    }
+}

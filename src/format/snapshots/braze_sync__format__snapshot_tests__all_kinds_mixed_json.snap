@@ -8,13 +8,16 @@ expression: "JsonFormatter.format(&fixtures::all_kinds_mixed())"
     "changed": 4,
     "in_sync": 0,
     "destructive": 0,
-    "orphan": 0
+    "orphan": 0,
+    "gating_drift": 4,
+    "report_only_drift": 0
   },
   "diffs": [
     {
       "kind": "catalog_schema",
       "name": "cardiology",
       "op": "modified",
+      "drift_tier": "gating",
       "field_diffs": [
         {
           "op": "added",
@@ -29,6 +32,7 @@ expression: "JsonFormatter.format(&fixtures::all_kinds_mixed())"
       "kind": "content_block",
       "name": "promo",
       "op": "modified",
+      "drift_tier": "gating",
       "orphan": false,
       "text_diff": {
         "additions": 5,
@@ -39,6 +43,7 @@ expression: "JsonFormatter.format(&fixtures::all_kinds_mixed())"
       "kind": "email_template",
       "name": "welcome",
       "op": "unchanged",
+      "drift_tier": "gating",
       "subject_changed": true,
       "body_html_diff": {
         "additions": 20,
@@ -52,7 +57,8 @@ expression: "JsonFormatter.format(&fixtures::all_kinds_mixed())"
       "name": "marketing_segment",
       "op": "deprecation_toggled",
       "from": false,
-      "to": true
+      "to": true,
+      "drift_tier": "gating"
     }
   ]
 }

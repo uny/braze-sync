@@ -163,3 +163,17 @@ fn custom_attribute_unchanged_with_hint_table() {
 fn custom_attribute_unchanged_with_hint_json() {
     insta::assert_snapshot!(JsonFormatter.format(&fixtures::custom_attribute_unchanged_with_hint()));
 }
+
+// =====================================================================
+// drift tiers (#115): report-only drift is listed but does not gate
+// =====================================================================
+
+#[test]
+fn mixed_drift_tiers_table() {
+    insta::assert_snapshot!(TableFormatter::default().format(&fixtures::mixed_drift_tiers()));
+}
+
+#[test]
+fn mixed_drift_tiers_json() {
+    insta::assert_snapshot!(JsonFormatter.format(&fixtures::mixed_drift_tiers()));
+}
