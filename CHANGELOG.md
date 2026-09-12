@@ -131,8 +131,9 @@ file formats, JSON output, exit codes) for the full v1.x line.
   block it was told to leave alone. `validate` now honors `--env`,
   which it parsed and ignored before — so `validate --env <undeclared>`
   is now the config error every other command already made it, where
-  it used to run against `default_environment` and pass. Nothing here adds an include/allowlist —
-  a resource is either matched by a pattern or managed.
+  it used to run against `default_environment` and pass. Nothing here
+  adds an include/allowlist — a resource is either matched by a pattern
+  or managed.
 - **`export --prune`.** Restores the previous rebuild for the case where
   it is what you mean: drop every Custom Attribute registry entry the
   queried workspace does not return, and report how many. It affects
