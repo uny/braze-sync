@@ -241,7 +241,8 @@ The map lives on the resource block rather than under
 `environments.<env>` deliberately: the resource block has always
 rejected unknown keys, so a `braze-sync` older than this key refuses
 the whole file instead of silently applying to the block you excluded
-(`environments.<env>` only became strict in the release after).
+(`environments.<env>` accepted stray keys until v0.22.0, so a binary
+that old ignores — rather than refuses — a key placed there).
 
 ### `naming` (optional)
 
