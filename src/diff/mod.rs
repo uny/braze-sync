@@ -380,9 +380,14 @@ mod drift_tier_tests {
             text_diff: None,
             orphan: false,
         });
+        let report_only = ResourceDiff::CustomAttribute(custom_attribute::CustomAttributeDiff {
+            name: "trial_started_at".into(),
+            op: custom_attribute::CustomAttributeOp::PresentInGitOnly,
+            hints: vec![],
+        });
         assert!(added_block.is_actionable());
         assert!(!DiffSummary {
-            diffs: vec![added_block]
+            diffs: vec![added_block, report_only]
         }
         .writes_custom_attribute_blocklist());
         for to in [true, false] {

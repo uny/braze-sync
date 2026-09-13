@@ -1109,7 +1109,7 @@ async fn apply_dry_run_warns_blocklist_provenance_once() {
         Command::cargo_bin("braze-sync")
             .unwrap()
             .env("BRAZE_API_KEY", "test-key")
-            .args(["--config", config_path.to_str().unwrap(), "--no-color"])
+            .args(["--config", config_path.to_str().unwrap()])
             .args(["apply", "--resource", "custom_attribute"]) // no --confirm
             .output()
             .unwrap()
@@ -1164,7 +1164,7 @@ async fn apply_confirm_warns_blocklist_provenance_once_for_two_units() {
             .unwrap()
             .env("BRAZE_API_KEY", "test-key")
             .env("RUST_LOG", "error")
-            .args(["--config", config_path.to_str().unwrap(), "--no-color"])
+            .args(["--config", config_path.to_str().unwrap()])
             .args(["apply", "--resource", "custom_attribute", "--confirm"])
             .output()
             .unwrap()
