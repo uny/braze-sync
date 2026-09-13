@@ -230,6 +230,7 @@ pub async fn run(
     if !fallback_block.is_empty() {
         eprint!("{fallback_block}");
     }
+    super::warn_custom_attribute_blocklist_provenance(&summary);
 
     // Print the fresh plan first so the operator sees it even on mismatch.
     if let Some(saved) = &saved_plan {

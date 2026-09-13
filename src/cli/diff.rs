@@ -161,6 +161,7 @@ pub async fn run(
     if !fallback_block.is_empty() {
         eprint!("{fallback_block}");
     }
+    super::warn_custom_attribute_blocklist_provenance(&summary);
 
     if let Some(path) = &args.plan_out {
         let plan = PlanFile::from_summary(

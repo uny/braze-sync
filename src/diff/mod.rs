@@ -241,6 +241,18 @@ impl DiffSummary {
         self.diffs.iter().filter(|d| d.has_destructive()).count()
     }
 
+    /// Whether `apply` would call `POST /custom_attributes/blocklist`
+    /// for this summary. True when any Custom Attribute diff is
+    /// `DeprecationToggled` — the exact condition under which `apply`
+    /// emits a `CustomAttributeBlocklist` write unit — so the plan-time
+    /// provenance warning (#99) and the write cannot disagree.
+    pub fn writes_custom_attribute_blocklist(&self) -> bool {
+        self.diffs.iter().any(|d| match d {
+            ResourceDiff::CustomAttribute(d) => d.is_actionable(),
+            _ => false,
+        })
+    }
+
     pub fn orphan_count(&self) -> usize {
         self.diffs.iter().filter(|d| d.is_orphan()).count()
     }

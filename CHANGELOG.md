@@ -9,6 +9,20 @@ file formats, JSON output, exit codes) for the full v1.x line.
 
 ## [Unreleased]
 
+### Added
+
+- **`diff` and `apply` warn when a plan will call
+  `POST /custom_attributes/blocklist` (#99).** That endpoint — the only
+  Custom Attribute write braze-sync performs — is absent from Braze's
+  published API reference, and the API key permission it needs is
+  unverified. One stderr line per run now says so whenever a plan
+  toggles `deprecated`, so the dependency is reviewable before the
+  write (blocklist units are batched last, so a 403/404 there would
+  otherwise land after the rest of the plan). No new flag, no JSON
+  change, no exit code change. The module doc and
+  `docs/registry-mode.md` record what is and is not known about the
+  endpoint.
+
 ### Fixed
 
 - **A Braze `data_type` braze-sync does not map is no longer invisible

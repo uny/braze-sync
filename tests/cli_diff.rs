@@ -609,6 +609,112 @@ async fn diff_custom_attribute_deprecation_toggle() {
     assert!(stdout.contains("1 changed"), "stdout: {stdout}");
 }
 
+/// #99: a plan that toggles `deprecated` will call
+/// `POST /custom_attributes/blocklist`, an endpoint outside Braze's
+/// published API reference. `diff` says so once on stderr, whether or
+/// not `--plan-out` is passed, and the exit code is unaffected.
+///
+/// `RUST_LOG=warn` + `--no-color` pinned for the same reason as
+/// `run_export` in `cli_export.rs`: an inherited RUST_LOG would silence
+/// the line, and ANSI escapes would break the substring match.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diff_custom_attribute_deprecation_toggle_warns_blocklist_provenance() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/custom_attributes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "attributes": [
+                {
+                    "name": "legacy_field",
+                    "data_type": "string",
+                    "status": "Active"
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  - name: legacy_field\n    type: string\n    deprecated: true\n",
+    );
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .env("RUST_LOG", "warn")
+            .args(["--config", config_path.to_str().unwrap(), "--no-color"])
+            .args(["diff", "--resource", "custom_attribute"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(output.status.success(), "status: {}", output.status);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        stderr.matches("POST /custom_attributes/blocklist").count(),
+        1,
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("outside Braze's published API reference"),
+        "stderr: {stderr}"
+    );
+}
+
+/// #99 negative: the warning is gated on the blocklist write, not on
+/// the resource kind. A registry that matches Braze produces no
+/// `DeprecationToggled` and therefore no line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diff_custom_attribute_without_toggle_does_not_warn_blocklist_provenance() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/custom_attributes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "attributes": [
+                {
+                    "name": "legacy_field",
+                    "data_type": "string",
+                    "status": "Active"
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  - name: legacy_field\n    type: string\n",
+    );
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .env("RUST_LOG", "warn")
+            .args(["--config", config_path.to_str().unwrap(), "--no-color"])
+            .args(["diff", "--resource", "custom_attribute"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(output.status.success(), "status: {}", output.status);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        !stderr.contains("/custom_attributes/blocklist"),
+        "stderr: {stderr}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn diff_custom_attribute_unregistered_in_git() {
     let server = MockServer::start().await;
