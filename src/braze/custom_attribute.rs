@@ -94,9 +94,11 @@ impl BrazeClient {
 }
 
 fn wire_to_domain(w: CustomAttributeWire) -> CustomAttribute {
+    let (attribute_type, braze_data_type) = wire_data_type_to_domain(w.data_type.as_deref());
     CustomAttribute {
         name: w.name,
-        attribute_type: wire_data_type_to_domain(w.data_type.as_deref()),
+        attribute_type,
+        braze_data_type,
         description: w.description,
         deprecated: w
             .status
@@ -110,19 +112,26 @@ fn wire_to_domain(w: CustomAttributeWire) -> CustomAttribute {
 ///
 /// Braze returns values like `"String (Automatically Detected)"` — we
 /// match on the **leading whitespace-delimited token** (case-insensitive)
-/// to ignore the suffix. Unknown values default to `String` with a warn.
-fn wire_data_type_to_domain(raw: Option<&str>) -> CustomAttributeType {
+/// to ignore the suffix.
+///
+/// A value this table does not know still maps to `String`, but the
+/// raw string comes back as the second element so the guess is
+/// recorded on the attribute (`CustomAttribute::braze_data_type`)
+/// rather than only in a log line. An absent `data_type` is not a
+/// guess in that sense — Braze simply did not say — and maps to
+/// `String` with nothing recorded, as before.
+fn wire_data_type_to_domain(raw: Option<&str>) -> (CustomAttributeType, Option<String>) {
     let lowered = raw.unwrap_or("").to_ascii_lowercase();
 
     // `"object array"` must be checked before the leading-token match:
     // `split_whitespace().next()` would return `"object"` alone and
     // mis-classify Object-Array attributes as Object.
     if lowered.starts_with("object array") {
-        return CustomAttributeType::ObjectArray;
+        return (CustomAttributeType::ObjectArray, None);
     }
 
     let leading = lowered.split_whitespace().next().unwrap_or("");
-    match leading {
+    let mapped = match leading {
         "string" => CustomAttributeType::String,
         "number" | "integer" | "float" => CustomAttributeType::Number,
         "boolean" | "bool" => CustomAttributeType::Boolean,
@@ -140,9 +149,11 @@ fn wire_data_type_to_domain(raw: Option<&str>) -> CustomAttributeType {
                 raw = ?raw,
                 "unknown Braze data_type, defaulting to string"
             );
-            CustomAttributeType::String
+            // `raw` is `Some` here: an absent value took the `""` arm.
+            return (CustomAttributeType::String, raw.map(str::to_owned));
         }
-    }
+    };
+    (mapped, None)
 }
 
 #[derive(Debug, Deserialize)]
@@ -338,6 +349,38 @@ mod tests {
         assert_eq!(attrs[4].attribute_type, CustomAttributeType::Array);
         assert_eq!(attrs[5].attribute_type, CustomAttributeType::Object);
         assert_eq!(attrs[6].attribute_type, CustomAttributeType::ObjectArray);
+        assert!(attrs.iter().all(|a| a.braze_data_type.is_none()));
+    }
+
+    /// A `data_type` the table does not know still lands on `String`,
+    /// but the raw string is kept on the attribute so the guess is
+    /// visible downstream (#122). An absent `data_type` is not a guess
+    /// and records nothing.
+    #[tokio::test]
+    async fn list_records_unknown_data_type_verbatim() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/custom_attributes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "attributes": [
+                    {"name": "geo", "data_type": "Geolocation (Automatically Detected)"},
+                    {"name": "absent"},
+                    {"name": "blank", "data_type": ""}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let client = make_client(&server);
+        let attrs = client.list_custom_attributes().await.unwrap();
+        assert_eq!(attrs[0].attribute_type, CustomAttributeType::String);
+        assert_eq!(
+            attrs[0].braze_data_type.as_deref(),
+            Some("Geolocation (Automatically Detected)")
+        );
+        for a in &attrs[1..] {
+            assert_eq!(a.attribute_type, CustomAttributeType::String);
+            assert_eq!(a.braze_data_type, None, "{}", a.name);
+        }
     }
 
     #[tokio::test]

@@ -5,9 +5,12 @@ expression: "TableFormatter::default().format(&fixtures::mixed_drift_tiers())"
 🏷  Custom Attribute: trial_started_at
    ⚠ in Git registry but not in Braze (a typo, or no /users/track traffic in this workspace yet)
 
+🏷  Custom Attribute: last_known_location
+   ⚠ Braze data_type "Geolocation (Automatically Detected)" is not one braze-sync maps; type string is a guess (a newer braze-sync may map it)
+
 🏷  Custom Attribute: plan_tier
    ⚠ exists in Braze but not in Git registry (run export)
 
-Summary: 2 changed, 0 in sync, 0 orphan, 0 destructive
+Summary: 3 changed, 0 in sync, 0 orphan, 0 destructive
 
-ℹ 1 change(s) reported only — not counted by --fail-on-drift. A correct multi-workspace registry produces them, and the CLI cannot tell those from a typo.
+ℹ 2 change(s) reported only — not counted by --fail-on-drift. A correct setup produces them (a registry covering more than one workspace, or a Braze data_type this braze-sync does not map), so failing on them says nothing.

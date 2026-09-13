@@ -1330,6 +1330,65 @@ async fn json_output_carries_the_drift_tier() {
     assert_eq!(tier_of("other"), "gating");
 }
 
+/// #122, end to end. The registry was authored by an `export` that
+/// guessed `string` for a `data_type` braze-sync does not map, so the
+/// two sides agree on `type` — the exact state that used to be silent.
+/// It must be listed in the table and in JSON with its raw type, and
+/// must not raise exit 2: nothing a human does clears it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unmapped_braze_data_type_is_listed_but_does_not_gate() {
+    let server = drift_tier_server(json!([
+        {"name": "geo", "data_type": "Geolocation (Automatically Detected)"}
+    ]))
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  - name: geo\n    type: string\n    \
+         braze_data_type: Geolocation (Automatically Detected)\n",
+    );
+
+    let run = |config_path: std::path::PathBuf, extra: &'static [&'static str]| {
+        tokio::task::spawn_blocking(move || {
+            Command::cargo_bin("braze-sync")
+                .unwrap()
+                .env("BRAZE_API_KEY", "test-key")
+                .args(["--config", config_path.to_str().unwrap()])
+                .args(["diff", "--resource", "custom_attribute", "--no-color"])
+                .args(extra)
+                .output()
+                .unwrap()
+        })
+    };
+
+    let output = run(config_path.clone(), &["--fail-on-drift"])
+        .await
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "expected exit 0");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Custom Attribute: geo"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("\"Geolocation (Automatically Detected)\" is not one braze-sync maps"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("1 change(s) reported only"),
+        "stdout: {stdout}"
+    );
+
+    let output = run(config_path, &["--format", "json"]).await.unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["summary"]["report_only_drift"], 1);
+    assert_eq!(v["summary"]["gating_drift"], 0);
+    let d = &v["diffs"][0];
+    assert_eq!(d["name"], "geo");
+    assert_eq!(d["op"], "type_unmapped");
+    assert_eq!(d["braze_data_type"], "Geolocation (Automatically Detected)");
+    assert_eq!(d["drift_tier"], "report_only");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn present_in_git_only_hint_does_not_assume_a_single_workspace() {
     let server = drift_tier_server(json!([])).await;

@@ -158,10 +158,18 @@ struct JsonTextDiff {
 #[derive(Serialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 enum JsonCustomAttributeChange {
-    DeprecationToggled { from: bool, to: bool },
+    DeprecationToggled {
+        from: bool,
+        to: bool,
+    },
     UnregisteredInGit,
     PresentInGitOnly,
     MetadataOnly,
+    /// Braze's `data_type` is one braze-sync does not map; `type` on
+    /// both sides is a guess. `braze_data_type` is the raw string.
+    TypeUnmapped {
+        braze_data_type: String,
+    },
     Unchanged,
 }
 
@@ -319,6 +327,11 @@ fn json_custom_attribute_change(op: &CustomAttributeOp) -> JsonCustomAttributeCh
         CustomAttributeOp::UnregisteredInGit => JsonCustomAttributeChange::UnregisteredInGit,
         CustomAttributeOp::PresentInGitOnly => JsonCustomAttributeChange::PresentInGitOnly,
         CustomAttributeOp::MetadataOnly => JsonCustomAttributeChange::MetadataOnly,
+        CustomAttributeOp::TypeUnmapped { braze_data_type } => {
+            JsonCustomAttributeChange::TypeUnmapped {
+                braze_data_type: braze_data_type.clone(),
+            }
+        }
         CustomAttributeOp::Unchanged => JsonCustomAttributeChange::Unchanged,
     }
 }

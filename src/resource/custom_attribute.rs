@@ -24,6 +24,15 @@ pub struct CustomAttribute {
     pub name: String,
     #[serde(rename = "type")]
     pub attribute_type: CustomAttributeType,
+    /// The `data_type` string Braze returned when it is not one
+    /// braze-sync maps. `attribute_type` is then a guess (`String`),
+    /// and this field is what says so — to `diff`, which reports the
+    /// attribute as `TypeUnmapped`, and to the registry, where `export`
+    /// writes it next to the guessed `type` so the reader can see the
+    /// guess too. `None` whenever the mapping succeeded, so the field
+    /// is absent from every registry entry that does not need it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub braze_data_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Marks the attribute deprecated. The only mutation `apply` performs.
@@ -80,18 +89,29 @@ mod tests {
                 CustomAttribute {
                     name: "last_visit".into(),
                     attribute_type: CustomAttributeType::Time,
+                    braze_data_type: None,
                     description: Some("Most recent visit".into()),
                     deprecated: false,
                 },
                 CustomAttribute {
                     name: "legacy_segment".into(),
                     attribute_type: CustomAttributeType::String,
+                    braze_data_type: None,
                     description: None,
                     deprecated: true,
+                },
+                CustomAttribute {
+                    name: "last_known_location".into(),
+                    attribute_type: CustomAttributeType::String,
+                    braze_data_type: Some("Geolocation (Automatically Detected)".into()),
+                    description: None,
+                    deprecated: false,
                 },
             ],
         };
         let yaml = serde_norway::to_string(&r).unwrap();
+        // The marker is written only where it carries information.
+        assert_eq!(yaml.matches("braze_data_type:").count(), 1, "{yaml}");
         let parsed: CustomAttributeRegistry = serde_norway::from_str(&yaml).unwrap();
         assert_eq!(r, parsed);
     }
@@ -110,12 +130,14 @@ mod tests {
                 CustomAttribute {
                     name: "z".into(),
                     attribute_type: CustomAttributeType::String,
+                    braze_data_type: None,
                     description: None,
                     deprecated: false,
                 },
                 CustomAttribute {
                     name: "a".into(),
                     attribute_type: CustomAttributeType::String,
+                    braze_data_type: None,
                     description: None,
                     deprecated: false,
                 },
