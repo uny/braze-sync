@@ -23,8 +23,9 @@ file formats, JSON output, exit codes) for the full v1.x line.
   report-only, by the #115 rule: a correct setup produces it and only a
   braze-sync release that maps the type clears it, so it does not raise
   exit 2. JSON gains the `type_unmapped` op with a `braze_data_type`
-  field; registry entries gain the optional `braze_data_type` key — both
-  additive under `version: 1`. The warn line stays. When the type later
+  field, additive under `version: 1`; registry entries gain the optional
+  `braze_data_type` key, which older builds ignore on read. The warn
+  line stays. When the type later
   maps, `diff` shows a `braze_data_type is stale` hint and the next
   `export` clears the key.
 

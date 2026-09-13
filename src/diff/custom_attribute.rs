@@ -215,6 +215,17 @@ fn diff_single_attribute(
         ));
     }
     if let Some(raw) = &remote.braze_data_type {
+        // The registry recorded a different raw value (Braze renamed
+        // the type, or the entry was hand-edited): still a guess on
+        // both sides, but the recorded one is stale.
+        if let Some(local_raw) = &local.braze_data_type {
+            if local_raw != raw {
+                hints.push(format!(
+                    "braze_data_type is stale: local {local_raw:?} vs Braze {raw:?} \
+                     (run export to update)"
+                ));
+            }
+        }
         return (
             CustomAttributeOp::TypeUnmapped {
                 braze_data_type: raw.clone(),
@@ -553,6 +564,30 @@ mod tests {
         ));
         assert_eq!(diffs[0].hints.len(), 1);
         assert!(diffs[0].hints[0].starts_with("type mismatch: local number vs Braze string"));
+    }
+
+    /// Both sides unmapped but the registry recorded a different raw
+    /// value: the op still names Braze's value, and a hint says the
+    /// registry's is stale.
+    #[test]
+    fn differing_registry_marker_under_unmapped_type_adds_stale_hint() {
+        let registry = CustomAttributeRegistry {
+            attributes: vec![unmapped("geo", "Geolocation")],
+        };
+        let remote = vec![unmapped("geo", "Geo Point")];
+        let diffs = diff(Some(&registry), &remote);
+        match &diffs[0].op {
+            CustomAttributeOp::TypeUnmapped { braze_data_type } => {
+                assert_eq!(braze_data_type, "Geo Point");
+            }
+            other => panic!("expected TypeUnmapped, got {other:?}"),
+        }
+        assert_eq!(diffs[0].hints.len(), 1);
+        assert!(
+            diffs[0].hints[0].contains("local \"Geolocation\" vs Braze \"Geo Point\""),
+            "{}",
+            diffs[0].hints[0]
+        );
     }
 
     /// Once braze-sync maps the type, the registry's marker is stale in
