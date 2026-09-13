@@ -423,6 +423,31 @@ environments:
     }
 
     #[test]
+    fn rejects_unknown_key_under_environment() {
+        // The one struct that was permissive (#49 kept it so for the
+        // removed `values_file` key). A stray key here would otherwise
+        // be the only place in the config file a typo is ignored.
+        let yaml = r#"
+version: 1
+default_environment: dev
+environments:
+  dev:
+    api_endpoint: https://rest.fra-02.braze.eu
+    api_key_env: BRAZE_DEV_API_KEY
+    values_file: values/dev.yaml
+"#;
+        let f = write_config(yaml);
+        let err = ConfigFile::load(f.path()).unwrap_err();
+        match err {
+            Error::YamlParse { source, .. } => {
+                let msg = source.to_string();
+                assert!(msg.contains("values_file"), "msg: {msg}");
+            }
+            other => panic!("expected YamlParse error, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn accepts_exclude_patterns_on_resource_config() {
         let yaml = r#"
 version: 1

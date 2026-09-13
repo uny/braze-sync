@@ -7,6 +7,19 @@ versions follow [semver](https://semver.org/). Per IMPLEMENTATION.md
 changes; v1.0 freezes the public surface (CLI flags, config schema,
 file formats, JSON output, exit codes) for the full v1.x line.
 
+## [Unreleased]
+
+### Changed
+
+- **`environments.<env>` now rejects unknown keys (#121).** It was the
+  one config block that did not: #49 removed the check so configs still
+  carrying the by-then-deleted `values_file` key would keep loading.
+  That shim outlived its reason and left `docs/configuration.md`
+  §Strictness false — a typo under an environment was silently ignored
+  while the same typo anywhere else failed with a line number. A config
+  that still has `values_file` now fails at load (exit 3) with a pointer
+  to the line; delete the key.
+
 ## [0.22.0] — 2026-09-13
 
 ### Fixed

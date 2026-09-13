@@ -238,9 +238,10 @@ this the same way the other commands do — it needs no API key either
 way.
 
 The map lives on the resource block rather than under
-`environments.<env>` deliberately: the resource block rejects unknown
-keys, so a `braze-sync` older than this key refuses the whole file
-instead of silently applying to the block you excluded.
+`environments.<env>` deliberately: the resource block has always
+rejected unknown keys, so a `braze-sync` older than this key refuses
+the whole file instead of silently applying to the block you excluded
+(`environments.<env>` only became strict in the release after).
 
 ### `naming` (optional)
 
