@@ -30,6 +30,7 @@ pub struct ConfigFile {
 pub struct Defaults {}
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnvironmentConfig {
     pub api_endpoint: Url,
     pub api_key_env: String,
@@ -96,8 +97,9 @@ pub struct ResourceConfig {
     /// top-level `environments` map (an undeclared name is a config
     /// error). Lives here rather than under `environments.<name>` so a
     /// binary that predates the key rejects the file outright instead
-    /// of silently syncing what the user asked it not to touch — this
-    /// struct is `deny_unknown_fields`, `EnvironmentConfig` is not.
+    /// of silently syncing what the user asked it not to touch —
+    /// `EnvironmentConfig` was still permissive when this shipped
+    /// (v0.22.0; closed in #121).
     #[serde(default)]
     pub environments: BTreeMap<String, ResourceEnvironmentConfig>,
     /// Apply-time ordering policy. Currently consulted only by
