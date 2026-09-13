@@ -17,8 +17,9 @@ This breaks the usual GitOps loop:
 - `braze-sync` cannot **create** an attribute — Braze creates them.
 - `braze-sync` cannot **delete** an attribute — Braze has no delete
   endpoint (only deprecation).
-- `braze-sync` *can* **toggle the `deprecated` flag** via the attribute
-  metadata endpoint.
+- `braze-sync` *can* **toggle the `deprecated` flag** via
+  `POST /custom_attributes/blocklist` (see [What `apply` does](#what-apply-does)
+  for what is known about that endpoint).
 
 Claiming to "manage" Custom Attributes the same way as catalogs would
 be dishonest. `braze-sync` runs the one mode that is actually honest:

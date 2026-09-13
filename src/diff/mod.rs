@@ -354,4 +354,42 @@ mod drift_tier_tests {
         assert_eq!(summary.report_only_drift_count(), 1);
         assert_eq!(summary.in_sync_count(), 1);
     }
+
+    /// #99: the blocklist provenance warning keys on the one op that
+    /// makes `apply` call `POST /custom_attributes/blocklist`. An
+    /// actionable diff of another kind must not trip it — so the
+    /// predicate cannot be `any(is_actionable)`.
+    #[test]
+    fn blocklist_write_predicate_keys_on_deprecation_toggle_only() {
+        let toggle = |to: bool| {
+            ResourceDiff::CustomAttribute(custom_attribute::CustomAttributeDiff {
+                name: "legacy_field".into(),
+                op: custom_attribute::CustomAttributeOp::DeprecationToggled { from: !to, to },
+                hints: vec![],
+            })
+        };
+        let added_block = ResourceDiff::ContentBlock(content_block::ContentBlockDiff {
+            name: "promo".into(),
+            op: DiffOp::Added(crate::resource::ContentBlock {
+                name: "promo".into(),
+                description: None,
+                content: String::new(),
+                tags: vec![],
+                state: Default::default(),
+            }),
+            text_diff: None,
+            orphan: false,
+        });
+        assert!(added_block.is_actionable());
+        assert!(!DiffSummary {
+            diffs: vec![added_block]
+        }
+        .writes_custom_attribute_blocklist());
+        for to in [true, false] {
+            assert!(DiffSummary {
+                diffs: vec![toggle(to)]
+            }
+            .writes_custom_attribute_blocklist());
+        }
+    }
 }

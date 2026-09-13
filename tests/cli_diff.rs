@@ -612,11 +612,10 @@ async fn diff_custom_attribute_deprecation_toggle() {
 /// #99: a plan that toggles `deprecated` will call
 /// `POST /custom_attributes/blocklist`, an endpoint outside Braze's
 /// published API reference. `diff` says so once on stderr, whether or
-/// not `--plan-out` is passed, and the exit code is unaffected.
-///
-/// `RUST_LOG=warn` + `--no-color` pinned for the same reason as
-/// `run_export` in `cli_export.rs`: an inherited RUST_LOG would silence
-/// the line, and ANSI escapes would break the substring match.
+/// not `--plan-out` is passed, and the exit code is unaffected. The
+/// line is `eprintln!`, so no `RUST_LOG` pin is needed — and an
+/// inherited `RUST_LOG=error` must not silence it, which the
+/// `RUST_LOG=error` below asserts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn diff_custom_attribute_deprecation_toggle_warns_blocklist_provenance() {
     let server = MockServer::start().await;
@@ -645,7 +644,7 @@ async fn diff_custom_attribute_deprecation_toggle_warns_blocklist_provenance() {
         Command::cargo_bin("braze-sync")
             .unwrap()
             .env("BRAZE_API_KEY", "test-key")
-            .env("RUST_LOG", "warn")
+            .env("RUST_LOG", "error")
             .args(["--config", config_path.to_str().unwrap(), "--no-color"])
             .args(["diff", "--resource", "custom_attribute"])
             .output()
@@ -698,7 +697,6 @@ async fn diff_custom_attribute_without_toggle_does_not_warn_blocklist_provenance
         Command::cargo_bin("braze-sync")
             .unwrap()
             .env("BRAZE_API_KEY", "test-key")
-            .env("RUST_LOG", "warn")
             .args(["--config", config_path.to_str().unwrap(), "--no-color"])
             .args(["diff", "--resource", "custom_attribute"])
             .output()
