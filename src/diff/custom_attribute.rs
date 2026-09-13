@@ -145,7 +145,18 @@ pub fn diff(
         let (op, hints) = match (l, r) {
             (Some(local_attr), Some(remote_attr)) => diff_single_attribute(local_attr, remote_attr),
             (Some(_), None) => (CustomAttributeOp::PresentInGitOnly, Vec::new()),
-            (None, Some(_)) => (CustomAttributeOp::UnregisteredInGit, Vec::new()),
+            // Same rule as the gating ops in `diff_single_attribute`:
+            // the entry is what a human acts on, but the unmapped type
+            // must not vanish from this run's output.
+            (None, Some(remote_attr)) => (
+                CustomAttributeOp::UnregisteredInGit,
+                remote_attr
+                    .braze_data_type
+                    .as_deref()
+                    .map(unmapped_hint)
+                    .into_iter()
+                    .collect(),
+            ),
             (None, None) => unreachable!("name came from one of the two maps"),
         };
         diffs.push(CustomAttributeDiff {
@@ -514,6 +525,8 @@ mod tests {
             diffs[0].op,
             CustomAttributeOp::TypeUnmapped { .. }
         ));
+        // No marker locally is not a stale marker.
+        assert!(diffs[0].hints.is_empty(), "{:?}", diffs[0].hints);
     }
 
     /// The gating states still win — they name something a human does
@@ -544,6 +557,23 @@ mod tests {
             assert!(d.hints[0].contains("\"Geolocation\""), "{}", d.hints[0]);
             assert!(d.hints[0].contains("is a guess"), "{}", d.hints[0]);
         }
+    }
+
+    /// An attribute not yet in the registry is `UnregisteredInGit`
+    /// (gating), and the unmapped type rides along as a hint so the raw
+    /// value is in this run's output too, not only after `export`.
+    #[test]
+    fn unregistered_attribute_keeps_unmapped_type_as_hint() {
+        let registry = CustomAttributeRegistry { attributes: vec![] };
+        let remote = vec![unmapped("geo", "Geolocation")];
+        let diffs = diff(Some(&registry), &remote);
+        assert!(matches!(diffs[0].op, CustomAttributeOp::UnregisteredInGit));
+        assert_eq!(diffs[0].hints.len(), 1);
+        assert!(
+            diffs[0].hints[0].contains("\"Geolocation\""),
+            "{}",
+            diffs[0].hints[0]
+        );
     }
 
     /// A hand-edited `type:` under an unmapped Braze type still gets
