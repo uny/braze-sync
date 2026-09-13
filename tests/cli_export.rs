@@ -1097,6 +1097,64 @@ async fn export_ca_still_corrects_a_stale_type() {
     );
 }
 
+/// #122: a `data_type` braze-sync does not map is written as
+/// `type: string` (the guess) *plus* `braze_data_type:` carrying the
+/// raw string, so the registry says the guess is a guess. Once the type
+/// maps, the field goes away — the same wholesale overwrite that
+/// corrects a stale `type`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_ca_writes_unmapped_data_type_next_to_the_guess() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/custom_attributes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "attributes": [
+                { "name": "geo", "data_type": "Geolocation (Automatically Detected)" },
+                { "name": "plain", "data_type": "Number" }
+            ],
+            "message": "success"
+        })))
+        .mount(&server)
+        .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = common::write_config(tmp.path(), &server.uri());
+    // `plain` was exported by an older build that did not map Number
+    // yet; this export must clear its marker.
+    common::write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  - name: plain\n    type: string\n    braze_data_type: Number\n",
+    );
+    let registry_path = tmp.path().join("custom_attributes/registry.yaml");
+
+    let stderr = tokio::task::spawn_blocking(move || run_export(config_path, &[]))
+        .await
+        .unwrap();
+    assert!(
+        stderr.contains("unknown Braze data_type"),
+        "the warn line stays; stderr:\n{stderr}"
+    );
+
+    let content = fs::read_to_string(&registry_path).unwrap();
+    assert_eq!(
+        entry_field(&content, "geo", "type").as_deref(),
+        Some("string")
+    );
+    assert_eq!(
+        entry_field(&content, "geo", "braze_data_type").as_deref(),
+        Some("Geolocation (Automatically Detected)"),
+        "content:\n{content}"
+    );
+    assert_eq!(
+        entry_field(&content, "plain", "type").as_deref(),
+        Some("number")
+    );
+    assert_eq!(
+        entry_field(&content, "plain", "braze_data_type"),
+        None,
+        "a marker for a type that now maps must be cleared:\n{content}"
+    );
+}
+
 /// `entry_field` must stop at the next entry, not run past it. Without
 /// this the helper's one guarantee over a positional slice is untested:
 /// every assertion built on it asks for `type`, which is each entry's

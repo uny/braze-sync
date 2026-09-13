@@ -283,13 +283,21 @@ pub fn custom_attribute_unchanged_with_hint() -> DiffSummary {
     }
 }
 
-/// A `PresentInGitOnly` custom attribute next to a genuinely gating
-/// one. Pins the ledger contract from #115: both render, both appear in
-/// `--format json`, and only the second raises exit 2.
+/// Both report-only custom attribute states (`PresentInGitOnly` from
+/// #115, `TypeUnmapped` from #122) next to a genuinely gating one.
+/// Pins the ledger contract: all three render, all three appear in
+/// `--format json` with their tier, and only the last raises exit 2.
 pub fn mixed_drift_tiers() -> DiffSummary {
     let report_only = CustomAttributeDiff {
         name: "trial_started_at".into(),
         op: CustomAttributeOp::PresentInGitOnly,
+        hints: vec![],
+    };
+    let unmapped = CustomAttributeDiff {
+        name: "last_known_location".into(),
+        op: CustomAttributeOp::TypeUnmapped {
+            braze_data_type: "Geolocation (Automatically Detected)".into(),
+        },
         hints: vec![],
     };
     let gating = CustomAttributeDiff {
@@ -300,6 +308,7 @@ pub fn mixed_drift_tiers() -> DiffSummary {
     DiffSummary {
         diffs: vec![
             ResourceDiff::CustomAttribute(report_only),
+            ResourceDiff::CustomAttribute(unmapped),
             ResourceDiff::CustomAttribute(gating),
         ],
     }

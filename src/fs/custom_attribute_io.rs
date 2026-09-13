@@ -70,18 +70,21 @@ mod tests {
                 CustomAttribute {
                     name: "preferred_clinic_id".into(),
                     attribute_type: CustomAttributeType::String,
+                    braze_data_type: None,
                     description: Some("User's preferred clinic".into()),
                     deprecated: false,
                 },
                 CustomAttribute {
                     name: "last_visit_date".into(),
                     attribute_type: CustomAttributeType::Time,
+                    braze_data_type: None,
                     description: Some("Most recent visit timestamp".into()),
                     deprecated: false,
                 },
                 CustomAttribute {
                     name: "legacy_segment".into(),
                     attribute_type: CustomAttributeType::String,
+                    braze_data_type: None,
                     description: None,
                     deprecated: true,
                 },
@@ -156,6 +159,7 @@ mod tests {
             attributes: vec![CustomAttribute {
                 name: "active_attr".into(),
                 attribute_type: CustomAttributeType::String,
+                braze_data_type: None,
                 description: None,
                 deprecated: false,
             }],
@@ -175,6 +179,7 @@ mod tests {
             attributes: vec![CustomAttribute {
                 name: "old_attr".into(),
                 attribute_type: CustomAttributeType::String,
+                braze_data_type: None,
                 description: None,
                 deprecated: true,
             }],

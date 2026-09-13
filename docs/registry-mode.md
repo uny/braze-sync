@@ -64,13 +64,14 @@ Fields:
 | Field | Type | Role |
 |:---|:---|:---|
 | `name` | string | Attribute name as seen by Braze and the SDK. |
-| `type` | enum | One of `string`, `number`, `boolean`, `time`, `array`. Reported by Braze; not something `apply` can change. |
+| `type` | enum | One of `string`, `number`, `boolean`, `time`, `array`, `object`, `object_array`. Reported by Braze; not something `apply` can change. |
+| `braze_data_type` | string | Present only when Braze reported a `data_type` this braze-sync does not map. `type` is then `string` as a guess, and this field carries Braze's raw value so the guess is visible. Written by `export`; cleared by the next `export` once the type maps. |
 | `description` | string | Free-text documentation. Braze returns it on read but has no write endpoint, so this is effectively a local-only annotation and `apply` ignores changes. |
 | `deprecated` | bool | The only field `apply` can actually write back to Braze. |
 
 ## What `diff` reports
 
-`diff` classifies each attribute into one of five states:
+`diff` classifies each attribute into one of six states:
 
 | State | Meaning | `apply` action |
 |:---|:---|:---|
@@ -79,6 +80,7 @@ Fields:
 | `PresentInGitOnly` | In the registry, not in Braze | Warning — a typo in the registry, or an attribute that has seen no `/users/track` traffic in *this* workspace. Which one it is depends on whether the registry covers more than one workspace; the CLI cannot tell. Listed, but does not raise exit `2` |
 | `DeprecationToggled` | `deprecated` differs between Git and Braze | **Writes** — this is the only mutation `braze-sync` performs for Custom Attributes |
 | `MetadataOnly` | Only `description` differs | Report; no API call (Braze has no description endpoint) |
+| `TypeUnmapped` | Braze reports a `data_type` this braze-sync does not map | Warning — `type: string` on both sides is a guess, not a comparison. Listed every run with Braze's raw value; does not raise exit `2`, since only a braze-sync release that maps the type clears it |
 
 ## What `apply` does
 
@@ -113,8 +115,9 @@ pretends to be more powerful than it is.
    A nightly `diff --fail-on-drift` (see
    [integration.md](integration.md)) will flag new attributes as
    `UnregisteredInGit` so someone opens a PR with a description.
-   Entries the workspace has not seen yet (`PresentInGitOnly`) are
-   listed by the same run but do not fail it.
+   Entries the workspace has not seen yet (`PresentInGitOnly`) and
+   attributes whose Braze `data_type` this braze-sync does not map
+   (`TypeUnmapped`) are listed by the same run but do not fail it.
 
 4. **Deprecate deliberately**. When an attribute is truly retired, mark
    it `deprecated: true` in the registry and run `apply --confirm`.

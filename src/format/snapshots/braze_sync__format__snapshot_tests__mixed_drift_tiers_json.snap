@@ -5,18 +5,25 @@ expression: "JsonFormatter.format(&fixtures::mixed_drift_tiers())"
 {
   "version": 1,
   "summary": {
-    "changed": 2,
+    "changed": 3,
     "in_sync": 0,
     "destructive": 0,
     "orphan": 0,
     "gating_drift": 1,
-    "report_only_drift": 1
+    "report_only_drift": 2
   },
   "diffs": [
     {
       "kind": "custom_attribute",
       "name": "trial_started_at",
       "op": "present_in_git_only",
+      "drift_tier": "report_only"
+    },
+    {
+      "kind": "custom_attribute",
+      "name": "last_known_location",
+      "op": "type_unmapped",
+      "braze_data_type": "Geolocation (Automatically Detected)",
       "drift_tier": "report_only"
     },
     {

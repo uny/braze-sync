@@ -49,8 +49,9 @@ pub fn render(summary: &DiffSummary, only_drift: bool) -> String {
         let _ = writeln!(
             out,
             "\nℹ {report_only} change(s) reported only — not counted by \
-             --fail-on-drift. A correct multi-workspace registry produces \
-             them, and the CLI cannot tell those from a typo.",
+             --fail-on-drift. A correct setup produces them (a registry \
+             covering more than one workspace, or a Braze data_type this \
+             braze-sync does not map) and nothing you do clears them.",
         );
     }
 
@@ -234,6 +235,13 @@ fn render_custom_attribute(out: &mut String, d: &CustomAttributeDiff) {
         }
         CustomAttributeOp::MetadataOnly => {
             out.push_str("   ~ metadata-only change (no API to apply)\n");
+        }
+        CustomAttributeOp::TypeUnmapped { braze_data_type } => {
+            let _ = writeln!(
+                out,
+                "   ⚠ Braze data_type {braze_data_type:?} is not one braze-sync maps; \
+                 type string is a guess (a newer braze-sync may map it)"
+            );
         }
         CustomAttributeOp::Unchanged => {}
     }

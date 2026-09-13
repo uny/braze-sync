@@ -67,19 +67,28 @@ Exit-code contract:
 ### What counts as drift for exit `2`
 
 `--fail-on-drift` does not count every difference it prints. It skips
-the one state a *correct* setup produces — where the output of a
-healthy configuration and of a mistake are the same, so failing the
-build over it says nothing.
+the states a *correct* setup produces — where the output of a healthy
+configuration and of a mistake are the same, so failing the build over
+it says nothing. There are two.
 
-The exception today is a Custom Attribute present in the Git registry
-but not in Braze. There is no create endpoint for Custom Attributes —
-an attribute materializes in a workspace on the first `/users/track`
-call carrying it — so when one registry describes more than one
-workspace, every attribute that has not yet seen traffic in the
-workspace you are diffing against is reported here. No `apply` clears
-it, and `export` only clears it by deleting the entry the other
+A Custom Attribute present in the Git registry but not in Braze
+(`PresentInGitOnly`). There is no create endpoint for Custom
+Attributes — an attribute materializes in a workspace on the first
+`/users/track` call carrying it — so when one registry describes more
+than one workspace, every attribute that has not yet seen traffic in
+the workspace you are diffing against is reported here. No `apply`
+clears it, and `export` only clears it by deleting the entry the other
 workspace depends on. Counting it would leave the scheduled job below
 red every day, which hides the genuine drift sitting next to it.
+
+A Custom Attribute whose Braze `data_type` this braze-sync does not
+map (`TypeUnmapped`). The registry's `type` is `string` because that
+is the guess `export` made, and the row says so — with Braze's raw
+value — every run. Nothing in the dashboard or in Git is wrong, and
+neither side can clear it: `export` writes the same guess back, and
+`type:` cannot name a type braze-sync lacks. Only a release that maps
+the type resolves it. Before this state existed the guess was silent:
+both sides said `string`, so the attribute was in sync forever.
 
 Everything else still fails the build, including drift `apply` cannot
 write: an orphaned Content Block or Email Template (a human archives it

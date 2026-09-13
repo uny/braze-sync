@@ -30,6 +30,14 @@ pub enum CustomAttributeOp {
     },
     /// Only the description changed. No API to update it, so `apply` is a no-op.
     MetadataOnly,
+    /// Braze reports a `data_type` braze-sync does not map, so the
+    /// `string` both sides carry is a guess, not a comparison. The
+    /// registry cannot be wrong or right about the type until
+    /// braze-sync learns it. See [`CustomAttributeDiff::drift_tier`].
+    TypeUnmapped {
+        /// The `data_type` string exactly as Braze returned it.
+        braze_data_type: String,
+    },
     Unchanged,
 }
 
@@ -53,16 +61,26 @@ impl CustomAttributeDiff {
 
     /// Which drift tier this diff falls in for `diff --fail-on-drift`.
     ///
-    /// `PresentInGitOnly` is the one state a *correct* setup produces
-    /// and nobody can clear. A Custom Attribute materializes in a
-    /// workspace on the first `/users/track` call carrying it, and
-    /// there is no create endpoint — so when one registry describes
-    /// more than one workspace, every attribute that has not yet seen
-    /// traffic in *this* workspace is reported here. `apply` has no
-    /// call to make, and `export` can only clear it by deleting the
-    /// entry the other workspace depends on. Under a daily scheduled
-    /// drift check that is a job that is red forever, which hides the
-    /// genuine drift sitting next to it.
+    /// Two states are what a *correct* setup produces and nobody can
+    /// clear, so they are report-only:
+    ///
+    /// - `PresentInGitOnly`. A Custom Attribute materializes in a
+    ///   workspace on the first `/users/track` call carrying it, and
+    ///   there is no create endpoint — so when one registry describes
+    ///   more than one workspace, every attribute that has not yet seen
+    ///   traffic in *this* workspace is reported here. `apply` has no
+    ///   call to make, and `export` can only clear it by deleting the
+    ///   entry the other workspace depends on. Under a daily scheduled
+    ///   drift check that is a job that is red forever, which hides the
+    ///   genuine drift sitting next to it.
+    /// - `TypeUnmapped`. Braze added a `data_type` this build of
+    ///   braze-sync does not know. Nothing in the dashboard or in Git
+    ///   is wrong, and neither side can clear it: `export` writes the
+    ///   same guess back, and hand-editing `type:` cannot name a type
+    ///   the enum lacks. Only a braze-sync release that maps the type
+    ///   resolves it — the same "red forever" shape as above. It is
+    ///   still listed on every run, because a `string` that is a guess
+    ///   must not look like a `string` that was compared.
     ///
     /// Every other state gates:
     ///
@@ -77,7 +95,9 @@ impl CustomAttributeDiff {
         use crate::diff::DriftTier;
         match self.op {
             CustomAttributeOp::Unchanged => DriftTier::None,
-            CustomAttributeOp::PresentInGitOnly => DriftTier::ReportOnly,
+            CustomAttributeOp::PresentInGitOnly | CustomAttributeOp::TypeUnmapped { .. } => {
+                DriftTier::ReportOnly
+            }
             CustomAttributeOp::UnregisteredInGit
             | CustomAttributeOp::MetadataOnly
             | CustomAttributeOp::DeprecationToggled { .. } => DriftTier::Gating,
@@ -143,12 +163,17 @@ pub fn diff(
 /// Priority order:
 ///   1. `deprecated` flag → `DeprecationToggled` (the only actionable mutation)
 ///   2. `description` text → `MetadataOnly`
-///   3. `attribute_type` → `Unchanged` (Braze is authoritative; see below)
+///   3. Braze `data_type` braze-sync does not map → `TypeUnmapped`
+///   4. `attribute_type` → `Unchanged` (Braze is authoritative; see below)
 ///
 /// When both `deprecated` and `description` differ, only
 /// `DeprecationToggled` is reported. This is by design: `apply` will
 /// push the deprecation toggle, and the user should re-run `export`
 /// afterwards to reconcile the description with Braze's state.
+///
+/// The two gating states outrank `TypeUnmapped` for the same reason:
+/// they name something a human does next, and the unmapped type is
+/// still in the output as a hint so it is not lost for that run.
 fn diff_single_attribute(
     local: &CustomAttribute,
     remote: &CustomAttribute,
@@ -159,6 +184,9 @@ fn diff_single_attribute(
         if !opt_str_eq(&local.description, &remote.description) {
             hints.push("description also differs; will be reconciled on next export".into());
         }
+        if let Some(raw) = &remote.braze_data_type {
+            hints.push(unmapped_hint(raw));
+        }
         return (
             CustomAttributeOp::DeprecationToggled {
                 from: remote.deprecated,
@@ -168,6 +196,9 @@ fn diff_single_attribute(
         );
     }
     if !opt_str_eq(&local.description, &remote.description) {
+        if let Some(raw) = &remote.braze_data_type {
+            hints.push(unmapped_hint(raw));
+        }
         return (CustomAttributeOp::MetadataOnly, hints);
     }
     // attribute_type differences are treated as `Unchanged` — not
@@ -183,7 +214,25 @@ fn diff_single_attribute(
             remote.attribute_type.as_str(),
         ));
     }
+    if let Some(raw) = &remote.braze_data_type {
+        return (
+            CustomAttributeOp::TypeUnmapped {
+                braze_data_type: raw.clone(),
+            },
+            hints,
+        );
+    }
+    // Braze now maps a type the registry still records as a guess (a
+    // newer braze-sync, or Braze renamed it). Same shape as a stale
+    // `type`: `export` rewrites the entry.
+    if local.braze_data_type.is_some() {
+        hints.push("braze_data_type is stale; Braze's type now maps (run export to update)".into());
+    }
     (CustomAttributeOp::Unchanged, hints)
+}
+
+fn unmapped_hint(raw: &str) -> String {
+    format!("Braze data_type {raw:?} is not one braze-sync maps; type string is a guess")
 }
 
 #[cfg(test)]
@@ -195,6 +244,7 @@ mod tests {
         CustomAttribute {
             name: name.into(),
             attribute_type: CustomAttributeType::String,
+            braze_data_type: None,
             description: desc.map(Into::into),
             deprecated,
         }
@@ -308,6 +358,7 @@ mod tests {
             attributes: vec![CustomAttribute {
                 name: "x".into(),
                 attribute_type: CustomAttributeType::String,
+                braze_data_type: None,
                 description: Some("new desc".into()),
                 deprecated: true,
             }],
@@ -315,6 +366,7 @@ mod tests {
         let remote = vec![CustomAttribute {
             name: "x".into(),
             attribute_type: CustomAttributeType::String,
+            braze_data_type: None,
             description: Some("old desc".into()),
             deprecated: false,
         }];
@@ -350,6 +402,7 @@ mod tests {
             attributes: vec![CustomAttribute {
                 name: "x".into(),
                 attribute_type: CustomAttributeType::Number,
+                braze_data_type: None,
                 description: None,
                 deprecated: false,
             }],
@@ -357,6 +410,7 @@ mod tests {
         let remote = vec![CustomAttribute {
             name: "x".into(),
             attribute_type: CustomAttributeType::String,
+            braze_data_type: None,
             description: None,
             deprecated: false,
         }];
@@ -396,7 +450,125 @@ mod tests {
         assert!(!make(CustomAttributeOp::PresentInGitOnly).is_actionable());
         assert!(!make(CustomAttributeOp::MetadataOnly).is_actionable());
         assert!(!make(CustomAttributeOp::UnregisteredInGit).is_actionable());
+        assert!(!make(CustomAttributeOp::TypeUnmapped {
+            braze_data_type: "Geolocation".into()
+        })
+        .is_actionable());
         assert!(!make(CustomAttributeOp::Unchanged).is_actionable());
+    }
+
+    // -----------------------------------------------------------------
+    // #122: a Braze data_type braze-sync does not map
+    // -----------------------------------------------------------------
+
+    fn unmapped(name: &str, raw: &str) -> CustomAttribute {
+        CustomAttribute {
+            braze_data_type: Some(raw.into()),
+            ..attr(name, false, None)
+        }
+    }
+
+    /// The silent case the issue is about: `export` wrote `type: string`
+    /// from the guess, so both sides agree — and that agreement is
+    /// exactly what must not read as "in sync".
+    #[test]
+    fn unmapped_remote_type_is_reported_even_when_registry_matches() {
+        let registry = CustomAttributeRegistry {
+            attributes: vec![unmapped("geo", "Geolocation (Automatically Detected)")],
+        };
+        let remote = vec![unmapped("geo", "Geolocation (Automatically Detected)")];
+        let diffs = diff(Some(&registry), &remote);
+        assert_eq!(diffs.len(), 1);
+        assert!(diffs[0].has_changes());
+        match &diffs[0].op {
+            CustomAttributeOp::TypeUnmapped { braze_data_type } => {
+                assert_eq!(braze_data_type, "Geolocation (Automatically Detected)");
+            }
+            other => panic!("expected TypeUnmapped, got {other:?}"),
+        }
+        assert!(diffs[0].hints.is_empty());
+    }
+
+    /// A registry authored before the type existed (no
+    /// `braze_data_type`) is reported the same way: the marker is
+    /// Braze's, not the registry's.
+    #[test]
+    fn unmapped_remote_type_is_reported_when_registry_has_no_marker() {
+        let registry = CustomAttributeRegistry {
+            attributes: vec![attr("geo", false, None)],
+        };
+        let remote = vec![unmapped("geo", "Geolocation")];
+        let diffs = diff(Some(&registry), &remote);
+        assert!(matches!(
+            diffs[0].op,
+            CustomAttributeOp::TypeUnmapped { .. }
+        ));
+    }
+
+    /// The gating states still win — they name something a human does
+    /// next — but the unmapped type stays in the output as a hint.
+    #[test]
+    fn gating_states_outrank_unmapped_type_and_keep_it_as_hint() {
+        let registry = CustomAttributeRegistry {
+            attributes: vec![
+                attr("dep", true, None),
+                attr("desc", false, Some("edited locally")),
+            ],
+        };
+        let remote = vec![
+            unmapped("dep", "Geolocation"),
+            unmapped("desc", "Geolocation"),
+        ];
+        let diffs = diff(Some(&registry), &remote);
+        assert!(matches!(
+            diffs[0].op,
+            CustomAttributeOp::DeprecationToggled {
+                from: false,
+                to: true
+            }
+        ));
+        assert!(matches!(diffs[1].op, CustomAttributeOp::MetadataOnly));
+        for d in &diffs {
+            assert_eq!(d.hints.len(), 1, "{}", d.name);
+            assert!(d.hints[0].contains("\"Geolocation\""), "{}", d.hints[0]);
+            assert!(d.hints[0].contains("is a guess"), "{}", d.hints[0]);
+        }
+    }
+
+    /// A hand-edited `type:` under an unmapped Braze type still gets
+    /// the stale-type hint alongside the op.
+    #[test]
+    fn unmapped_type_keeps_type_mismatch_hint() {
+        let registry = CustomAttributeRegistry {
+            attributes: vec![CustomAttribute {
+                attribute_type: CustomAttributeType::Number,
+                ..unmapped("geo", "Geolocation")
+            }],
+        };
+        let remote = vec![unmapped("geo", "Geolocation")];
+        let diffs = diff(Some(&registry), &remote);
+        assert!(matches!(
+            diffs[0].op,
+            CustomAttributeOp::TypeUnmapped { .. }
+        ));
+        assert_eq!(diffs[0].hints.len(), 1);
+        assert!(diffs[0].hints[0].starts_with("type mismatch: local number vs Braze string"));
+    }
+
+    /// Once braze-sync maps the type, the registry's marker is stale in
+    /// the same way a stale `type:` is: `Unchanged` plus a hint that
+    /// `export` clears.
+    #[test]
+    fn stale_registry_marker_is_a_hint_not_drift() {
+        let registry = CustomAttributeRegistry {
+            attributes: vec![unmapped("geo", "Geolocation")],
+        };
+        let remote = vec![attr("geo", false, None)];
+        let diffs = diff(Some(&registry), &remote);
+        assert!(matches!(diffs[0].op, CustomAttributeOp::Unchanged));
+        assert!(!diffs[0].has_changes());
+        assert_eq!(diffs[0].hints.len(), 1);
+        assert!(diffs[0].hints[0].contains("braze_data_type is stale"));
     }
 
     #[test]
@@ -405,6 +577,7 @@ mod tests {
             attributes: vec![CustomAttribute {
                 name: "x".into(),
                 attribute_type: CustomAttributeType::String,
+                braze_data_type: None,
                 description: Some("local desc".into()),
                 deprecated: true,
             }],
@@ -412,6 +585,7 @@ mod tests {
         let remote = vec![CustomAttribute {
             name: "x".into(),
             attribute_type: CustomAttributeType::String,
+            braze_data_type: None,
             description: Some("remote desc".into()),
             deprecated: false,
         }];
@@ -430,6 +604,7 @@ mod tests {
             attributes: vec![CustomAttribute {
                 name: "x".into(),
                 attribute_type: CustomAttributeType::Number,
+                braze_data_type: None,
                 description: None,
                 deprecated: false,
             }],
@@ -437,6 +612,7 @@ mod tests {
         let remote = vec![CustomAttribute {
             name: "x".into(),
             attribute_type: CustomAttributeType::String,
+            braze_data_type: None,
             description: None,
             deprecated: false,
         }];
@@ -481,6 +657,20 @@ mod tests {
     fn present_in_git_only_is_report_only() {
         assert_eq!(
             tier_of(CustomAttributeOp::PresentInGitOnly),
+            crate::diff::DriftTier::ReportOnly
+        );
+    }
+
+    /// #122: a `data_type` braze-sync does not map is Braze's doing, not
+    /// a mistake on either side, and nothing short of a braze-sync
+    /// release clears it — the same "red forever" shape as
+    /// `PresentInGitOnly`, so the same tier.
+    #[test]
+    fn type_unmapped_is_report_only() {
+        assert_eq!(
+            tier_of(CustomAttributeOp::TypeUnmapped {
+                braze_data_type: "Geolocation".into()
+            }),
             crate::diff::DriftTier::ReportOnly
         );
     }

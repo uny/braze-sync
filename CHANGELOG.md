@@ -9,6 +9,25 @@ file formats, JSON output, exit codes) for the full v1.x line.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A Braze `data_type` braze-sync does not map is no longer invisible
+  (#122).** `wire_data_type_to_domain` fell back to `string` with one
+  warn line, and nothing else recorded the guess — so `export` wrote
+  `type: string`, `diff` compared `string` to `string`, and a new Braze
+  type never surfaced in the table, in `--format json`, or under
+  `--fail-on-drift`. The guess is now carried on the attribute: `export`
+  writes `braze_data_type: <raw>` next to the guessed `type` (absent
+  whenever the mapping succeeded), and `diff` reports the attribute as
+  `TypeUnmapped` with Braze's raw value on every run. The state is
+  report-only, by the #115 rule: a correct setup produces it and only a
+  braze-sync release that maps the type clears it, so it does not raise
+  exit 2. JSON gains the `type_unmapped` op with a `braze_data_type`
+  field; registry entries gain the optional `braze_data_type` key — both
+  additive under `version: 1`. The warn line stays. When the type later
+  maps, `diff` shows a `braze_data_type is stale` hint and the next
+  `export` clears the key.
+
 ### Changed
 
 - **`environments.<env>` now rejects unknown keys (#121).** It was the
