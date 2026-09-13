@@ -19,15 +19,17 @@ file formats, JSON output, exit codes) for the full v1.x line.
   `--fail-on-drift`. The guess is now carried on the attribute: `export`
   writes `braze_data_type: <raw>` next to the guessed `type` (absent
   whenever the mapping succeeded), and `diff` reports the attribute as
-  `TypeUnmapped` with Braze's raw value on every run. The state is
+  `TypeUnmapped` with Braze's raw value; when a gating state
+  (`DeprecationToggled`, `MetadataOnly`, `UnregisteredInGit`) wins the
+  row, the raw value is kept as a hint instead. The state is
   report-only, by the #115 rule: a correct setup produces it and only a
   braze-sync release that maps the type clears it, so it does not raise
   exit 2. JSON gains the `type_unmapped` op with a `braze_data_type`
   field, additive under `version: 1`; registry entries gain the optional
   `braze_data_type` key, which older builds ignore on read. The warn
-  line stays. When the type later
-  maps, `diff` shows a `braze_data_type is stale` hint and the next
-  `export` clears the key.
+  line stays. When the type later maps, `diff` shows a
+  `braze_data_type is stale` hint on the otherwise-unchanged entry and
+  the next `export` clears the key.
 
 ### Changed
 

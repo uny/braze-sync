@@ -51,7 +51,7 @@ pub fn render(summary: &DiffSummary, only_drift: bool) -> String {
             "\nℹ {report_only} change(s) reported only — not counted by \
              --fail-on-drift. A correct setup produces them (a registry \
              covering more than one workspace, or a Braze data_type this \
-             braze-sync does not map) and nothing you do clears them.",
+             braze-sync does not map), so failing on them says nothing.",
         );
     }
 

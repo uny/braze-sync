@@ -84,7 +84,7 @@ red every day, which hides the genuine drift sitting next to it.
 A Custom Attribute whose Braze `data_type` this braze-sync does not
 map (`TypeUnmapped`). The registry's `type` is `string` because that
 is the guess `export` made, and the row says so — with Braze's raw
-value — every run. Nothing in the dashboard or in Git is wrong, and
+value — every run (as a hint, when a gating state wins the row). Nothing in the dashboard or in Git is wrong, and
 neither side can clear it: `export` writes the same guess back, and
 `type:` cannot name a type braze-sync lacks. Only a release that maps
 the type resolves it. Before this state existed the guess was silent:

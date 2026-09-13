@@ -80,7 +80,7 @@ Fields:
 | `PresentInGitOnly` | In the registry, not in Braze | Warning — a typo in the registry, or an attribute that has seen no `/users/track` traffic in *this* workspace. Which one it is depends on whether the registry covers more than one workspace; the CLI cannot tell. Listed, but does not raise exit `2` |
 | `DeprecationToggled` | `deprecated` differs between Git and Braze | **Writes** — this is the only mutation `braze-sync` performs for Custom Attributes |
 | `MetadataOnly` | Only `description` differs | Report; no API call (Braze has no description endpoint) |
-| `TypeUnmapped` | Braze reports a `data_type` this braze-sync does not map | Warning — `type: string` on both sides is a guess, not a comparison. Listed every run with Braze's raw value; does not raise exit `2`, since only a braze-sync release that maps the type clears it |
+| `TypeUnmapped` | Braze reports a `data_type` this braze-sync does not map | Warning — `type: string` on both sides is a guess, not a comparison. Listed every run with Braze's raw value (as a hint when a gating state wins the row); does not raise exit `2`, since only a braze-sync release that maps the type clears it |
 
 ## What `apply` does
 
