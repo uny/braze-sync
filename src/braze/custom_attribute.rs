@@ -14,6 +14,25 @@
 //! the response body does not carry the cursor. `limit` is not a
 //! supported query parameter — page size is fixed at 50 server-side.
 //! `deprecated` is derived from `status == STATUS_BLOCKLISTED`.
+//!
+//! ## Provenance
+//!
+//! The write side, `POST /custom_attributes/blocklist`, is **not in
+//! Braze's published API reference** (#99). The reference lists one
+//! Custom Attributes endpoint, `GET /custom_attributes`, with key
+//! permission `custom_attributes.get`; the blocklist flow is documented
+//! only as a dashboard action. The request shape here
+//! (`custom_attribute_names` + `blocklisted`) was introduced in #8
+//! without a recorded source and has not been verified against a live
+//! workspace by this project. Consequences a caller should weigh:
+//!
+//! - The API key permission it requires is unknown. Whether
+//!   `custom_attributes.get` suffices, or a scope from another section
+//!   is needed, is unverified.
+//! - An unpublished endpoint carries no compatibility guarantee.
+//!
+//! `diff` and `apply` print one stderr warning whenever a plan would
+//! call it, so the dependency is visible before the write.
 
 use crate::braze::error::BrazeApiError;
 use crate::braze::BrazeClient;

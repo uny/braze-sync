@@ -241,6 +241,24 @@ impl DiffSummary {
         self.diffs.iter().filter(|d| d.has_destructive()).count()
     }
 
+    /// Whether `apply` would call `POST /custom_attributes/blocklist`
+    /// for this summary. Matches `DeprecationToggled` directly — the
+    /// same variant `collect_write_units` in `cli::apply` keys on to
+    /// build a `CustomAttributeBlocklist` unit — so the plan-time
+    /// provenance warning (#99) and the write cannot drift apart
+    /// through `CustomAttributeDiff::is_actionable`.
+    pub fn writes_custom_attribute_blocklist(&self) -> bool {
+        self.diffs.iter().any(|d| {
+            matches!(
+                d,
+                ResourceDiff::CustomAttribute(custom_attribute::CustomAttributeDiff {
+                    op: custom_attribute::CustomAttributeOp::DeprecationToggled { .. },
+                    ..
+                })
+            )
+        })
+    }
+
     pub fn orphan_count(&self) -> usize {
         self.diffs.iter().filter(|d| d.is_orphan()).count()
     }
@@ -341,5 +359,48 @@ mod drift_tier_tests {
         assert_eq!(summary.gating_drift_count(), 1);
         assert_eq!(summary.report_only_drift_count(), 1);
         assert_eq!(summary.in_sync_count(), 1);
+    }
+
+    /// #99: the blocklist provenance warning keys on the one op that
+    /// makes `apply` call `POST /custom_attributes/blocklist`. An
+    /// actionable diff of another kind must not trip it — so the
+    /// predicate cannot be `any(ResourceDiff::is_actionable)`.
+    #[test]
+    fn blocklist_write_predicate_keys_on_deprecation_toggle_only() {
+        let toggle = |to: bool| {
+            ResourceDiff::CustomAttribute(custom_attribute::CustomAttributeDiff {
+                name: "legacy_field".into(),
+                op: custom_attribute::CustomAttributeOp::DeprecationToggled { from: !to, to },
+                hints: vec![],
+            })
+        };
+        let added_block = ResourceDiff::ContentBlock(content_block::ContentBlockDiff {
+            name: "promo".into(),
+            op: DiffOp::Added(crate::resource::ContentBlock {
+                name: "promo".into(),
+                description: None,
+                content: String::new(),
+                tags: vec![],
+                state: Default::default(),
+            }),
+            text_diff: None,
+            orphan: false,
+        });
+        let report_only = ResourceDiff::CustomAttribute(custom_attribute::CustomAttributeDiff {
+            name: "trial_started_at".into(),
+            op: custom_attribute::CustomAttributeOp::PresentInGitOnly,
+            hints: vec![],
+        });
+        assert!(added_block.is_actionable());
+        assert!(!DiffSummary {
+            diffs: vec![added_block, report_only]
+        }
+        .writes_custom_attribute_blocklist());
+        for to in [true, false] {
+            assert!(DiffSummary {
+                diffs: vec![toggle(to)]
+            }
+            .writes_custom_attribute_blocklist());
+        }
     }
 }

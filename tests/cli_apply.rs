@@ -1071,6 +1071,117 @@ async fn apply_custom_attribute_dry_run_makes_no_write_call() {
     .unwrap();
 }
 
+/// #99: `apply` prints the blocklist provenance warning once, at plan
+/// time — so a dry run surfaces it before any write. Deprecate and
+/// reactivate are both in the plan; the line is still one. (Write
+/// units are never built on a dry run; the `--confirm` test below
+/// pins "once" on the path that builds two.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_dry_run_warns_blocklist_provenance_once() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/custom_attributes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "attributes": [
+                { "name": "to_deprecate", "data_type": "string", "status": "Active" },
+                { "name": "to_reactivate", "data_type": "string", "status": "Blocklisted" }
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/custom_attributes/blocklist"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  \
+         - name: to_deprecate\n    type: string\n    deprecated: true\n  \
+         - name: to_reactivate\n    type: string\n    deprecated: false\n",
+    );
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "custom_attribute"]) // no --confirm
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(output.status.success(), "status: {}", output.status);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        stderr.matches("POST /custom_attributes/blocklist").count(),
+        1,
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("DRY RUN"), "stderr: {stderr}");
+}
+
+/// #99: with `--confirm`, deprecate + reactivate build two blocklist
+/// write units and issue two POSTs, but the provenance line is still
+/// printed once, and an inherited `RUST_LOG=error` does not silence it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_confirm_warns_blocklist_provenance_once_for_two_units() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/custom_attributes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "attributes": [
+                { "name": "to_deprecate", "data_type": "string", "status": "Active" },
+                { "name": "to_reactivate", "data_type": "string", "status": "Blocklisted" }
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/custom_attributes/blocklist"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "success"})))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = write_config(tmp.path(), &server.uri());
+    write_local_custom_attribute_registry(
+        tmp.path(),
+        "attributes:\n  \
+         - name: to_deprecate\n    type: string\n    deprecated: true\n  \
+         - name: to_reactivate\n    type: string\n    deprecated: false\n",
+    );
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("braze-sync")
+            .unwrap()
+            .env("BRAZE_API_KEY", "test-key")
+            .env("RUST_LOG", "error")
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["apply", "--resource", "custom_attribute", "--confirm"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(output.status.success(), "status: {}", output.status);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        stderr.matches("POST /custom_attributes/blocklist").count(),
+        1,
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("Applied 2 change(s)"), "stderr: {stderr}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn apply_custom_attribute_present_in_git_only_is_informational_no_op() {
     let server = MockServer::start().await;

@@ -40,6 +40,29 @@ use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 
+/// One stderr line when the plan will call `POST
+/// /custom_attributes/blocklist` (#99). That endpoint is absent from
+/// Braze's published API reference and the API key permission it
+/// needs is unverified, so the operator learns the dependency while
+/// the plan is still reviewable rather than from a late 403/404 —
+/// blocklist units are batched last. Shared by `diff` and `apply`;
+/// emitted once per run, not once per unit. Provenance details:
+/// `crate::braze::custom_attribute` module doc.
+///
+/// `eprintln!`, not `tracing::warn!`, for the reason recorded at the
+/// duplicate-name line in `export`: a `tracing` line is silenced by
+/// whatever `RUST_LOG` the operator's shell carries, and this line
+/// exists precisely so the dependency is never learned from the write.
+pub(crate) fn warn_custom_attribute_blocklist_provenance(summary: &crate::diff::DiffSummary) {
+    if summary.writes_custom_attribute_blocklist() {
+        eprintln!(
+            "⚠ this plan toggles `deprecated`, which calls POST /custom_attributes/blocklist — \
+             an endpoint outside Braze's published API reference; the API key permission \
+             it requires is unverified (see src/braze/custom_attribute.rs, Provenance)"
+        );
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "braze-sync",

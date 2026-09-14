@@ -17,8 +17,9 @@ This breaks the usual GitOps loop:
 - `braze-sync` cannot **create** an attribute — Braze creates them.
 - `braze-sync` cannot **delete** an attribute — Braze has no delete
   endpoint (only deprecation).
-- `braze-sync` *can* **toggle the `deprecated` flag** via the attribute
-  metadata endpoint.
+- `braze-sync` *can* **toggle the `deprecated` flag** via
+  `POST /custom_attributes/blocklist` (see [What `apply` does](#what-apply-does)
+  for what is known about that endpoint).
 
 Claiming to "manage" Custom Attributes the same way as catalogs would
 be dishonest. `braze-sync` runs the one mode that is actually honest:
@@ -84,8 +85,17 @@ Fields:
 
 ## What `apply` does
 
-Exactly one thing: toggle the `deprecated` flag via the attribute
-metadata endpoint. Every other diff state is report-only.
+Exactly one thing: toggle the `deprecated` flag via
+`POST /custom_attributes/blocklist`. Every other diff state is report-only.
+
+That endpoint is not in Braze's published API reference (#99): the
+reference documents only `GET /custom_attributes` (permission
+`custom_attributes.get`), and the blocklist flow appears only as a
+dashboard action. braze-sync has not verified the call against a live
+workspace, and the API key permission it requires is unknown. Whenever
+a plan would call it, `diff` and `apply` print one warning on stderr so
+you can weigh that dependency before the write lands; the warning does
+not change the exit code.
 
 That narrow surface is the whole point — the registry accurately
 describes the slice of management Braze actually exposes. Nothing
