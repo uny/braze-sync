@@ -611,8 +611,8 @@ async fn diff_custom_attribute_deprecation_toggle() {
 
 /// #99: a plan that toggles `deprecated` will call
 /// `POST /custom_attributes/blocklist`, an endpoint outside Braze's
-/// published API reference. `diff` says so once on stderr, whether or
-/// not `--plan-out` is passed, and the exit code is unaffected. The
+/// published API reference. `diff` says so once on stderr, and the
+/// exit code is unaffected. The
 /// line is `eprintln!`, so no `RUST_LOG` pin is needed — and an
 /// inherited `RUST_LOG=error` must not silence it, which the
 /// `RUST_LOG=error` below asserts.

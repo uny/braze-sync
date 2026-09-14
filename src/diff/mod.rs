@@ -242,14 +242,20 @@ impl DiffSummary {
     }
 
     /// Whether `apply` would call `POST /custom_attributes/blocklist`
-    /// for this summary. True when any Custom Attribute diff is
-    /// `DeprecationToggled` — the exact condition under which `apply`
-    /// emits a `CustomAttributeBlocklist` write unit — so the plan-time
-    /// provenance warning (#99) and the write cannot disagree.
+    /// for this summary. Matches `DeprecationToggled` directly — the
+    /// same variant `collect_write_units` in `cli::apply` keys on to
+    /// build a `CustomAttributeBlocklist` unit — so the plan-time
+    /// provenance warning (#99) and the write cannot drift apart
+    /// through `CustomAttributeDiff::is_actionable`.
     pub fn writes_custom_attribute_blocklist(&self) -> bool {
-        self.diffs.iter().any(|d| match d {
-            ResourceDiff::CustomAttribute(d) => d.is_actionable(),
-            _ => false,
+        self.diffs.iter().any(|d| {
+            matches!(
+                d,
+                ResourceDiff::CustomAttribute(custom_attribute::CustomAttributeDiff {
+                    op: custom_attribute::CustomAttributeOp::DeprecationToggled { .. },
+                    ..
+                })
+            )
         })
     }
 
@@ -358,7 +364,7 @@ mod drift_tier_tests {
     /// #99: the blocklist provenance warning keys on the one op that
     /// makes `apply` call `POST /custom_attributes/blocklist`. An
     /// actionable diff of another kind must not trip it — so the
-    /// predicate cannot be `any(is_actionable)`.
+    /// predicate cannot be `any(ResourceDiff::is_actionable)`.
     #[test]
     fn blocklist_write_predicate_keys_on_deprecation_toggle_only() {
         let toggle = |to: bool| {
